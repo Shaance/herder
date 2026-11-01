@@ -30,7 +30,7 @@ crew ── claude adapter ── claude --bg   (profile env, report-to-file con
 - Board stays the home for goals and user approvals. crew does not duplicate goals or asks.
 - skill-feedback keeps its confirmation contract. crew gets its own plain issue log; promotion into
   skill-feedback goes through skill-feedback's normal flow.
-- Python 3 stdlib, `argparse`, JSON state, `unittest`, like `board.py`. No new dependencies.
+- Rust (user decision 2026-11-01): `clap` derive for `--help`, `serde_json` state, `anyhow` errors. Installed with `cargo install --path .`.
 - Run identity is a crew-minted run id. The executor's native id (Claude session, Vibe session, Codex
   thread) is written once and used only for exact stop/resume. Resumes are attempts on the same run.
 - Run states: `starting`, `running`, `blocked`, `finished`, `failed`, `stopped`, `unknown`. Verification and
@@ -73,7 +73,7 @@ All commands: `--help` with examples, stable `--json`, documented exit codes, no
 
 - Only shell commands and files. No Claude-only tools (ListAgents, SendMessage, AskUserQuestion).
 - Approvals go through board, which every host can call.
-- The skill is one `SKILL.md` in `~/.ai-skills/skills/crew/`, synced to Claude, Codex, Cursor and Hermes by ai-skills-manager.
+- The skill is one `SKILL.md` (source in this repo at `skill/SKILL.md`, installed to `~/.ai-skills/skills/crew/`), synced to Claude, Codex, Cursor and Hermes by ai-skills-manager.
 - crew never inherits the caller's identity by accident: the Claude profile is an explicit, recorded input.
 
 ## The startup skill (target: under 60 lines)
@@ -93,9 +93,7 @@ the coordinator per AGENT_DEFAULTS), no transcript summarizer, no cost accountin
 
 ## Size budget
 
-About 600 production lines, split by job: `crew.py` CLI (~150), `store.py` runs and issues (~120),
-one adapter per executor (~100 each). Tests drive the real CLI against stub executables, not mocks of
-crew's own functions. Over budget means stop and re-plan.
+See the implementation brief; files split by job (CLI, store, one module per executor), each under ~250 lines.
 
 ## Biggest risk
 
