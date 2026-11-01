@@ -6,6 +6,7 @@ ai-skills scripts. Vibe/Codex scripts also require Bash and jq.
 
 ```sh
 cargo install --path . --locked
+ln -s "$PWD/skill" ~/.ai-skills/skills/crew && bash ~/.ai-skills/setup.sh   # install the skill
 crew doctor --json
 ```
 
