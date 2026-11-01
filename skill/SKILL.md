@@ -17,7 +17,7 @@ agent or person can use the same CLI.
    must load (for example `$write-rust`); workers do not reliably load them unasked.
 3. Use `crew dispatch`; retain the printed run ID, name and optional goal label.
    Status, report, stop, resume, verify and wait also accept a unique dispatch
-   `--name`; existing IDs take precedence and ambiguous names fail with candidates.
+   `--name`; existing IDs take precedence; ambiguous or unknown names list matches or similar names.
    Dispatch defaults to `--mode direct`; use `--mode review` for read-only briefs.
    Vibe/Codex resume replays the recorded model and extra arguments after `--`.
 4. Follow progress with `crew ls` (models and executor state tallies) and `crew status`.

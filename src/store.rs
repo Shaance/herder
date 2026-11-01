@@ -45,20 +45,25 @@ impl Store {
             return Ok(value.to_owned());
         }
         let mut matches = vec![];
-        let mut candidates = vec![];
+        let mut similar = vec![];
         for id in self.runs()? {
             if let Ok(run) = self.load(&id) {
-                candidates.push(format!("{id} ({})", run.name.escape_debug()));
                 if run.name == value {
                     matches.push(id);
+                } else if run.name.contains(value) {
+                    similar.push(format!("{id} ({})", run.name.escape_debug()));
                 }
             }
         }
         ensure!(
             matches.len() == 1,
-            "run {value:?}: {} matches; candidates: {}",
+            "run {value:?}: {} matches; {}",
             matches.len(),
-            if matches.is_empty() { candidates.join(", ") } else { matches.join(", ") }
+            match (matches.is_empty(), similar.is_empty()) {
+                (false, _) => format!("candidates: {}", matches.join(", ")),
+                (true, false) => format!("similar names: {}", similar.join(", ")),
+                (true, true) => "list runs with `crew ls`".into(),
+            }
         );
         Ok(matches.remove(0))
     }

@@ -166,7 +166,7 @@ fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
     f.call(&["stop", "review worker"], 0);
     assert_eq!(f.call(&["wait", "review worker", "--all"], 0)["data"]["runs"][0]["id"], id);
     f.call(&["resume", "review worker", "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
-    let shadow = f.dispatch("codex", &["--name", id], 0);
+    f.dispatch("codex", &["--name", id], 0);
     assert_eq!(f.call(&["status", id], 0)["data"]["run"]["id"], id);
     let second = f.dispatch("codex", &["--name", "review worker"], 0);
     let other = second["data"]["run_id"].as_str().unwrap();
@@ -179,12 +179,16 @@ fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
             }
             let error = f.call(&args, 1);
             let error = error["error"].as_str().unwrap();
-            assert!(error.contains("candidates:") && error.contains(id) && error.contains(other), "{error}");
             if name == "unknown" {
-                assert!(error.contains(shadow["data"]["run_id"].as_str().unwrap()));
+                assert!(error.contains("crew ls") && !error.contains(id), "{error}");
+            } else {
+                assert!(error.contains("candidates:") && error.contains(id) && error.contains(other), "{error}");
             }
         }
     }
+    let similar = f.call(&["status", "review"], 1);
+    let similar = similar["error"].as_str().unwrap();
+    assert!(similar.contains("similar names:") && similar.contains(id) && similar.contains(other), "{similar}");
     let out = f
         .cmd()
         .args(["dispatch", "--executor", "codex", "--brief"])

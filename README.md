@@ -50,7 +50,7 @@ Claude profile precedence is `--profile`, `CLAUDE_CONFIG_DIR`, then explicitly
 none (Claude's default). Dispatch detects trust failures without editing trust.
 
 Status, report, stop, resume, verify and wait accept a run ID or a unique dispatch
-`--name`. Existing IDs take precedence; ambiguous or unknown names fail with candidates.
+`--name`. Existing IDs take precedence; ambiguous names list their matches, unknown names list similar ones.
 Human dispatch output includes both ID and name.
 
 `crew wait <run>...` polls every 5 seconds, returning when any run settles;
