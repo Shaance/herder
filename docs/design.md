@@ -1,6 +1,6 @@
 # crew: an agent-agnostic CLI for dispatching and tracking agent runs
 
-Status: proposal, 2026-11-01. Inputs: pilot ledger, Vibe consult (`runs/vibe-consult.md`), Codex consult (`runs/codex-consult.md`).
+Status: implementation notes, 2026-11-01. Inputs: pilot ledger, Vibe consult (`runs/vibe-consult.md`), Codex consult (`runs/codex-consult.md`).
 Caveat: the Vibe consult was denied reads of `~/.ai-skills` (strict mode) and read Codex's in-progress transcript instead, so the two opinions are not fully independent.
 
 ## What it is
@@ -20,13 +20,14 @@ crew ── claude adapter ── claude --bg   (profile env, report-to-file con
    │
    ├─ state: ~/.local/state/ai-skills/crew/runs/<run-id>/run.json  (+ evidence dir)
    ├─ state: ~/.local/state/ai-skills/crew/issues.jsonl
-   └─ approvals: board.py (unchanged; crew only stores the board item id on the run)
+   └─ approvals: coordinator uses board separately; crew stores an optional goal label
 ```
 
 ## Decisions (where both consultants agreed)
 
 - Build new, thin. Reuse implementer-core's brief format, `check_brief.sh`, `collect_evidence.sh` and the
-  Vibe/Codex launch/status/resume scripts. Fix bugs in those scripts at their source, never re-implement them.
+  Vibe/Codex launch/status/resume scripts. Crew owns attempt transitions and baseline-aware scope;
+  executor invocation and terminal evidence stay in the scripts.
 - Board stays the home for goals and user approvals. crew does not duplicate goals or asks.
 - skill-feedback keeps its confirmation contract. crew gets its own plain issue log; promotion into
   skill-feedback goes through skill-feedback's normal flow.
@@ -36,23 +37,30 @@ crew ── claude adapter ── claude --bg   (profile env, report-to-file con
 - Run states: `starting`, `running`, `blocked`, `finished`, `failed`, `stopped`, `unknown`. Verification and
   approval are separate facts on the run, not states.
 - Dispatch writes the run record (launch intent) before spawning, so an interrupted dispatch is reconciled
-  instead of launched twice.
+  when identity evidence exists. Claude acceptance is persisted before its launch gate.
+- Run writes hold `run.lock`, including recovery. Reads try once and return recorded state if busy;
+  mutating waits time out after two seconds. Verification executes checks outside the lock and reloads
+  before appending its original attempt's verdict. Dispatch publishes a prepared directory containing
+  `run.json`; list errors are isolated per directory.
+- Resume records a pending attempt separately from the accepted identity. It advances only when a
+  new PID for the same executor session is accepted or recovered. A recorded failure can retry the same
+  pending attempt after terminal executor evidence confirms no live worker; wrapper restrictions still apply.
 - Every read command re-queries the executor before printing. If crew's record and the executor
-  disagree, it prints both and says `unknown`; it never guesses.
+  disagree, it prints both and says `unknown`. Queries have a two-second timeout; an existing report
+  remains available. Stop records that signalling succeeded before polling briefly for exit.
 
 ## MVP commands
 
 | Command | Job |
 |---|---|
-| `crew doctor [--executor X] [--repo R]` | Preflight: executables, resolved `CLAUDE_CONFIG_DIR`, workspace trust, Vibe route, Codex version, Rex reachable. Prints the exact fix for each gap |
+| `crew doctor [--executor X] [--profile P]` | Check executor and script availability, resolved Claude profile, Rex connectivity and watch availability |
 | `crew dispatch --executor claude\|vibe\|codex --brief B --repo R [--model M] [--goal G] [--pane]` | Lint brief, launch, wait for the first artifact, print the run id (JSON with `--json`) |
 | `crew ls [--goal G] [--json]` | All runs with reconciled status |
 | `crew status RUN` | One run: state, attempt, native id, run dir, report path |
 | `crew report RUN` | The current attempt's report (`final.md`, `final2.md`, ...). Missing report = incomplete |
 | `crew stop RUN` / `crew resume RUN --brief DELTA` | Exact-identity stop and resume |
-| `crew verify RUN [--check CMD]...` | `collect_evidence.sh` scope check plus declared checks; records the verdict |
+| `crew verify RUN [--path PREFIX]... [--check CMD]...` | Crew checks paths since the dispatch baseline, runs `collect_evidence.sh` and declared checks, and records an attempt-specific verdict |
 | `crew issue log\|ls\|resolve` | Log a workflow problem: title, observed, expected, evidence, area (`crew`, `skill:<name>`, `executor:<x>`) |
-| `crew pane RUN` | Optional Rex view of the run with the right env. Never the source of truth |
 
 All commands: `--help` with examples, stable `--json`, documented exit codes, no prompts.
 
@@ -60,9 +68,9 @@ All commands: `--help` with examples, stable `--json`, documented exit codes, no
 
 | Problem | Fix |
 |---|---|
-| `claude --bg` refused an untrusted repo | `doctor` and `dispatch` detect it and print "open `claude` in R once and accept trust". No parent-folder workaround (Codex: that sidesteps a security boundary) |
+| `claude --bg` refused an untrusted repo | Dispatch retains the executor diagnostic and suggests accepting trust interactively under the recorded profile |
 | Variadic tool flags ate the prompt | Claude adapter builds an argv array with the prompt first; a launch gate checks the session is busy, not idle |
-| Rex pane showed the wrong profile | Profile resolved once, stored on the run, passed explicitly to every claude call and to `crew pane` |
+| Rex pane showed the wrong profile | Profile resolved once, stored on the run, passed explicitly to every Claude call and dispatch's optional `--pane` view |
 | `claude logs` unreadable | Claude workers get a report-to-file contract (`<run dir>/final.md`); `crew report` reads only that |
 | Hand-written ledger | Runs are registered at dispatch; `crew ls --goal` is the ledger |
 | Release check missed open review findings | Coordinator duty in the skill plus `crew verify --check`: every standing finding needs a fix or a recorded deferral |
@@ -99,4 +107,5 @@ See the implementation brief; files split by job (CLI, store, one module per exe
 
 The CLI faithfully records "READY" from a worker while the thing is still broken (Codex), or its records
 drift from the executors' (Vibe). Countered by: re-query on every read, `unknown` instead of guessing,
-and verification and approval as coordinator actions tied to an exact commit, never a worker's say-so.
+and separate verification tied to an attempt and a dispatch baseline. Checks inspect a changing worktree;
+they do not freeze a snapshot or grant approval. Old records without a baseline cannot pass scope verification.

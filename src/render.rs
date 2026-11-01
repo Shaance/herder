@@ -32,6 +32,10 @@ pub fn human(action: &Action) -> fn(&Value) {
         },
         Action::Ls { .. } => |data| {
             for entry in data["runs"].as_array().expect("run list") {
+                if entry["error"].is_string() {
+                    println!("{}\tbroken\t{}", text(&entry["run_id"]), text(&entry["error"]));
+                    continue;
+                }
                 let run: Run = serde_json::from_value(entry["run"].clone()).expect("serialized run");
                 println!(
                     "{}\t{}\t{}\t{}\t{}",
@@ -54,7 +58,12 @@ pub fn human(action: &Action) -> fn(&Value) {
                 run.attempt,
                 dir.display(),
                 dir.join(run.report_name()).display(),
-                run.verifications.last().map(|v| text(&json!(v.verdict))).unwrap_or_else(|| "none".into())
+                run.verifications
+                    .iter()
+                    .rev()
+                    .find(|v| v.attempt == run.attempt)
+                    .map(|v| text(&json!(v.verdict)))
+                    .unwrap_or_else(|| "none".into())
             );
         },
         Action::Issue { command: IssueAction::Ls { .. } } => |data| {

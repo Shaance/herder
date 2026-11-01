@@ -57,16 +57,22 @@ pub struct LaunchError {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Intent {
-    Starting,
+    #[serde(alias = "starting")]
     Running,
-    Unconfirmed { error: LaunchError },
-    Failed { error: LaunchError },
+    Unconfirmed {
+        error: LaunchError,
+    },
+    Failed {
+        error: LaunchError,
+    },
     Stopped,
+    StopSent,
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Launch {
     Starting { target: Target },
+    PendingResume { previous: Native, attempt: NonZeroU32, error: Option<LaunchError> },
     Accepted { id: String, profile: Option<PathBuf>, error: Option<LaunchError> },
     Failed { target: Target, error: LaunchError },
     Launched { native: Native, intent: Intent },
@@ -76,6 +82,7 @@ impl Launch {
         match self {
             Self::Starting { target } | Self::Failed { target, .. } => target.clone(),
             Self::Accepted { profile, .. } => Target::Claude { profile: profile.clone() },
+            Self::PendingResume { previous, .. } => previous.target(),
             Self::Launched { native, .. } => native.target(),
         }
     }
@@ -87,10 +94,10 @@ impl Launch {
     }
     pub fn state(&self) -> State {
         match self {
-            Self::Starting { .. } | Self::Launched { intent: Intent::Starting, .. } => State::Starting,
+            Self::Starting { .. } => State::Starting,
             Self::Failed { .. } | Self::Launched { intent: Intent::Failed { .. }, .. } => State::Failed,
             Self::Launched { intent: Intent::Stopped, .. } => State::Stopped,
-            Self::Accepted { .. } => State::Unknown,
+            Self::Accepted { .. } | Self::PendingResume { .. } => State::Unknown,
             Self::Launched { .. } => State::Running,
         }
     }
@@ -123,13 +130,18 @@ pub struct Verification {
     pub verdict: Verdict,
     pub checks: Vec<Check>,
     pub timestamp: String,
+    #[serde(default = "first_attempt")]
     pub attempt: NonZeroU32,
+}
+fn first_attempt() -> NonZeroU32 {
+    NonZeroU32::MIN
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Run {
     pub id: String,
     pub model: Option<String>,
     pub repo: PathBuf,
+    pub baseline_commit: Option<String>,
     pub brief: PathBuf,
     pub goal: Option<String>,
     pub name: String,
@@ -140,6 +152,12 @@ pub struct Run {
     pub created_at: String,
 }
 impl Run {
+    pub fn launch_attempt(&self) -> NonZeroU32 {
+        match self.launch {
+            Launch::PendingResume { attempt, .. } => attempt,
+            _ => self.attempt,
+        }
+    }
     pub fn suffix(&self) -> String {
         if self.attempt.get() == 1 { String::new() } else { self.attempt.to_string() }
     }

@@ -1,6 +1,6 @@
 use crate::{
-    domain::{Native, Observation, Run, State},
-    process::{checked, output, script},
+    domain::{Launch, Native, Observation, Run, State},
+    process::{checked, output, query, script},
 };
 use anyhow::{Result, ensure};
 use std::{
@@ -36,7 +36,8 @@ impl ScriptExecutor {
         script(self.script.0, &format!("{action}_{}", self.script.1))
     }
     pub fn status_args(&self, run: &Run) -> Option<String> {
-        self.numbered_status.then(|| run.suffix())
+        self.numbered_status
+            .then(|| if run.launch_attempt().get() == 1 { String::new() } else { run.launch_attempt().to_string() })
     }
     fn native(&self, pid: NonZeroU32, id: String) -> Result<Native> {
         ensure!(!id.is_empty() && !id.chars().any(char::is_whitespace), "invalid native id");
@@ -51,7 +52,7 @@ impl ScriptExecutor {
     pub fn launch(&self, run: &Run, dir: &Path, delta: Option<&Path>, extra: &[String]) -> Result<Option<Native>> {
         let mut cmd = Command::new(self.path(if delta.is_some() { "resume" } else { "launch" }));
         if let Some(delta) = delta {
-            cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.attempt.to_string());
+            cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.launch_attempt().to_string());
         } else {
             cmd.arg(&run.repo).arg(&run.brief).arg(dir);
             cmd.args(self.launch_separator);
@@ -61,23 +62,31 @@ impl ScriptExecutor {
             cmd.args(extra);
         }
         let (code, text) = output(&mut cmd)?;
-        crate::store::atomic(&dir.join(format!("launch{}.log", run.suffix())), text.as_bytes())?;
+        crate::store::atomic(
+            &dir.join(format!(
+                "launch{}.log",
+                if delta.is_some() { run.launch_attempt().to_string() } else { run.suffix() }
+            )),
+            text.as_bytes(),
+        )?;
         if code == Some(3) {
             return Ok(None);
         }
         ensure!(code == Some(0), "{text}");
         let native = self.native(field(&text, "PID")?.parse()?, field(&text, self.identity.1)?.into())?;
-        if let Some(old) = run.launch.native() {
+        if let Launch::PendingResume { previous: old, .. } = &run.launch {
             ensure!(
                 old.process().map(|p| p.2) == native.process().map(|p| p.2),
                 "resumed identity disagrees with record: {text}"
             );
+            ensure!(old.process().map(|p| p.0) != native.process().map(|p| p.0), "resume returned the old pid: {text}");
         }
         Ok(Some(native))
     }
     pub fn query(&self, run: &Run, dir: &Path) -> Result<Observation> {
-        let text = checked(Command::new(self.path("status")).arg(dir).args(self.status_args(run)))?;
-        if let Some(native) = run.launch.native() {
+        let text = query(Command::new(self.path("status")).arg(dir).args(self.status_args(run)))?;
+        let recovered = self.identity(dir).ok();
+        if let Some(native) = run.launch.native().or(recovered.as_ref()) {
             confirm(native, dir)?;
             ensure!(
                 field(&text, "pid")? == native.process().unwrap().0.to_string(),

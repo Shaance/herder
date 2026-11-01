@@ -1,6 +1,7 @@
 use crate::{
     domain::{Intent, Launch, Native, Observation, Run, State, Target},
-    process::{checked, output},
+    process::{self, output},
+    store::LockedRun,
 };
 use anyhow::{Result, bail, ensure};
 use serde::Deserialize;
@@ -40,10 +41,10 @@ struct Agent {
 }
 fn agents(profile: Option<&Path>, repo: &Path) -> Result<Vec<Agent>> {
     let listed: Vec<Listed> =
-        serde_json::from_str(&checked(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?;
+        serde_json::from_str(&process::query(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?;
     Ok(listed.into_iter().filter_map(|l| if let Listed::Background(a) = l { Some(a) } else { None }).collect())
 }
-pub fn launch(run: &mut Run, dir: &Path, extra: &[String]) -> Result<Native> {
+pub fn launch(run: &mut Run, dir: &Path, extra: &[String], store: &LockedRun) -> Result<Native> {
     let Target::Claude { profile } = run.launch.target() else { bail!("Claude target required") };
     let prompt = format!(
         "{}\n\nWrite your final report to {}.\n",
@@ -68,12 +69,16 @@ pub fn launch(run: &mut Run, dir: &Path, extra: &[String]) -> Result<Native> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing background id: {text}"))?;
     run.launch = Launch::Accepted { id: id.into(), profile, error: None };
+    store.save(run)?;
     // A new background session reports idle for a moment before it starts working; give it the launch window.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let a = identity(run)?;
         let started = a.status.as_deref() == Some("busy") || a.state == "done" || dir.join("final.md").exists();
-        ensure!(started || Instant::now() < deadline, "background session {id} stayed idle for 30s with no report: {text}");
+        ensure!(
+            started || Instant::now() < deadline,
+            "background session {id} stayed idle for 30s with no report: {text}"
+        );
         if started {
             break;
         }
@@ -95,7 +100,10 @@ fn identity(run: &mut Run) -> Result<Agent> {
     ensure!(
         !a.session_id.is_empty() && Path::new(&a.cwd) == run.repo && session.is_none_or(|s| s == &a.session_id),
         "Claude identity mismatch: recorded={id}/{session:?}/{} observed={}/{}/{}",
-        run.repo.display(), a.id, a.session_id, a.cwd
+        run.repo.display(),
+        a.id,
+        a.session_id,
+        a.cwd
     );
     if let Launch::Accepted { error, .. } = &run.launch {
         run.launch = Launch::Launched {
@@ -108,7 +116,7 @@ fn identity(run: &mut Run) -> Result<Agent> {
     }
     Ok(a)
 }
-pub fn query(run: &mut Run, dir: &Path) -> Result<Observation> {
+pub fn query(run: &mut Run) -> Result<Observation> {
     let a = identity(run)?;
     let (id, session_id) = (&a.id, &a.session_id);
     let state = match (a.status.as_deref().unwrap_or(""), a.state.as_str()) {
@@ -117,9 +125,15 @@ pub fn query(run: &mut Run, dir: &Path) -> Result<Observation> {
         (_, "stopped" | "exited") => State::Stopped,
         (_, "blocked" | "waiting_for_permission") => State::Blocked,
         ("busy", _) => State::Running,
-        ("idle", _) if dir.join(run.report_name()).exists() => State::Finished,
         ("idle", _) => State::Blocked,
         _ => State::Unknown,
     };
-    Ok(Observation { state, evidence: format!("id={id} session={session_id} status={} state={}", a.status.as_deref().unwrap_or("none"), a.state) })
+    Ok(Observation {
+        state,
+        evidence: format!(
+            "id={id} session={session_id} status={} state={}",
+            a.status.as_deref().unwrap_or("none"),
+            a.state
+        ),
+    })
 }

@@ -6,6 +6,14 @@ use std::{
     process::Command,
 };
 use tempfile::TempDir;
+#[path = "cases/contracts.rs"]
+mod contracts;
+#[path = "cases/corrections.rs"]
+mod corrections;
+#[path = "cases/durability.rs"]
+mod durability;
+#[path = "cases/lifecycle.rs"]
+mod lifecycle;
 
 struct Fixture {
     _temp: TempDir,
@@ -30,6 +38,8 @@ impl Fixture {
         for dir in [&f.repo, &f.skills, &f.state, &f.bin] {
             fs::create_dir_all(dir).unwrap();
         }
+        f.git(&["init", "-q"]);
+        f.git(&["commit", "--allow-empty", "-qm", "baseline"]);
         f.write("brief.md", "implement this task\n");
         for exe in ["vibe", "codex", "jq", "watch"] {
             f.executable(&f.bin.join(exe), "exit 0");
@@ -111,7 +121,7 @@ cat "$CREW_SKILLS_DIR/status""#,
                 &format!("resume_{suffix}"),
                 &format!(
                     r#"test "$(cat "$1/{file}")" = native-1
-grep -q '"state": "starting"' "$1/run.json"
+grep -Eq '"state": "(starting|pending_resume)"' "$1/run.json"
 printf '%s\n' "$@" > "$CREW_STATE_DIR/resume-args"
 echo 43211 > "$1/run.pid"
 echo "attempt $4" > "$1/final$4.md"
@@ -122,8 +132,7 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
         }
         f.status("alive", "RUNNING");
         f.agents("busy", "working", "native-session");
-        let stopped =
-            json!([{"id":"abc123","kind":"background","sessionId":"native-session","cwd":f.repo,"status":"idle","state":"stopped"}]);
+        let stopped = json!([{"id":"abc123","kind":"background","sessionId":"native-session","cwd":f.repo,"status":"idle","state":"stopped"}]);
         fs::write(f.skills.join("stopped.json"), stopped.to_string()).unwrap();
         f
     }
@@ -187,6 +196,16 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
     }
     fn record(&self, id: &str) -> Value {
         serde_json::from_slice(&fs::read(self.dir(id).join("run.json")).unwrap()).unwrap()
+    }
+    fn git(&self, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(&self.repo)
+            .args(["-c", "user.name=Crew test", "-c", "user.email=crew@example.invalid", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().into()
     }
 }
 
@@ -378,13 +397,16 @@ fn verification_records_scope_and_each_check_without_changing_lifecycle() {
         assert_eq!(record["launch"]["intent"]["state"], "running");
         let verdict = &record["verifications"][0];
         assert_eq!(verdict["verdict"], if mode == "pass" { "pass" } else { "fail" });
-        assert_eq!(verdict["checks"][0]["exit_code"], if mode == "scope-fail" { 2 } else { 0 });
-        assert_eq!(verdict["checks"][1]["exit_code"], if mode == "check-fail" { 7 } else { 0 });
-        assert_eq!(verdict["checks"][2]["output"], "last");
+        assert_eq!(verdict["checks"][0]["exit_code"], 0);
+        assert_eq!(verdict["checks"][1]["exit_code"], if mode == "scope-fail" { 2 } else { 0 });
+        assert_eq!(verdict["checks"][2]["exit_code"], if mode == "check-fail" { 7 } else { 0 });
+        assert_eq!(verdict["checks"][3]["output"], "last");
         if mode != "check-fail" {
-            assert_eq!(verdict["checks"][1]["output"], format!("{}\n", f.repo.display()));
+            assert_eq!(verdict["checks"][2]["output"], format!("{}\n", f.repo.display()));
         }
-        assert!(fs::read_to_string(f.state.join("evidence-args")).unwrap().ends_with("\nsrc/\n"));
+        assert!(
+            fs::read_to_string(f.state.join("evidence-args")).unwrap().ends_with(&format!("{}\n", f.repo.display()))
+        );
         assert_eq!(f.record(id)["verifications"], record["verifications"]);
     }
     let f = Fixture::new();
@@ -563,7 +585,7 @@ fn human_lists_and_status_show_run_facts() {
             let out = f.cmd().args(["status", &id]).output().unwrap();
             assert!(out.status.success());
             let text = String::from_utf8(out.stdout).unwrap();
-            for expected in ["attempt: 2", "final2.md", "latest verdict: pass"] {
+            for expected in ["attempt: 2", "final2.md", "latest verdict: none"] {
                 assert!(text.contains(expected), "{text}");
             }
         }

@@ -1,8 +1,12 @@
 use anyhow::{Context, Result, ensure};
 use std::{
-    env,
+    env, fs,
+    io::{Read, Seek},
+    os::unix::{fs::OpenOptionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 
 pub fn output(cmd: &mut Command) -> Result<(Option<i32>, String)> {
@@ -13,6 +17,35 @@ pub fn output(cmd: &mut Command) -> Result<(Option<i32>, String)> {
 pub fn checked(cmd: &mut Command) -> Result<String> {
     let (code, text) = output(cmd)?;
     ensure!(code == Some(0), "exit {code:?}: {text}");
+    Ok(text)
+}
+pub fn query(cmd: &mut Command) -> Result<String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let path =
+        env::temp_dir().join(format!("crew-query-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+    let mut capture = fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path)?;
+    // Unlinked capture avoids pipe-reader hangs when a query leaves descendants behind.
+    fs::remove_file(path)?;
+    let mut child =
+        cmd.stdin(Stdio::null()).stdout(capture.try_clone()?).stderr(capture.try_clone()?).process_group(0).spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if Instant::now() >= deadline {
+            let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{}", child.id())]).status();
+            let _ = child.kill();
+            child.wait()?;
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    capture.rewind()?;
+    let mut text = String::new();
+    capture.read_to_string(&mut text)?;
+    let status = status.ok_or_else(|| anyhow::anyhow!("executor query timed out after 2s: {text}"))?;
+    ensure!(status.success(), "exit {:?}: {text}", status.code());
     Ok(text)
 }
 pub fn skills() -> PathBuf {

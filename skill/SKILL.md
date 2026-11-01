@@ -12,7 +12,7 @@ agent or person can use the same CLI.
 ## The loop
 
 1. Run `crew doctor` for the intended executor and profile.
-2. Write a direct-mode brief with implementer-core's contract blocks, authorized
+2. Write a direct-mode brief outside the worker repository with implementer-core's contract blocks, authorized
    paths, verification steps and publication limits. Name every skill the worker
    must load (for example `$write-rust`); workers do not reliably load them unasked.
 3. Use `crew dispatch`; retain the printed run ID and optional board goal string.
@@ -28,7 +28,7 @@ agent or person can use the same CLI.
 - Publish only after approval; crew does not publish or grant approval.
 - Treat `unknown` as unresolved evidence, not completion or permission to retry.
 - Preserve recorded identities and profiles. Consult command help for stop,
-  resume, pane and executor limitations.
+  resume, dispatch's `--pane` flag and executor limitations.
 - When something surprises you, `crew issue log` it and continue with work that
   remains safe and understood. Do not paper over an executor disagreement.
 
