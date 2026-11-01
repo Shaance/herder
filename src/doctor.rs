@@ -1,4 +1,4 @@
-use crate::{domain::Executor, process, scripts};
+use crate::{domain::Executor, process, scripts::ScriptExecutor};
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::{path::PathBuf, process::Command};
@@ -11,10 +11,10 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Valu
         if executor.is_some_and(|wanted| wanted != e) {
             continue;
         }
-        let name = match e {
-            Executor::Claude => "claude",
-            Executor::Vibe => "vibe",
-            Executor::Codex => "codex",
+        let (name, adapter) = match e {
+            Executor::Claude => ("claude", None),
+            Executor::Vibe => ("vibe", Some(ScriptExecutor::VIBE)),
+            Executor::Codex => ("codex", Some(ScriptExecutor::CODEX)),
         };
         let mut checks = vec![];
         for exe in if e == Executor::Claude { vec![name] } else { vec![name, "bash", "jq"] } {
@@ -26,8 +26,8 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Valu
             process::script("implementer-core", "check_brief"),
             process::script("implementer-core", "collect_evidence"),
         ];
-        if e != Executor::Claude {
-            paths.extend(["launch", "status", "resume"].map(|a| scripts::path(e, a)));
+        if let Some(adapter) = adapter {
+            paths.extend(["launch", "status", "resume"].map(|a| adapter.path(a)));
         }
         for path in paths {
             let present = process::executable(&path);

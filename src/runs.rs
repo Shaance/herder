@@ -1,3 +1,4 @@
+use crate::scripts::ScriptExecutor;
 use crate::{claude, domain::*, process, scripts, store::Store};
 use anyhow::{Result, bail, ensure};
 use std::{path::Path, process::Command};
@@ -6,7 +7,8 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, extra: &[String],
     let target = run.launch.target();
     let outcome = match target {
         Target::Claude { .. } => claude::launch(run, dir, extra).map(Some),
-        _ => scripts::launch(run, dir, delta, extra),
+        Target::Vibe => ScriptExecutor::VIBE.launch(run, dir, delta, extra),
+        Target::Codex => ScriptExecutor::CODEX.launch(run, dir, delta, extra),
     };
     let result = match outcome {
         Ok(Some(native)) => {
@@ -53,10 +55,14 @@ pub fn observe(run: &mut Run, store: &Store) -> Observation {
                     bail!("no recorded Claude identity; inspect launch facts before attaching");
                 }
             }
-            target => {
-                let observed = scripts::query(run, &dir)?;
+            target @ (Target::Vibe | Target::Codex) => {
+                let executor = match target {
+                    Target::Vibe => ScriptExecutor::VIBE,
+                    _ => ScriptExecutor::CODEX,
+                };
+                let observed = executor.query(run, &dir)?;
                 if matches!(run.launch, Launch::Starting { .. }) {
-                    if let Ok(native) = scripts::identity(target.executor(), &dir) {
+                    if let Ok(native) = executor.identity(&dir) {
                         run.launch = Launch::Launched { native, intent: Intent::Running };
                         store.save(run)?;
                     }
@@ -126,12 +132,13 @@ pub fn pane(run: &Run, dir: &Path) -> Result<()> {
             }
             cmd.args(["claude", "attach", id]);
         }
-        native => {
+        native @ (Native::Vibe { .. } | Native::Codex { .. }) => {
+            let executor = match native {
+                Native::Vibe { .. } => ScriptExecutor::VIBE,
+                _ => ScriptExecutor::CODEX,
+            };
             // watch owns the display loop; no shell command strings are constructed.
-            cmd.args(["watch", "-n", "2", "-x"]).arg(scripts::path(native.target().executor(), "status")).arg(dir);
-            if matches!(native, Native::Vibe { .. }) {
-                cmd.arg(run.suffix());
-            }
+            cmd.args(["watch", "-n", "2", "-x"]).arg(executor.path("status")).arg(dir).args(executor.status_args(run));
         }
     }
     process::checked(&mut cmd)?;

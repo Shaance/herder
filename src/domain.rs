@@ -26,15 +26,6 @@ pub enum Target {
     Vibe,
     Codex,
 }
-impl Target {
-    pub fn executor(&self) -> Executor {
-        match self {
-            Self::Claude { .. } => Executor::Claude,
-            Self::Vibe => Executor::Vibe,
-            Self::Codex => Executor::Codex,
-        }
-    }
-}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "executor", rename_all = "snake_case")]
 pub enum Native {

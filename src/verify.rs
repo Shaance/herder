@@ -3,12 +3,11 @@ use crate::{
     process,
     store::{Store, timestamp},
 };
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use std::process::Command;
 
 pub fn run(run: &mut Run, paths: Vec<String>, commands: Vec<String>, store: &Store) -> Result<()> {
     let paths = if paths.is_empty() { &run.authorized_paths } else { &paths };
-    ensure!(!paths.is_empty(), "verify requires --path when no paths were recorded at dispatch");
     let mut jobs = vec![("collect_evidence.sh".into(), {
         let mut cmd = Command::new(process::script("implementer-core", "collect_evidence"));
         cmd.arg(store.dir(&run.id)?).arg(&run.repo).args(paths);

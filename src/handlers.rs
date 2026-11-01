@@ -4,7 +4,7 @@ use crate::{
     issues, process, runs,
     store::{self, Store},
 };
-use anyhow::{Result, ensure};
+use anyhow::Result;
 use serde_json::{Value, json};
 use std::num::NonZeroU32;
 
@@ -87,7 +87,9 @@ pub fn handle(action: Action) -> Result<(Value, i32)> {
     }
 }
 fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
-    ensure!(args.executor == Executor::Claude || args.profile.is_none(), "--profile applies only to Claude");
+    if args.executor != Executor::Claude && args.profile.is_some() {
+        return Ok((json!({"message":"--profile applies only to Claude"}), 2));
+    }
     let repo = store::repo(&args.repo)?;
     process::lint(&args.brief)?;
     let (id, dir) = store.create()?;

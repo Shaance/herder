@@ -1,8 +1,8 @@
 use crate::{
-    domain::{Executor, Native, Observation, Run, State},
+    domain::{Native, Observation, Run, State},
     process::{checked, output, script},
 };
-use anyhow::{Result, bail, ensure};
+use anyhow::{Result, ensure};
 use std::{
     fs,
     num::NonZeroU32,
@@ -10,66 +10,104 @@ use std::{
     process::Command,
 };
 
-pub fn path(executor: Executor, action: &str) -> PathBuf {
-    let (owner, suffix) = match executor {
-        Executor::Vibe => ("vibe-implementer", "vibe"),
-        Executor::Codex => ("codex-implementer", "classic"),
-        Executor::Claude => unreachable!("Claude has no scripts"),
+pub struct ScriptExecutor {
+    script: (&'static str, &'static str),
+    identity: (&'static str, &'static str),
+    launch_separator: Option<&'static str>,
+    numbered_status: bool,
+    native: fn(String, NonZeroU32) -> Native,
+}
+impl ScriptExecutor {
+    pub const VIBE: Self = Self {
+        script: ("vibe-implementer", "vibe"),
+        identity: ("session-id", "SESSION_ID"),
+        launch_separator: Some("--"),
+        numbered_status: true,
+        native: |session_id, pid| Native::Vibe { session_id, pid },
     };
-    script(owner, &format!("{action}_{suffix}"))
+    pub const CODEX: Self = Self {
+        script: ("codex-implementer", "classic"),
+        identity: ("thread-id", "THREAD_ID"),
+        launch_separator: None,
+        numbered_status: false,
+        native: |thread_id, pid| Native::Codex { thread_id, pid },
+    };
+    pub fn path(&self, action: &str) -> PathBuf {
+        script(self.script.0, &format!("{action}_{}", self.script.1))
+    }
+    pub fn status_args(&self, run: &Run) -> Option<String> {
+        self.numbered_status.then(|| run.suffix())
+    }
+    fn native(&self, pid: NonZeroU32, id: String) -> Result<Native> {
+        ensure!(!id.is_empty() && !id.chars().any(char::is_whitespace), "invalid native id");
+        Ok((self.native)(id, pid))
+    }
+    pub fn identity(&self, dir: &Path) -> Result<Native> {
+        self.native(
+            fs::read_to_string(dir.join("run.pid"))?.trim().parse()?,
+            fs::read_to_string(dir.join(self.identity.0))?.trim().into(),
+        )
+    }
+    pub fn launch(&self, run: &Run, dir: &Path, delta: Option<&Path>, extra: &[String]) -> Result<Option<Native>> {
+        let mut cmd = Command::new(self.path(if delta.is_some() { "resume" } else { "launch" }));
+        if let Some(delta) = delta {
+            cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.attempt.to_string());
+        } else {
+            cmd.arg(&run.repo).arg(&run.brief).arg(dir);
+            cmd.args(self.launch_separator);
+            if let Some(model) = &run.model {
+                cmd.arg("--model").arg(model);
+            }
+            cmd.args(extra);
+        }
+        let (code, text) = output(&mut cmd)?;
+        crate::store::atomic(&dir.join(format!("launch{}.log", run.suffix())), text.as_bytes())?;
+        if code == Some(3) {
+            return Ok(None);
+        }
+        ensure!(code == Some(0), "{text}");
+        let native = self.native(field(&text, "PID")?.parse()?, field(&text, self.identity.1)?.into())?;
+        if let Some(old) = run.launch.native() {
+            ensure!(
+                old.process().map(|p| p.2) == native.process().map(|p| p.2),
+                "resumed identity disagrees with record: {text}"
+            );
+        }
+        Ok(Some(native))
+    }
+    pub fn query(&self, run: &Run, dir: &Path) -> Result<Observation> {
+        let text = checked(Command::new(self.path("status")).arg(dir).args(self.status_args(run)))?;
+        if let Some(native) = run.launch.native() {
+            confirm(native, dir)?;
+            ensure!(
+                field(&text, "pid")? == native.process().unwrap().0.to_string(),
+                "status pid disagrees with record: {text}"
+            );
+        }
+        let state = match field(&text, "state")? {
+            "alive" => State::Running,
+            "exited" if !self.numbered_status && run.attempt.get() > 1 => {
+                return Ok(Observation {
+                    state: State::Unknown,
+                    evidence: format!(
+                        "status_classic.sh inspects attempt 1; cannot establish attempt {} outcome: {text}",
+                        run.attempt
+                    ),
+                });
+            }
+            "exited" if text.contains("verdict: COMPLETED") => State::Finished,
+            "exited" if text.contains("verdict: STOPPED") => State::Stopped,
+            "exited" if text.contains("verdict: DIED") || text.contains("verdict: FAILED") => State::Failed,
+            _ => State::Unknown,
+        };
+        Ok(Observation { state, evidence: text })
+    }
 }
 fn field<'a>(text: &'a str, key: &str) -> Result<&'a str> {
     text.split_whitespace()
         .find_map(|s| s.strip_prefix(&format!("{key}=")))
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing {key}: {text}"))
-}
-fn native(executor: Executor, pid: NonZeroU32, id: String) -> Result<Native> {
-    ensure!(!id.is_empty() && !id.chars().any(char::is_whitespace), "invalid native id");
-    Ok(match executor {
-        Executor::Vibe => Native::Vibe { session_id: id, pid },
-        Executor::Codex => Native::Codex { thread_id: id, pid },
-        Executor::Claude => bail!("script identity cannot be Claude"),
-    })
-}
-pub fn identity(executor: Executor, dir: &Path) -> Result<Native> {
-    let file = if executor == Executor::Vibe { "session-id" } else { "thread-id" };
-    native(
-        executor,
-        fs::read_to_string(dir.join("run.pid"))?.trim().parse()?,
-        fs::read_to_string(dir.join(file))?.trim().into(),
-    )
-}
-pub fn launch(run: &Run, dir: &Path, delta: Option<&Path>, extra: &[String]) -> Result<Option<Native>> {
-    let executor = run.launch.target().executor();
-    let mut cmd = Command::new(path(executor, if delta.is_some() { "resume" } else { "launch" }));
-    if let Some(delta) = delta {
-        cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.attempt.to_string());
-    } else {
-        cmd.arg(&run.repo).arg(&run.brief).arg(dir);
-        if executor == Executor::Vibe {
-            cmd.arg("--");
-        }
-        if let Some(model) = &run.model {
-            cmd.arg("--model").arg(model);
-        }
-        cmd.args(extra);
-    }
-    let (code, text) = output(&mut cmd)?;
-    crate::store::atomic(&dir.join(format!("launch{}.log", run.suffix())), text.as_bytes())?;
-    if code == Some(3) {
-        return Ok(None);
-    }
-    ensure!(code == Some(0), "{text}");
-    let key = if executor == Executor::Vibe { "SESSION_ID" } else { "THREAD_ID" };
-    let native = native(executor, field(&text, "PID")?.parse()?, field(&text, key)?.into())?;
-    if let Some(old) = run.launch.native() {
-        ensure!(
-            old.process().map(|p| p.2) == native.process().map(|p| p.2),
-            "resumed identity disagrees with record: {text}"
-        );
-    }
-    Ok(Some(native))
 }
 pub fn confirm(native: &Native, dir: &Path) -> Result<()> {
     let (pid, file, id) = native.process().ok_or_else(|| anyhow::anyhow!("script identity required"))?;
@@ -79,47 +117,6 @@ pub fn confirm(native: &Native, dir: &Path) -> Result<()> {
         "executor files disagree with recorded identity"
     );
     Ok(())
-}
-pub fn query(run: &Run, dir: &Path) -> Result<Observation> {
-    let executor = run.launch.target().executor();
-    let mut cmd = Command::new(path(executor, "status"));
-    cmd.arg(dir);
-    if executor == Executor::Vibe {
-        cmd.arg(run.suffix());
-    }
-    let text = checked(&mut cmd)?;
-    if let Some(native) = run.launch.native() {
-        confirm(native, dir)?;
-    }
-    let live = field(&text, "state")?;
-    if let Some(native) = run.launch.native() {
-        ensure!(
-            field(&text, "pid")? == native.process().unwrap().0.to_string(),
-            "status pid disagrees with record: {text}"
-        );
-    }
-    let state = if live == "alive" {
-        State::Running
-    } else if live != "exited" {
-        State::Unknown
-    } else if executor == Executor::Codex && run.attempt.get() > 1 {
-        return Ok(Observation {
-            state: State::Unknown,
-            evidence: format!(
-                "status_classic.sh inspects attempt 1; cannot establish attempt {} outcome: {text}",
-                run.attempt
-            ),
-        });
-    } else if text.contains("verdict: COMPLETED") {
-        State::Finished
-    } else if text.contains("verdict: STOPPED") {
-        State::Stopped
-    } else if text.contains("verdict: DIED") || text.contains("verdict: FAILED") {
-        State::Failed
-    } else {
-        State::Unknown
-    };
-    Ok(Observation { state, evidence: text })
 }
 pub fn stop(native: &Native, run: &Run, dir: &Path) -> Result<()> {
     confirm(native, dir)?;

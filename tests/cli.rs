@@ -472,3 +472,11 @@ fn every_help_has_example_and_usage_errors_are_json() {
     assert!(f.call(&["dispatch", "--executor", "bad"], 2)["error"].as_str().unwrap().contains("error:"));
     f.call(&["status", "../escape"], 1);
 }
+
+#[test]
+fn non_claude_profile_is_a_usage_error() {
+    let f = Fixture::new();
+    let result = f.dispatch("vibe", &["--profile", "/tmp/profile"], 2);
+    assert_eq!(result["data"]["message"], "--profile applies only to Claude");
+    assert!(!f.state.join("runs").exists());
+}
