@@ -55,7 +55,7 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
                     if let Some(id) = &run {
                         store.load(id)?;
                     }
-                    json!({"issue":issues::append(&store, issues::Event::Logged { id: issues::next_id(&store)?, title, observed, expected, evidence, area, run, timestamp: store::timestamp()? })?})
+                    json!({"issue":issues::append(&store, issues::Event::Logged { id: issues::next_id(&store)?, title, observed, expected, evidence, area, run, timestamp: store::timestamp() })?})
                 }
                 IssueAction::Ls { open } => json!({"issues":issues::list(&store, open)?}),
                 IssueAction::Resolve { id, note } => {
@@ -170,7 +170,7 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
         attempt: NonZeroU32::MIN,
         authorized_paths: args.paths,
         verifications: vec![],
-        created_at: store::timestamp()?,
+        created_at: store::timestamp(),
     };
     store.publish(&mut locked, &run)?;
     let result = runs::launch(&mut run, &dir, None, &locked);

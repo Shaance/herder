@@ -1,23 +1,14 @@
-use crate::{
-    domain::Run,
-    process::{checked, home},
-};
+use crate::{domain::Run, process::home};
 use anyhow::{Context, Result, ensure};
 use std::{
     env, fs,
     io::Read,
-    os::fd::AsRawFd,
     path::{Path, PathBuf},
-    process::Command,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime},
 };
 
 pub struct Store {
     pub root: PathBuf,
-}
-// flock is available on the supported Unix hosts; std File locking needs Rust 1.89.
-unsafe extern "C" {
-    fn flock(fd: std::os::raw::c_int, operation: std::os::raw::c_int) -> std::os::raw::c_int;
 }
 pub struct LockedRun {
     pub dir: PathBuf,
@@ -26,17 +17,11 @@ pub struct LockedRun {
 impl LockedRun {
     fn try_acquire(dir: PathBuf) -> Result<Option<Self>> {
         let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("run.lock"))?;
-        // SAFETY: this guard owns the descriptor; LOCK_EX | LOCK_NB never waits.
-        while unsafe { flock(file.as_raw_fd(), 2 | 4) } != 0 {
-            let error = std::io::Error::last_os_error();
-            if error.kind() == std::io::ErrorKind::WouldBlock {
-                return Ok(None);
-            }
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(error.into());
-            }
+        match file.try_lock() {
+            Ok(()) => Ok(Some(Self { dir, _lock: file })),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(error)) => Err(error.into()),
         }
-        Ok(Some(Self { dir, _lock: file }))
     }
     pub fn load(&self) -> Result<Run> {
         load(&self.dir)
@@ -84,8 +69,8 @@ impl Store {
     pub fn create(&self) -> Result<(String, LockedRun)> {
         let mut bytes = [0; 2];
         fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-        let date = checked(Command::new("date").args(["-u", "+%Y%m%d-%H%M%S"]))?;
-        let id = format!("{}-{:02x}{:02x}", date.trim(), bytes[0], bytes[1]);
+        let (y, mo, d, h, mi, s) = utc_now();
+        let id = format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{:02x}{:02x}", bytes[0], bytes[1]);
         fs::create_dir_all(self.root.join("runs"))?;
         let dir = self.root.join("runs").join(format!(".{id}.pending"));
         fs::create_dir(&dir)?;
@@ -143,8 +128,22 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     fs::rename(temp, path)?;
     Ok(())
 }
-pub fn timestamp() -> Result<String> {
-    Ok(checked(Command::new("date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]))?.trim().into())
+pub fn timestamp() -> String {
+    let (y, mo, d, h, mi, s) = utc_now();
+    format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+/// Current UTC civil time; days-to-date conversion follows Howard Hinnant's `civil_from_days`.
+fn utc_now() -> (i64, u64, u64, u64, u64, u64) {
+    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("clock after 1970").as_secs();
+    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let (d, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
+    (yoe as i64 + era * 400 + i64::from(m <= 2), m, d, rem / 3_600, rem % 3_600 / 60, rem % 60)
 }
 pub fn copy(source: &Path, dest: &Path) -> Result<PathBuf> {
     atomic(dest, &fs::read(source)?)?;

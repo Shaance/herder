@@ -67,5 +67,5 @@ pub fn resolve(store: &Store, id: String, note: String) -> Result<Event> {
         list(store, false)?.iter().any(|i| matches!(&i.log, Event::Logged { id: existing, .. } if existing == &id)),
         "unknown issue {id}"
     );
-    append(store, Event::Resolved { id, note, timestamp: timestamp()? })
+    append(store, Event::Resolved { id, note, timestamp: timestamp() })
 }

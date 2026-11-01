@@ -69,7 +69,7 @@ pub fn run(
         checks.push(Check { command, exit_code, output });
     }
     let verdict = if checks.iter().all(|c| c.exit_code == Some(0)) { Verdict::Pass } else { Verdict::Fail };
-    let verification = Verification { verdict, checks, timestamp: timestamp()?, attempt: run.attempt };
+    let verification = Verification { verdict, checks, timestamp: timestamp(), attempt: run.attempt };
     let locked = store.lock(&run.id)?;
     *run = locked.load()?;
     if baseline.is_some() {

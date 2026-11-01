@@ -83,22 +83,22 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
                     _ => ScriptExecutor::CODEX,
                 };
                 let observed = executor.query(run, dir)?;
-                if matches!(run.launch, Launch::Starting { .. } | Launch::PendingResume { .. }) {
-                    if let Ok(native) = executor.identity(dir) {
-                        if let Launch::PendingResume { previous, .. } = &run.launch {
-                            ensure!(
-                                previous.process().map(|p| p.2) == native.process().map(|p| p.2),
-                                "resume identity changed"
-                            );
-                            ensure!(
-                                previous.process().map(|p| p.0) != native.process().map(|p| p.0),
-                                "resume pending; no new pid recorded"
-                            );
-                        }
-                        run.attempt = run.launch_attempt();
-                        run.launch = Launch::Launched { native, intent: Intent::Running };
-                        store.save(run)?;
+                if matches!(run.launch, Launch::Starting { .. } | Launch::PendingResume { .. })
+                    && let Ok(native) = executor.identity(dir)
+                {
+                    if let Launch::PendingResume { previous, .. } = &run.launch {
+                        ensure!(
+                            previous.process().map(|p| p.2) == native.process().map(|p| p.2),
+                            "resume identity changed"
+                        );
+                        ensure!(
+                            previous.process().map(|p| p.0) != native.process().map(|p| p.0),
+                            "resume pending; no new pid recorded"
+                        );
                     }
+                    run.attempt = run.launch_attempt();
+                    run.launch = Launch::Launched { native, intent: Intent::Running };
+                    store.save(run)?;
                 }
                 observed
             }
