@@ -72,12 +72,12 @@ fn wait_unknown_and_timeout_are_operational_failures() {
     let agents_script =
         fs::read_to_string(f.bin.join("claude")).unwrap().replace("  test ! -f \"$CREW_SKILLS_DIR/query-fail\"", "  :");
     fs::write(f.bin.join("claude"), agents_script).unwrap();
+    // An unknown run neither settles nor aborts the wait; the settled run satisfies it.
     let started = Instant::now();
-    let unknown = f.call(&["wait", &settled, &id, "--timeout", "10"], 1);
+    let unknown = f.call(&["wait", &settled, &id, "--timeout", "10"], 0);
     assert!(started.elapsed() < Duration::from_secs(4));
     assert_eq!(unknown["data"]["runs"][0]["state"], "finished");
     assert_eq!(unknown["data"]["runs"][1]["state"], "unknown");
-    assert_eq!(unknown["data"]["message"], "unknown state: inspect run evidence");
     fs::remove_file(f.skills.join("query-fail")).unwrap();
     f.agents("idle", "blocked", "native-session");
     assert_eq!(f.call(&["wait", &settled, "--all", "--timeout", "0"], 0)["data"]["runs"][0]["state"], "blocked");

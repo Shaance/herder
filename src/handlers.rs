@@ -215,12 +215,11 @@ fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: boo
             );
         }
         let met = if all { settled == ids.len() } else { settled > 0 };
-        let message = if unknown {
-            Some("unknown state: inspect run evidence")
-        } else if met {
+        // A status query can time out under load; only an unknown that outlasts the wait is reported.
+        let message = if met {
             None
         } else if started.elapsed() >= timeout {
-            Some("wait timed out")
+            Some(if unknown { "unknown state at timeout: inspect run evidence" } else { "wait timed out" })
         } else {
             std::thread::sleep(Duration::from_secs(5).min(timeout.saturating_sub(started.elapsed())));
             continue;

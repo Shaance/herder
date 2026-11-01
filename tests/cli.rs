@@ -384,6 +384,26 @@ fn unavailable_executor_is_unknown_on_every_read() {
 }
 
 #[test]
+fn wait_outlasts_a_transient_unknown_and_reports_a_lasting_one() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    fs::write(f.skills.join("query-fail"), "").unwrap();
+    let waiter =
+        f.cmd().args(["--json", "wait", &id, "--timeout", "30"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    f.status("exited", "COMPLETED");
+    fs::remove_file(f.skills.join("query-fail")).unwrap();
+    let out = waiter.wait_with_output().unwrap();
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{result}");
+    assert_eq!(result["data"]["runs"][0]["state"], "finished");
+
+    fs::write(f.skills.join("query-fail"), "").unwrap();
+    let lasting = f.call(&["wait", &id, "--timeout", "1"], 1);
+    assert!(lasting["data"]["message"].as_str().unwrap().contains("unknown state at timeout"), "{lasting}");
+}
+
+#[test]
 fn gate_elapsed_preserves_intent_and_recovers_late_identity() {
     for executor in ["vibe", "codex"] {
         let f = Fixture::new();
