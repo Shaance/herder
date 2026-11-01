@@ -12,18 +12,18 @@ agent or person can use the same CLI.
 ## The loop
 
 1. Run `crew doctor` for the intended executor and profile.
-2. Write a direct-mode brief outside the worker repository with implementer-core's contract blocks, authorized
-   paths, verification steps and publication limits. Name every skill the worker
+2. Keep briefs outside `--repo`; an untracked brief inside it fails verify scope. Use
+   implementer-core's direct-mode contract blocks, scope and checks. Name every skill the worker
    must load (for example `$write-rust`); workers do not reliably load them unasked.
-3. Use `crew dispatch`; retain the printed run ID and optional board goal string.
+3. Use `crew dispatch`; retain the printed run ID and optional goal label.
 4. Follow progress with `crew ls` and `crew status`; read `crew report`.
 5. Inspect the actual changes and run `crew verify` with scope paths and checks.
    Resolve each review finding or record its approved deferral.
-6. Obtain approval via board. The coordinator publishes after approval.
+6. The coordinator handles approval and publication outside crew.
 
 ## Rules
 
-- Route work according to AGENT_DEFAULTS; crew never selects an executor.
+- Route work per AGENT_DEFAULTS; crew never selects an executor. Vibe runs are auto-approve only.
 - A worker report is never proof. Verify the actual output independently.
 - Publish only after approval; crew does not publish or grant approval.
 - Treat `unknown` as unresolved evidence, not completion or permission to retry.

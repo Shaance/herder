@@ -26,7 +26,9 @@ pub fn human(action: &Action) -> fn(&Value) {
                     print_check(check["ok"] == true, &item, &check["fix"]);
                 }
             }
-            println!("claude profile: {}", text(&data["claude_profile"]));
+            if data["executors"].as_array().expect("doctor executors").iter().any(|e| e["executor"] == "claude") {
+                println!("claude profile: {}", text(&data["claude_profile"]));
+            }
             print_check(data["rex"]["ok"] == true, "rex", &data["rex"]["fix"]);
             print_check(data["pane_loop"]["watch_available"] == true, "watch", &data["pane_loop"]["fix"]);
         },
@@ -38,9 +40,10 @@ pub fn human(action: &Action) -> fn(&Value) {
                 }
                 let run: Run = serde_json::from_value(entry["run"].clone()).expect("serialized run");
                 println!(
-                    "{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}",
                     run.id,
-                    run.name.escape_debug(),
+                    if run.name == run.id { "-" } else { &run.name }.escape_debug(),
+                    run.goal.as_deref().unwrap_or("-").escape_debug(),
                     text(&json!(run.launch.target())["executor"]),
                     text(&entry["observation"]["state"]),
                     run.attempt
@@ -50,10 +53,12 @@ pub fn human(action: &Action) -> fn(&Value) {
         Action::Status { .. } => |data| {
             let run: Run = serde_json::from_value(data["run"].clone()).expect("serialized run");
             let dir = run.brief.parent().expect("brief is stored in the run directory");
+            println!("state: {}\nevidence:", text(&data["observation"]["state"]));
+            for line in data["observation"]["evidence"].as_str().expect("observation evidence").lines() {
+                println!("  {line}");
+            }
             println!(
-                "state: {}\nevidence: {}\nexecutor: {}\nattempt: {}\nrun dir: {}\nreport path: {}\nlatest verdict: {}",
-                text(&data["observation"]["state"]),
-                text(&data["observation"]["evidence"]),
+                "executor: {}\nattempt: {}\nrun dir: {}\nreport path: {}\nlatest verdict: {}",
                 text(&json!(run.launch.target())["executor"]),
                 run.attempt,
                 dir.display(),
@@ -99,7 +104,42 @@ pub fn human(action: &Action) -> fn(&Value) {
                 eprintln!("no report yet; state={}", data["observation"]["state"]);
             }
         },
-        _ => pretty,
+        Action::Resume { .. } => |data| {
+            println!(
+                "{} attempt {}: {}",
+                text(&data["run"]["id"]),
+                data["run"]["attempt"],
+                text(&data["observation"]["state"])
+            );
+        },
+        Action::Verify { .. } => |data| {
+            if let Some(message) = data["message"].as_str() {
+                println!("{message}");
+                return;
+            }
+            let verification =
+                data["run"]["verifications"].as_array().expect("verifications").last().expect("recorded verification");
+            println!("{} attempt {}", text(&verification["verdict"]), verification["attempt"]);
+            for check in verification["checks"].as_array().expect("verification checks") {
+                if check["exit_code"] != 0 {
+                    println!(
+                        "{}: {}",
+                        text(&check["command"]),
+                        check["output"].as_str().expect("check output").lines().next().unwrap_or("")
+                    );
+                }
+            }
+        },
+        Action::Stop { .. } => |data| {
+            println!("{}: {}", text(&data["run"]["id"]), text(&data["observation"]["state"]));
+            if data["observation"]["state"] != "stopped" {
+                println!("{}", data["observation"]["evidence"].as_str().expect("observation evidence"));
+            }
+        },
+        Action::Issue { command: IssueAction::Log { .. } } => |data| println!("{}", text(&data["issue"]["id"])),
+        Action::Issue { command: IssueAction::Resolve { .. } } => {
+            |data| println!("{} resolved", text(&data["issue"]["id"]))
+        }
     }
 }
 

@@ -556,12 +556,12 @@ fn human_lists_and_status_show_run_facts() {
         let f = Fixture::new();
         let id = f.launch(executor);
         for (args, expected) in [
-            (vec!["ls"], vec![format!("{id}\t{id}\t{executor}\trunning\t1")]),
+            (vec!["ls"], vec![format!("{id}\t-\t-\t{executor}\trunning\t1")]),
             (
                 vec!["status", &id],
                 vec![
                     "state: running".into(),
-                    "evidence: ".into(),
+                    "evidence:\n  ".into(),
                     format!("executor: {executor}"),
                     "attempt: 1".into(),
                     format!("run dir: {}", f.dir(&id).display()),
@@ -581,7 +581,9 @@ fn human_lists_and_status_show_run_facts() {
         if executor != "claude" {
             f.call(&["verify", &id, "--path", "src/"], 0);
             f.status("exited", "COMPLETED");
-            f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+            let out = f.cmd().args(["resume", &id, "--brief"]).arg(f.root.join("brief.md")).output().unwrap();
+            assert!(out.status.success());
+            assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id} attempt 2: running\n"));
             let out = f.cmd().args(["status", &id]).output().unwrap();
             assert!(out.status.success());
             let text = String::from_utf8(out.stdout).unwrap();
@@ -590,6 +592,52 @@ fn human_lists_and_status_show_run_facts() {
             }
         }
     }
+}
+
+#[test]
+fn human_actions_and_multiline_evidence() {
+    let f = Fixture::new();
+    let id = f.dispatch("codex", &["--name", "worker\nname", "--goal", "polish"], 0)["data"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let out = f.cmd().arg("ls").output().unwrap();
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}\tworker\\nname\tpolish\tcodex\trunning\t1\n"));
+    let check = "echo first; echo second; exit 1";
+    for (args, code, expected) in [
+        (vec!["verify", &id], 2, "verify requires --path when none were recorded at dispatch\n".to_owned()),
+        (vec!["verify", &id, "--path", "src/"], 0, "pass attempt 1\n".into()),
+        (vec!["verify", &id, "--path", "src/", "--check", check], 1, format!("fail attempt 1\n{check}: first\n")),
+        (
+            vec!["issue", "log", "--title", "test", "--observed", "actual", "--expected", "expected"],
+            0,
+            "issue-0001\n".into(),
+        ),
+        (vec!["issue", "resolve", "issue-0001", "--note", "fixed"], 0, "issue-0001 resolved\n".into()),
+    ] {
+        let out = f.cmd().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(code));
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), expected);
+    }
+    fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(&id).join("final.md").display())).unwrap();
+    let kill = fs::read(f.bin.join("kill")).unwrap();
+    f.executable(&f.bin.join("kill"), "exit 0");
+    let out = f.cmd().args(["stop", &id]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with(&format!("{id}: running\nstop sent; exit not confirmed:")), "{text}");
+    fs::write(f.bin.join("kill"), kill).unwrap();
+    let out = f.cmd().args(["stop", &id]).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}: stopped\n"));
+    let out = f.cmd().args(["status", &id]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        text.contains("state: stopped\nevidence:\n  stopped by crew stop; state=exited pid=43210\n  verdict: DIED\n"),
+        "{text}"
+    );
+    assert!(!text.contains("\\n"), "{text}");
 }
 
 #[test]

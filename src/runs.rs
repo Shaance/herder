@@ -61,7 +61,7 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
     }
     let result = (|| -> Result<Observation> {
         let dir = &store.dir;
-        let observed = match run.launch.target() {
+        let mut observed = match run.launch.target() {
             Target::Claude { profile } => {
                 if run.launch.native().is_some() || matches!(run.launch, Launch::Accepted { .. }) {
                     let accepted = matches!(run.launch, Launch::Accepted { .. });
@@ -116,6 +116,9 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
                 });
             }
         }
+        if matches!(run.launch, Launch::Launched { intent: Intent::Stopped, .. }) {
+            observed.evidence = format!("stopped by crew stop; {}", observed.evidence);
+        }
         Ok(reconcile(run.launch.state(), observed))
     })();
     result.unwrap_or_else(|e| Observation {
@@ -125,7 +128,7 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
 }
 pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     let observed = observe(run, Some(store));
-    ensure!(matches!(observed.state, State::Running | State::Blocked), "cannot stop: {observed:?}");
+    ensure!(matches!(observed.state, State::Running | State::Blocked), "cannot stop: {observed}");
     let dir = &store.dir;
     let native = run.launch.native().ok_or_else(|| anyhow::anyhow!("no recorded identity"))?;
     match native {
@@ -173,7 +176,7 @@ pub fn resume(run: &mut Run, delta: &Path, store: &LockedRun) -> Result<()> {
         let observed = executor.query(run, dir)?;
         ensure!(
             matches!(observed.state, State::Finished | State::Failed | State::Stopped),
-            "cannot retry pending resume: {observed:?}"
+            "cannot retry pending resume: {observed}"
         );
         let recorded = executor.identity(dir)?;
         ensure!(recorded.process().map(|p| p.2) == previous.process().map(|p| p.2), "resume identity changed");
@@ -182,7 +185,7 @@ pub fn resume(run: &mut Run, delta: &Path, store: &LockedRun) -> Result<()> {
         let observed = observe(run, Some(store));
         ensure!(
             matches!(observed.state, State::Finished | State::Failed | State::Stopped),
-            "cannot resume: {observed:?}"
+            "cannot resume: {observed}"
         );
         let native = run.launch.native().ok_or_else(|| anyhow::anyhow!("no recorded identity to resume"))?;
         scripts::confirm(native, dir)?;

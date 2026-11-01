@@ -17,7 +17,7 @@ use std::path::PathBuf;
 #[command(
     version,
     about = "Dispatch, track and verify agent workers",
-    after_help = "Example: crew doctor --json\nEnvironment: CREW_STATE_DIR (state), CREW_SKILLS_DIR (scripts), CLAUDE_CONFIG_DIR (Claude profile).\nExit codes: 0 success, 1 operational failure, 2 usage error."
+    after_help = "Example: crew doctor --json\nEnvironment: CREW_STATE_DIR (default ~/.local/state/ai-skills/crew), CREW_SKILLS_DIR (default ~/.ai-skills/skills), CLAUDE_CONFIG_DIR (Claude profile).\nExit codes: 0 success, 1 operational failure, 2 usage error."
 )]
 struct Cli {
     #[arg(long, global = true, help = "Emit a stable {ok,data,error} JSON envelope")]
@@ -35,42 +35,48 @@ enum Action {
         /// Executor to use
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["claude", "vibe", "codex"]).map(|s| s.parse::<Executor>().expect("listed executor is valid")))]
         executor: Option<Executor>,
-        /// Claude configuration directory (overrides CLAUDE_CONFIG_DIR)
+        /// Claude configuration directory (--profile > CLAUDE_CONFIG_DIR > none, Claude default)
         #[arg(long)]
         profile: Option<PathBuf>,
     },
     #[command(
         about = "Lint a brief and launch a recorded worker",
-        after_help = "Example: crew dispatch --executor codex --brief task.md --repo . --path src/\nExtra arguments go directly to the executor; Vibe launcher policy stays at its default."
+        after_help = "Example: crew dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nLauncher gate exit 3 leaves the run starting; crew returns 0. Use status to follow progress."
     )]
     Dispatch(Dispatch),
     #[command(about = "List runs with fresh executor status", after_help = "Example: crew ls --goal feature-1 --json")]
     Ls {
-        /// Goal label for grouping runs
+        /// Match the exact goal string recorded at dispatch
         #[arg(long)]
         goal: Option<String>,
     },
     #[command(
         about = "Query a run's current executor status",
-        after_help = "Example: crew status 20261101-120000-abcd"
+        after_help = "Example: crew status 20261101-120000-abcd\nStates: starting, running, blocked, finished, failed, stopped, unknown.\nUnknown means unresolved evidence (e.g. an identity mismatch or failed query); inspect evidence before acting."
     )]
     Status {
         /// run id, e.g. 20261101-120000-abcd
         run: String,
     },
-    #[command(about = "Read the current attempt's report", after_help = "Example: crew report 20261101-120000-abcd")]
+    #[command(
+        about = "Read the current attempt's report",
+        after_help = "Example: crew report 20261101-120000-abcd\nReads final.md (attempt 1), final2.md, etc. from the run directory.\nThe current attempt is the latest accepted attempt; a pending resume keeps the previous report current."
+    )]
     Report {
         /// run id, e.g. 20261101-120000-abcd
         run: String,
     },
-    #[command(about = "Stop the exact recorded worker", after_help = "Example: crew stop 20261101-120000-abcd")]
+    #[command(
+        about = "Stop the exact recorded worker",
+        after_help = "Example: crew stop 20261101-120000-abcd\nRequires running or blocked state and a matching recorded identity. Claude uses claude stop;\nVibe/Codex receive TERM only after the PID command matches this run. Waits briefly for exit;\nif exit is not confirmed, reports stop sent with exit 0. Use status to confirm."
+    )]
     Stop {
         /// run id, e.g. 20261101-120000-abcd
         run: String,
     },
     #[command(
         about = "Resume an exact session with a delta brief",
-        after_help = "Example: crew resume 20261101-120000-abcd --brief delta.md"
+        after_help = "Example: crew resume 20261101-120000-abcd --brief /tmp/delta.md\nVibe/Codex resume the recorded session with a non-empty delta after finished, failed or stopped.\nClaude requires manual claude attach <id> under the recorded profile.\nA failed pending resume can retry the same attempt after terminal executor evidence confirms no live worker;\nrunning/unknown blocks retry and executor restrictions still apply. Gate exit 3 leaves pending_resume and returns 0."
     )]
     Resume {
         /// run id, e.g. 20261101-120000-abcd
@@ -86,7 +92,7 @@ enum Action {
     Verify {
         /// run id, e.g. 20261101-120000-abcd
         run: String,
-        /// Authorized path prefix (repeatable)
+        /// Authorized path prefix (repeatable); required if none were recorded at dispatch
         #[arg(long = "path")]
         paths: Vec<String>,
         /// Shell command to verify in the repository (repeatable)
@@ -110,21 +116,21 @@ struct Dispatch {
     /// Repository directory for the worker
     #[arg(long)]
     repo: PathBuf,
-    /// Executor model name
+    /// Executor model name (passed through unchecked)
     #[arg(long)]
     model: Option<String>,
-    /// Goal label for grouping runs
+    /// Optional goal string; ls --goal matches it exactly
     #[arg(long)]
     goal: Option<String>,
     /// Worker display name
     #[arg(long)]
     name: Option<String>,
-    /// Claude configuration directory (overrides CLAUDE_CONFIG_DIR)
+    /// Claude configuration directory (--profile > CLAUDE_CONFIG_DIR > none, Claude default)
     #[arg(long)]
     profile: Option<PathBuf>,
-    #[arg(long, help = "Show worker in Rex; Vibe/Codex require watch")]
+    #[arg(long, help = "Show worker in Rex; Vibe/Codex require watch with -x support")]
     pane: bool,
-    #[arg(long = "path", help = "Authorized prefix for collect_evidence.sh (repeatable)")]
+    #[arg(long = "path", help = "Authorized path prefix for verification evidence (repeatable)")]
     paths: Vec<String>,
     /// Arguments passed to the executor after -- (repeatable)
     #[arg(last = true)]
@@ -146,7 +152,7 @@ enum IssueAction {
         /// What should have happened
         #[arg(long, allow_hyphen_values = true)]
         expected: String,
-        /// Supporting evidence (repeatable)
+        /// Supporting evidence as free text, not a file to read (repeatable)
         #[arg(long, allow_hyphen_values = true)]
         evidence: Vec<String>,
         /// Affected area, e.g. crew or executor:claude

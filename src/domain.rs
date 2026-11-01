@@ -170,6 +170,11 @@ pub struct Observation {
     pub state: State,
     pub evidence: String,
 }
+impl std::fmt::Display for Observation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "state {:?}\n{}", self.state, self.evidence.trim_end())
+    }
+}
 pub fn reconcile(recorded: State, observed: Observation) -> Observation {
     let agrees = match recorded {
         State::Running => true,

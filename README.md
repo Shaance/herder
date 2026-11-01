@@ -9,7 +9,7 @@ cargo install --path . --locked
 crew doctor --json
 ```
 
-Keep briefs outside the repository being verified. Write `/tmp/task.md` with implementer-core's direct-mode contract blocks: `task`,
+Keep briefs outside `--repo`; an untracked brief inside it fails verify scope. Write `/tmp/task.md` with implementer-core's direct-mode contract blocks: `task`,
 `workstream_contract`, `implementation_authority`, `action_safety`,
 `default_follow_through_policy`, `verification_loop`, `economy_contract`, and
 `structured_output_contract`. Name authorized paths and rejected alternatives.
@@ -21,7 +21,7 @@ crew ls --goal feature-1
 crew status 20261101-120000-abcd
 crew report 20261101-120000-abcd
 crew verify 20261101-120000-abcd --check 'cargo test --offline'
-# Review evidence, obtain approval through board, then publish as coordinator.
+# Review evidence before publishing as coordinator.
 crew issue log --title 'Unexpected result' --observed 'What happened' --expected 'What should happen'
 crew issue ls --open
 crew issue resolve issue-0001 --note 'Resolution and evidence'
@@ -53,7 +53,7 @@ none (Claude's default). Dispatch detects trust failures without editing trust.
 
 `--pane` uses Rex; Vibe/Codex displays require `watch` with `-x` support.
 Extra dispatch arguments after `--` go to the executor, including Vibe arguments
-past its launcher's separator; launcher policy flags are not crew flags.
+past its launcher's separator. Crew Vibe runs are auto-approve only.
 Launcher gate exit 3 preserves `starting` or `pending_resume`; crew returns 0.
 A resume requires a non-empty delta; the delta can use `<task>`, `<verification_loop>`
 and `<constraints>` without dispatch's full brief contract. The accepted attempt

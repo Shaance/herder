@@ -1,7 +1,7 @@
 # crew: an agent-agnostic CLI for dispatching and tracking agent runs
 
 Status: implementation notes, 2026-11-01. Inputs: pilot ledger, Vibe consult (`runs/vibe-consult.md`), Codex consult (`runs/codex-consult.md`).
-Caveat: the Vibe consult was denied reads of `~/.ai-skills` (strict mode) and read Codex's in-progress transcript instead, so the two opinions are not fully independent.
+Caveat: the Vibe consult read Codex's in-progress transcript, so the two opinions are not fully independent.
 
 ## What it is
 
@@ -20,7 +20,7 @@ crew ── claude adapter ── claude --bg   (profile env, report-to-file con
    │
    ├─ state: ~/.local/state/ai-skills/crew/runs/<run-id>/run.json  (+ evidence dir)
    ├─ state: ~/.local/state/ai-skills/crew/issues.jsonl
-   └─ approvals: coordinator uses board separately; crew stores an optional goal label
+   └─ grouping: optional goal label; approvals remain outside crew
 ```
 
 ## Decisions (where both consultants agreed)
@@ -28,14 +28,13 @@ crew ── claude adapter ── claude --bg   (profile env, report-to-file con
 - Build new, thin. Reuse implementer-core's brief format, `check_brief.sh`, `collect_evidence.sh` and the
   Vibe/Codex launch/status/resume scripts. Crew owns attempt transitions and baseline-aware scope;
   executor invocation and terminal evidence stay in the scripts.
-- Board stays the home for goals and user approvals. crew does not duplicate goals or asks.
+- Crew stores goal labels; the coordinator handles user approvals. Vibe runs are auto-approve only.
 - skill-feedback keeps its confirmation contract. crew gets its own plain issue log; promotion into
   skill-feedback goes through skill-feedback's normal flow.
 - Rust (user decision 2026-11-01): `clap` derive for `--help`, `serde_json` state, `anyhow` errors. Installed with `cargo install --path .`.
 - Run identity is a crew-minted run id. The executor's native id (Claude session, Vibe session, Codex
   thread) is written once and used only for exact stop/resume. Resumes are attempts on the same run.
-- Run states: `starting`, `running`, `blocked`, `finished`, `failed`, `stopped`, `unknown`. Verification and
-  approval are separate facts on the run, not states.
+- Run states: `starting`, `running`, `blocked`, `finished`, `failed`, `stopped`, `unknown`. Verification is recorded separately from lifecycle; crew does not record approval.
 - Dispatch writes the run record (launch intent) before spawning, so an interrupted dispatch is reconciled
   when identity evidence exists. Claude acceptance is persisted before its launch gate.
 - Run writes hold `run.lock`, including recovery. Reads try once and return recorded state if busy;
@@ -56,7 +55,7 @@ crew ── claude adapter ── claude --bg   (profile env, report-to-file con
 | `crew doctor [--executor X] [--profile P]` | Check executor and script availability, resolved Claude profile, Rex connectivity and watch availability |
 | `crew dispatch --executor claude\|vibe\|codex --brief B --repo R [--model M] [--goal G] [--pane]` | Lint brief, launch, wait for the first artifact, print the run id (JSON with `--json`) |
 | `crew ls [--goal G] [--json]` | All runs with reconciled status |
-| `crew status RUN` | One run: state, attempt, native id, run dir, report path |
+| `crew status RUN` | One run: state, evidence, executor, attempt, run dir, report path, latest verdict |
 | `crew report RUN` | The current attempt's report (`final.md`, `final2.md`, ...). Missing report = incomplete |
 | `crew stop RUN` / `crew resume RUN --brief DELTA` | Exact-identity stop and resume |
 | `crew verify RUN [--path PREFIX]... [--check CMD]...` | Crew checks paths since the dispatch baseline, runs `collect_evidence.sh` and declared checks, and records an attempt-specific verdict |
@@ -74,13 +73,10 @@ All commands: `--help` with examples, stable `--json`, documented exit codes, no
 | `claude logs` unreadable | Claude workers get a report-to-file contract (`<run dir>/final.md`); `crew report` reads only that |
 | Hand-written ledger | Runs are registered at dispatch; `crew ls --goal` is the ledger |
 | Release check missed open review findings | Coordinator duty in the skill plus `crew verify --check`: every standing finding needs a fix or a recorded deferral |
-| (new) `status_vibe.sh` printed `agent=auto-approve` for a strict run | Fix in the script |
-| (new) Vibe strict consult couldn't read `~/.ai-skills` and read Codex's transcript instead, so its answer was not independent | Consult runs use the target repo as workdir; parallel consult outputs go in separate dirs |
 
 ## Agent-agnostic by construction
 
 - Only shell commands and files. No Claude-only tools (ListAgents, SendMessage, AskUserQuestion).
-- Approvals go through board, which every host can call.
 - The skill is one `SKILL.md` (source in this repo at `skill/SKILL.md`, installed to `~/.ai-skills/skills/crew/`), synced to Claude, Codex, Cursor and Hermes by ai-skills-manager.
 - crew never inherits the caller's identity by accident: the Claude profile is an explicit, recorded input.
 
@@ -88,16 +84,16 @@ All commands: `--help` with examples, stable `--json`, documented exit codes, no
 
 1. **When to use**: you are coordinating work across agents in Rex.
 2. **The loop**: `crew doctor` → write a brief (implementer-core format) → `crew dispatch` → `crew ls` /
-   `crew report` → `crew verify` → approval through board → coordinator publishes.
+   `crew report` → `crew verify` → coordinator reviews and publishes.
 3. **Rules**: routing per AGENT_DEFAULTS; a worker report is never proof; publish only after approval.
 4. **When something surprises you**: `crew issue log` with observed, expected and evidence, then carry on.
    Details live in `crew <cmd> --help`, not in the skill.
 
 ## Not in the MVP
 
-No dashboard (board has one), no scheduler or auto-retry, no automatic executor choice (routing stays with
+No dashboard, no scheduler or auto-retry, no automatic executor choice (routing stays with
 the coordinator per AGENT_DEFAULTS), no transcript summarizer, no cost accounting, no publishing commands
-(tag/push/release stay coordinator actions behind a board approval).
+(tag/push/release stay coordinator actions).
 
 ## Size budget
 
