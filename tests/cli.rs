@@ -502,6 +502,18 @@ fn every_help_has_example_and_usage_errors_are_json() {
 }
 
 #[test]
+fn repo_subdirectory_is_refused_with_its_root() {
+    let f = Fixture::new();
+    fs::create_dir_all(f.repo.join("sub")).unwrap();
+    let brief = f.root.join("brief.md");
+    let args = ["dispatch", "--executor", "codex", "--brief", brief.to_str().unwrap(), "--repo", "sub"];
+    let error = f.call(&args, 1);
+    let message = error["error"].as_str().unwrap();
+    assert!(message.contains("repository root") && message.contains(f.repo.to_str().unwrap()), "{message}");
+    assert!(!f.state.join("runs").exists());
+}
+
+#[test]
 fn non_claude_profile_is_a_usage_error() {
     let f = Fixture::new();
     let result = f.dispatch("vibe", &["--profile", "/tmp/profile"], 2);

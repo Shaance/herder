@@ -158,6 +158,13 @@ pub fn copy(source: &Path, dest: &Path) -> Result<PathBuf> {
 pub fn repo(path: &Path) -> Result<PathBuf> {
     let path = fs::canonicalize(path)?;
     ensure!(path.is_dir(), "repo must be a directory");
+    let top = crate::process::checked(
+        std::process::Command::new("git").arg("-C").arg(&path).args(["rev-parse", "--show-toplevel"]),
+    );
+    if let Ok(top) = top {
+        let top = fs::canonicalize(top.trim())?;
+        ensure!(top == path, "--repo must be the repository root: {}", top.display());
+    }
     Ok(path)
 }
 pub fn report(path: &Path) -> Result<Option<String>> {
