@@ -448,7 +448,7 @@ fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
     let out = f.cmd().args(["doctor", "--executor", "claude"]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.starts_with("ok claude\n"));
+    assert!(text.starts_with("ok claude: claude\n"));
     assert!(text.contains("claude profile: none\nok rex\nok watch\n"));
     assert!(!text.contains("fix:"));
     f.executable(&f.bin.join("rex"), "echo private-identity; exit 1");
@@ -462,7 +462,7 @@ fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
     let out = f.cmd().args(["doctor", "--executor", "vibe"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8(out.stdout).unwrap();
-    assert!(text.contains("missing vibe; fix: install vibe and put its executable on PATH"));
+    assert!(text.contains("missing vibe: vibe; fix: install vibe and put its executable on PATH"));
     assert!(text.contains("missing rex; fix:"));
     assert!(text.contains("missing watch; fix:"));
 }
