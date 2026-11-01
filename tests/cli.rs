@@ -286,7 +286,7 @@ fn resume_selects_current_attempt_report_and_retains_native_session() {
         assert!(fs::read_to_string(f.state.join("resume-args")).unwrap().ends_with("\n2\n"));
         fs::write(f.skills.join("status"), "state=exited pid=43211\nverdict: COMPLETED\n").unwrap();
         let state = f.call(&["status", &id], 0);
-        assert_eq!(state["data"]["observation"]["state"], if executor == "codex" { "unknown" } else { "finished" });
+        assert_eq!(state["data"]["observation"]["state"], "finished");
     }
     let f = Fixture::new();
     let id = f.launch("claude");

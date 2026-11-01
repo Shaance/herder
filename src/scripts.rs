@@ -86,15 +86,6 @@ impl ScriptExecutor {
         }
         let state = match field(&text, "state")? {
             "alive" => State::Running,
-            "exited" if !self.numbered_status && run.attempt.get() > 1 => {
-                return Ok(Observation {
-                    state: State::Unknown,
-                    evidence: format!(
-                        "status_classic.sh inspects attempt 1; cannot establish attempt {} outcome: {text}",
-                        run.attempt
-                    ),
-                });
-            }
             "exited" if text.contains("verdict: COMPLETED") => State::Finished,
             "exited" if text.contains("verdict: STOPPED") => State::Stopped,
             "exited" if text.contains("verdict: DIED") || text.contains("verdict: FAILED") => State::Failed,

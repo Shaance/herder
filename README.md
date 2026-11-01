@@ -56,10 +56,9 @@ then requires that same identity on every query and before stop. Gate errors
 remain historical facts even when the worker later runs or finishes. Existing
 failed records are unchanged and are not automatically attached to workers.
 Claude resume requires manual `claude attach <id>` with the recorded profile.
-Upstream `status_classic.sh` has fixed resumed-attempt status, but crew's adapter
-still intentionally reports `unknown` when a Codex attempt greater than 1 exits.
-Crew still reads the correct numbered report; updating this adapter limitation
-is separate work. Crew does not infer completion from a report.
+Codex `status_classic.sh` inspects the newest resumed attempt itself, so crew
+passes no attempt suffix and checks the reported pid against the resumed worker.
+Crew does not infer completion from a report.
 A report is never proof. Verification is separate from lifecycle and approval.
 
 ## Using crew from any agent
