@@ -54,6 +54,20 @@ exits, crew reports `unknown` and still reads the correct numbered report.
 Fixing that script belongs upstream; crew does not infer completion from a report.
 A report is never proof. Verification is separate from lifecycle and approval.
 
+## Using crew from any agent
+
+crew is a plain CLI, so any agent that can run shell commands can coordinate with it. Each host needs
+crew to run with normal user access, because dispatch starts other agent CLIs that use the network and
+their own config directories.
+
+- Claude Code: allow `Bash(crew:*)` in settings, or approve crew commands when asked.
+- Codex: add `prefix_rule(pattern=["crew"], decision="allow")` to `~/.codex/rules/default.rules`.
+  Codex then runs crew outside its sandbox without prompting. Without the rule, read commands work in
+  the `workspace-write` sandbox and writes fail with "Operation not permitted".
+- Vibe: approve crew commands when asked, or run the session with the `auto-approve` agent.
+
+The skill (`skill/SKILL.md`) is the same for every host; install it as a skill in each one.
+
 Development checks: `cargo build --offline --locked`, `cargo test --offline --locked`,
 and `cargo clippy --offline --locked --all-targets -- -D warnings`.
 Tests invoke the binary with temporary state, scripts and PATH stubs, never workers.

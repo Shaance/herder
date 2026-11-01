@@ -13,7 +13,8 @@ agent or person can use the same CLI.
 
 1. Run `crew doctor` for the intended executor and profile.
 2. Write a direct-mode brief with implementer-core's contract blocks, authorized
-   paths, verification steps and publication limits.
+   paths, verification steps and publication limits. Name every skill the worker
+   must load (for example `$write-rust`); workers do not reliably load them unasked.
 3. Use `crew dispatch`; retain the printed run ID and optional board goal string.
 4. Follow progress with `crew ls` and `crew status`; read `crew report`.
 5. Inspect the actual changes and run `crew verify` with scope paths and checks.
