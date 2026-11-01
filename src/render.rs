@@ -106,7 +106,7 @@ pub fn human(action: &Action) -> fn(&Value) {
         },
         Action::Dispatch(_) => |data| {
             if let Some(id) = data["run_id"].as_str() {
-                println!("{id}");
+                println!("{id}\t{}", text(&data["run"]["name"]).escape_debug());
                 for key in ["launch_error", "pane_error"] {
                     if let Some(e) = data[key].as_str() {
                         eprintln!("{e}");

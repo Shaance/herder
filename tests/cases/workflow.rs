@@ -142,3 +142,102 @@ fn ls_models_and_summary_count_observed_states_with_goal_filter() {
     assert_eq!(f.call(&["ls", "--goal", "goal-1"], 0)["data"]["summary"], json!({"vibe":{"unknown":2}}));
     assert_eq!(f.call(&["ls", "--goal", "missing"], 0)["data"]["summary"], json!({}));
 }
+
+#[test]
+fn old_run_without_extra_loads() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    let mut record = f.record(&id);
+    record.as_object_mut().unwrap().remove("extra");
+    fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
+    assert_eq!(f.call(&["status", &id], 0)["data"]["run"]["extra"], json!([]));
+}
+
+#[test]
+fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
+    let f = Fixture::new();
+    let first = f.dispatch("codex", &["--name", "review worker"], 0);
+    let id = first["data"]["run_id"].as_str().unwrap();
+    assert_eq!(f.call(&["status", "review worker"], 0)["data"]["run"]["id"], id);
+    fs::write(f.dir(id).join("final.md"), "review").unwrap();
+    assert_eq!(f.call(&["report", "review worker"], 0)["data"]["report"]["content"], "review");
+    f.call(&["verify", "review worker", "--path", "src/"], 0);
+    fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(id).join("final.md").display())).unwrap();
+    f.call(&["stop", "review worker"], 0);
+    assert_eq!(f.call(&["wait", "review worker", "--all"], 0)["data"]["runs"][0]["id"], id);
+    f.call(&["resume", "review worker", "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+    let shadow = f.dispatch("codex", &["--name", id], 0);
+    assert_eq!(f.call(&["status", id], 0)["data"]["run"]["id"], id);
+    let second = f.dispatch("codex", &["--name", "review worker"], 0);
+    let other = second["data"]["run_id"].as_str().unwrap();
+    for command in ["status", "report", "stop", "resume", "verify", "wait"] {
+        for name in ["review worker", "unknown"] {
+            let mut args = vec![command, name];
+            let brief = f.root.join("brief.md");
+            if command == "resume" {
+                args.extend(["--brief", brief.to_str().unwrap()]);
+            }
+            let error = f.call(&args, 1);
+            let error = error["error"].as_str().unwrap();
+            assert!(error.contains("candidates:") && error.contains(id) && error.contains(other), "{error}");
+            if name == "unknown" {
+                assert!(error.contains(shadow["data"]["run_id"].as_str().unwrap()));
+            }
+        }
+    }
+    let out = f
+        .cmd()
+        .args(["dispatch", "--executor", "codex", "--brief"])
+        .arg(f.root.join("brief.md"))
+        .args(["--repo", ".", "--name", "printed-name"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8(out.stdout).unwrap().ends_with("\tprinted-name\n"));
+}
+
+#[test]
+fn baseline_override_after_rebase_narrows_scope_and_persists() {
+    let f = Fixture::new();
+    let id = f.dispatch("codex", &["--path", "src/"], 0)["data"]["run_id"].as_str().unwrap().to_owned();
+    let old = f.git(&["rev-parse", "HEAD"]);
+    f.git(&["checkout", "-qb", "upstream"]);
+    fs::write(f.repo.join("upstream.txt"), "upstream").unwrap();
+    f.git(&["add", "."]);
+    f.git(&["commit", "-qm", "upstream"]);
+    let new = f.git(&["rev-parse", "HEAD"]);
+    f.git(&["checkout", "-qb", "worker", &old]);
+    fs::create_dir(f.repo.join("src")).unwrap();
+    fs::write(f.repo.join("src/worker.rs"), "worker").unwrap();
+    f.git(&["add", "."]);
+    f.git(&["commit", "-qm", "worker"]);
+    f.git(&["rebase", "upstream"]);
+    assert_eq!(f.git(&["merge-base", &old, "HEAD"]), old);
+    f.call(&["verify", &id], 1);
+    let before = fs::read(f.dir(&id).join("run.json")).unwrap();
+    for invalid in ["does-not-exist", "HEAD:src/worker.rs"] {
+        f.call(&["verify", &id, "--baseline", invalid], 1);
+        assert_eq!(fs::read(f.dir(&id).join("run.json")).unwrap(), before);
+    }
+    let result = f.call(&["verify", &id, "--baseline", "upstream"], 0);
+    let scope = result["data"]["run"]["verifications"][1]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains(&format!("baseline {old} -> {new}")), "{scope}");
+    assert!(scope.contains("src/worker.rs") && !scope.contains("upstream.txt"));
+    assert_eq!(f.record(&id)["baseline_commit"], new);
+    f.call(&["verify", &id], 0);
+    fs::write(f.repo.join("outside"), "outside").unwrap();
+    f.call(&["verify", &id, "--baseline", "HEAD"], 1);
+    assert_eq!(f.record(&id)["baseline_commit"], f.git(&["rev-parse", "HEAD"]));
+}
+
+#[test]
+fn review_mode_is_explicit_and_direct_remains_default() {
+    let f = Fixture::new();
+    f.script("implementer-core", "check_brief", r#"printf '%s\n' "$2" > "$CREW_STATE_DIR/lint-mode""#);
+    f.dispatch("codex", &[], 0);
+    assert_eq!(fs::read_to_string(f.state.join("lint-mode")).unwrap(), "direct\n");
+    let result = f.dispatch("codex", &["--mode", "review"], 0);
+    assert_eq!(fs::read_to_string(f.state.join("lint-mode")).unwrap(), "review\n");
+    assert!(f.record(result["data"]["run_id"].as_str().unwrap()).get("mode").is_none());
+    f.dispatch("codex", &["--mode", "lead"], 2);
+}

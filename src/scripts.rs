@@ -49,19 +49,19 @@ impl ScriptExecutor {
             fs::read_to_string(dir.join(self.identity.0))?.trim().into(),
         )
     }
-    pub fn launch(&self, run: &Run, dir: &Path, delta: Option<&Path>, extra: &[String]) -> Result<Option<Native>> {
+    pub fn launch(&self, run: &Run, dir: &Path, delta: Option<&Path>) -> Result<Option<Native>> {
         let mut cmd = Command::new(self.path(if delta.is_some() { "resume" } else { "launch" }));
         cmd.env_remove("REX_SESSION").env_remove("REX_BLOCK").env_remove("REX_SERVER");
         if let Some(delta) = delta {
-            cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.launch_attempt().to_string());
+            cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.launch_attempt().to_string()).arg("--");
         } else {
             cmd.arg(&run.repo).arg(&run.brief).arg(dir);
             cmd.args(self.launch_separator);
-            if let Some(model) = &run.model {
-                cmd.arg("--model").arg(model);
-            }
-            cmd.args(extra);
         }
+        if let Some(model) = &run.model {
+            cmd.arg("--model").arg(model);
+        }
+        cmd.args(&run.extra);
         let (code, text) = output(&mut cmd)?;
         crate::store::atomic(
             &dir.join(format!(

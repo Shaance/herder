@@ -55,7 +55,7 @@ enum Action {
         after_help = "Example: crew wait 20261101-120000-abcd 20261101-120001-ef01 --all --timeout 60\nSettled: finished, failed, stopped, blocked (exit 0). Unknown or timeout exits 1.\nPolls every 5 seconds; final output includes every run and its report path."
     )]
     Wait {
-        /// Run ids to observe
+        /// Run ids or unique dispatch names to observe
         #[arg(required = true, num_args = 1..)]
         runs: Vec<String>,
         /// Wait for all runs instead of any run
@@ -70,7 +70,7 @@ enum Action {
         after_help = "Example: crew status 20261101-120000-abcd\nStates: starting, running, blocked, finished, failed, stopped, unknown.\nUnknown means unresolved evidence (e.g. an identity mismatch or failed query); inspect evidence before acting."
     )]
     Status {
-        /// run id, e.g. 20261101-120000-abcd
+        /// Run id or unique dispatch name
         run: String,
     },
     #[command(
@@ -78,7 +78,7 @@ enum Action {
         after_help = "Example: crew report 20261101-120000-abcd\nReads final.md (attempt 1), final2.md, etc. from the run directory.\nThe current attempt is the latest accepted attempt; a pending resume keeps the previous report current."
     )]
     Report {
-        /// run id, e.g. 20261101-120000-abcd
+        /// Run id or unique dispatch name
         run: String,
     },
     #[command(
@@ -86,7 +86,7 @@ enum Action {
         after_help = "Example: crew stop 20261101-120000-abcd\nRequires running or blocked state and a matching recorded identity. Claude uses claude stop;\nVibe/Codex receive TERM only after the PID command matches this run. Waits briefly for exit;\nif exit is not confirmed, reports stop sent with exit 0. Use status to confirm."
     )]
     Stop {
-        /// run id, e.g. 20261101-120000-abcd
+        /// Run id or unique dispatch name
         run: String,
     },
     #[command(
@@ -94,7 +94,7 @@ enum Action {
         after_help = "Example: crew resume 20261101-120000-abcd --brief /tmp/delta.md\nVibe/Codex resume the recorded session with a non-empty delta after finished, failed or stopped.\nClaude requires manual claude attach <id> under the recorded profile.\nA failed pending resume can retry the same attempt after terminal executor evidence confirms no live worker;\nrunning/unknown blocks retry and executor restrictions still apply. Gate exit 3 leaves pending_resume and returns 0."
     )]
     Resume {
-        /// run id, e.g. 20261101-120000-abcd
+        /// Run id or unique dispatch name
         run: String,
         /// Brief file to send to the worker
         #[arg(long)]
@@ -105,7 +105,10 @@ enum Action {
         after_help = "Example: crew verify 20261101-120000-abcd --path src/ --check 'cargo test --offline'"
     )]
     Verify {
-        /// run id, e.g. 20261101-120000-abcd
+        /// Replace the recorded scope baseline with this commit revision
+        #[arg(long)]
+        baseline: Option<String>,
+        /// Run id or unique dispatch name
         run: String,
         /// Authorized path prefix (repeatable); required if none were recorded at dispatch
         #[arg(long = "path")]
@@ -122,6 +125,9 @@ enum Action {
 }
 #[derive(Args)]
 struct Dispatch {
+    /// Brief lint mode
+    #[arg(long, default_value = "direct", value_parser = ["direct", "review"])]
+    mode: String,
     /// Executor to use
     #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["claude", "vibe", "codex"]).map(|s| s.parse::<Executor>().expect("listed executor is valid")))]
     executor: Executor,

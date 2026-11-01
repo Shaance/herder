@@ -171,7 +171,7 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
         cmd
     }
     fn call(&self, args: &[&str], expected: i32) -> Value {
-        let out = self.cmd().args(args).arg("--json").output().unwrap();
+        let out = self.cmd().arg("--json").args(args).output().unwrap();
         assert_eq!(
             out.status.code(),
             Some(expected),
@@ -299,7 +299,9 @@ fn script_dispatch_status_and_report_use_executor_artifacts() {
 fn resume_selects_current_attempt_report_and_retains_native_session() {
     for executor in ["vibe", "codex"] {
         let f = Fixture::new();
-        let id = f.launch(executor);
+        let result = f.dispatch(executor, &["--model", "model-x", "--", "-c", "key=value with spaces"], 0);
+        let id = result["data"]["run_id"].as_str().unwrap().to_owned();
+        assert_eq!(f.record(&id)["extra"], json!(["-c", "key=value with spaces"]));
         f.status("exited", "COMPLETED");
         fs::write(f.dir(&id).join("final.md"), "old report").unwrap();
         let brief = f.root.join("brief.md");
@@ -309,7 +311,15 @@ fn resume_selects_current_attempt_report_and_retains_native_session() {
         let report = f.call(&["report", &id], 0);
         assert_eq!(report["data"]["report"]["content"], "attempt 2\n");
         assert!(report["data"]["report"]["path"].as_str().unwrap().ends_with("final2.md"));
-        assert!(fs::read_to_string(f.state.join("resume-args")).unwrap().ends_with("\n2\n"));
+        assert_eq!(
+            fs::read_to_string(f.state.join("resume-args")).unwrap(),
+            format!(
+                "{}\n{}\n{}\n2\n--\n--model\nmodel-x\n-c\nkey=value with spaces\n",
+                f.dir(&id).display(),
+                f.repo.display(),
+                f.dir(&id).join("input2.md").display()
+            )
+        );
         fs::write(f.skills.join("status"), "state=exited pid=43211\nverdict: COMPLETED\n").unwrap();
         let state = f.call(&["status", &id], 0);
         assert_eq!(state["data"]["observation"]["state"], "finished");

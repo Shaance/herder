@@ -15,7 +15,11 @@ agent or person can use the same CLI.
 2. Keep briefs outside `--repo`; an untracked brief inside it fails verify scope. Use
    implementer-core's direct-mode contract blocks, scope and checks. Name every skill the worker
    must load (for example `$write-rust`); workers do not reliably load them unasked.
-3. Use `crew dispatch`; retain the printed run ID and optional goal label.
+3. Use `crew dispatch`; retain the printed run ID, name and optional goal label.
+   Status, report, stop, resume, verify and wait also accept a unique dispatch
+   `--name`; existing IDs take precedence and ambiguous names fail with candidates.
+   Dispatch defaults to `--mode direct`; use `--mode review` for read-only briefs.
+   Vibe/Codex resume replays the recorded model and extra arguments after `--`.
 4. Follow progress with `crew ls` (models and executor state tallies) and `crew status`.
    Use `crew wait <run>...` for any settled run, or `--all` for all runs;
    `--timeout <secs>` defaults to 3600. It polls every 5 seconds, exits 0 for
@@ -23,8 +27,23 @@ agent or person can use the same CLI.
    lists every run and report path. Example: `crew wait run-id --timeout 60`.
    Vibe/Codex `--pane` uses wait and closes on exit. Read `crew report`.
 5. Inspect the actual changes and run `crew verify` with scope paths and checks.
+   After rebasing, use `crew verify <run> --baseline <new-upstream-rev>` to replace
+   the recorded scope baseline. Invalid commit revisions leave the run unchanged.
    Resolve each review finding or record its approved deferral.
 6. The coordinator handles approval and publication outside crew.
+
+For paired read-only reviews, write one brief containing `task`, `action_safety`,
+`default_follow_through_policy` and `structured_output_contract`. Dispatch it twice
+with the same goal; select a Codex model and let Vibe use its configured default:
+
+```sh
+crew dispatch --mode review --executor codex --model <codex-model> --brief /tmp/review.md --repo . --goal paired-review --name codex-review
+crew dispatch --mode review --executor vibe --brief /tmp/review.md --repo . --goal paired-review --name vibe-review
+crew wait <id1> <id2> --all
+```
+
+Use the two printed run IDs for `<id1>` and `<id2>`, then read both reports.
+`--mode` selects brief linting only; the brief must enforce read-only behavior.
 
 ## Rules
 

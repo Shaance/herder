@@ -55,6 +55,28 @@ impl Store {
             )?,
         })
     }
+    pub fn resolve(&self, value: &str) -> Result<String> {
+        if self.dir(value).is_ok_and(|dir| dir.is_dir()) {
+            return Ok(value.to_owned());
+        }
+        let mut matches = vec![];
+        let mut candidates = vec![];
+        for id in self.runs()? {
+            if let Ok(run) = self.load(&id) {
+                candidates.push(format!("{id} ({})", run.name.escape_debug()));
+                if run.name == value {
+                    matches.push(id);
+                }
+            }
+        }
+        ensure!(
+            matches.len() == 1,
+            "run {value:?}: {} matches; candidates: {}",
+            matches.len(),
+            if matches.is_empty() { candidates.join(", ") } else { matches.join(", ") }
+        );
+        Ok(matches.remove(0))
+    }
     pub fn dir(&self, id: &str) -> Result<PathBuf> {
         ensure!(!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'), "invalid run id");
         Ok(self.root.join("runs").join(id))

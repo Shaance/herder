@@ -53,6 +53,10 @@ Broken published directories appear as individual errors in `ls`, alongside heal
 Claude profile precedence is `--profile`, `CLAUDE_CONFIG_DIR`, then explicitly
 none (Claude's default). Dispatch detects trust failures without editing trust.
 
+Status, report, stop, resume, verify and wait accept a run ID or a unique dispatch
+`--name`. Existing IDs take precedence; ambiguous or unknown names fail with candidates.
+Human dispatch output includes both ID and name.
+
 `crew wait <run>...` polls every 5 seconds, returning when any run settles;
 `--all` waits for every listed run. Finished, failed, stopped and blocked count as
 settled (exit 0); unknown evidence or timeout exits 1. The default timeout is 3600
@@ -63,7 +67,8 @@ scoped by `--goal` when supplied. Broken entries remain errors outside the tally
 `--pane` uses Rex; Vibe/Codex panes run `crew wait` and close when it exits.
 Claude panes continue to use `claude attach`. Vibe/Codex launch and resume scripts
 receive no inherited `REX_SESSION`, `REX_BLOCK` or `REX_SERVER`.
-Extra dispatch arguments after `--` go to the executor, including Vibe arguments
+Extra dispatch arguments after `--` are recorded and replayed with `--model` on
+Vibe/Codex resume. They go to the executor, including Vibe arguments
 past its launcher's separator. Crew Vibe runs are auto-approve only.
 Launcher gate exit 3 preserves `starting` or `pending_resume`; crew returns 0.
 A resume requires a non-empty delta; the delta can use `<task>`, `<verification_loop>`
@@ -89,11 +94,26 @@ remain readable. Stop waits briefly for exit and otherwise reports `stop sent` w
 Claude completion requires a terminal executor state. Codex/Vibe outcomes follow their
 status script verdicts, so correctness also depends on the installed scripts.
 A report is never proof. Verification is separate from lifecycle and approval.
-Dispatch records the Git baseline commit. Verification checks committed, staged,
+Dispatch records the Git baseline commit. After rebasing a worker branch, use
+`crew verify <run> --baseline <new-upstream-rev>` to verify against and persist
+the new commit baseline. Invalid revisions fail without changing the run record. Verification checks committed, staged,
 unstaged and untracked paths against that baseline, then runs the evidence script
 and requested commands. Records without a baseline load, but scope verification fails
 explicitly. A verdict belongs to its attempt; a resumed attempt starts unverified.
 Legacy `starting` intents load as running, and untagged legacy verdicts belong to attempt 1.
+
+For paired read-only reviews, write one brief containing `task`, `action_safety`,
+`default_follow_through_policy` and `structured_output_contract`. Dispatch it twice
+with the same goal; select a Codex model and let Vibe use its configured default:
+
+```sh
+crew dispatch --mode review --executor codex --model <codex-model> --brief /tmp/review.md --repo . --goal paired-review --name codex-review
+crew dispatch --mode review --executor vibe --brief /tmp/review.md --repo . --goal paired-review --name vibe-review
+crew wait <id1> <id2> --all
+```
+
+Use the two printed run IDs for `<id1>` and `<id2>`, then read both reports.
+`--mode` selects brief linting only; the brief must enforce read-only behavior.
 
 ## Using crew from any agent
 

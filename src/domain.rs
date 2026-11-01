@@ -140,6 +140,8 @@ fn first_attempt() -> NonZeroU32 {
 pub struct Run {
     pub id: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub extra: Vec<String>,
     pub repo: PathBuf,
     pub baseline_commit: Option<String>,
     pub brief: PathBuf,

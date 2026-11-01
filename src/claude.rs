@@ -44,7 +44,7 @@ fn agents(profile: Option<&Path>, repo: &Path) -> Result<Vec<Agent>> {
         serde_json::from_str(&process::query(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?;
     Ok(listed.into_iter().filter_map(|l| if let Listed::Background(a) = l { Some(a) } else { None }).collect())
 }
-pub fn launch(run: &mut Run, dir: &Path, extra: &[String], store: &LockedRun) -> Result<Native> {
+pub fn launch(run: &mut Run, dir: &Path, store: &LockedRun) -> Result<Native> {
     let Target::Claude { profile } = run.launch.target() else { bail!("Claude target required") };
     let prompt = format!(
         "{}\n\nWrite your final report to {}.\n",
@@ -58,7 +58,7 @@ pub fn launch(run: &mut Run, dir: &Path, extra: &[String], store: &LockedRun) ->
     if let Some(m) = &run.model {
         cmd.arg("--model").arg(m);
     }
-    let (code, text) = output(cmd.args(extra))?;
+    let (code, text) = output(cmd.args(&run.extra))?;
     ensure!(
         code == Some(0) && !text.contains("idle — send a prompt") && !text.contains("Workspace not trusted"),
         "{text}"

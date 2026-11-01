@@ -70,7 +70,7 @@ pub fn profile(value: Option<PathBuf>) -> Result<Option<PathBuf>> {
         .map(|p| std::path::absolute(p).map_err(Into::into))
         .transpose()
 }
-pub fn lint(brief: &Path) -> Result<()> {
-    checked(Command::new(script("implementer-core", "check_brief")).arg(brief).arg("direct"))?;
+pub fn lint(brief: &Path, mode: &str) -> Result<()> {
+    checked(Command::new(script("implementer-core", "check_brief")).arg(brief).arg(mode))?;
     Ok(())
 }

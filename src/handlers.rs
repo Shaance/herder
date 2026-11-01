@@ -8,8 +8,19 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use std::num::NonZeroU32;
 
-pub fn handle(action: Action, json_output: bool) -> Result<(Value, i32)> {
+pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
     let store = Store::new()?;
+    match &mut action {
+        Action::Status { run }
+        | Action::Report { run }
+        | Action::Stop { run }
+        | Action::Resume { run, .. }
+        | Action::Verify { run, .. } => *run = store.resolve(run)?,
+        Action::Wait { runs, .. } => {
+            *runs = runs.iter().map(|id| store.resolve(id)).collect::<Result<_>>()?;
+        }
+        _ => {}
+    }
     match action {
         Action::Doctor { executor, profile } => crate::doctor::run(executor, profile),
         Action::Dispatch(args) => dispatch(args, &store),
@@ -67,6 +78,20 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Value, i32)> {
                 _ => store.try_lock(id)?,
             };
             let mut run = store.load(id)?;
+            // Validate before observation, which can recover and save executor identity.
+            let baseline = if let Action::Verify { baseline: Some(rev), .. } = &action {
+                Some(
+                    process::checked(std::process::Command::new("git").current_dir(&run.repo).args([
+                        "rev-parse",
+                        "--verify",
+                        &format!("{rev}^{{commit}}"),
+                    ]))?
+                    .trim()
+                    .to_owned(),
+                )
+            } else {
+                None
+            };
             let mut observation = if matches!(action, Action::Resume { .. }) {
                 Observation { state: run.launch.state(), evidence: String::new() }
             } else {
@@ -100,7 +125,7 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Value, i32)> {
                         ));
                     }
                     drop(locked.take());
-                    crate::verify::run(&mut run, paths, checks, &store)?;
+                    crate::verify::run(&mut run, paths, checks, baseline, &store)?;
                     if matches!(run.verifications.last().map(|v| &v.verdict), Some(Verdict::Fail)) {
                         code = 1;
                     }
@@ -119,7 +144,7 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
         return Ok((json!({"message":"--profile applies only to Claude"}), 2));
     }
     let repo = store::repo(&args.repo)?;
-    process::lint(&args.brief)?;
+    process::lint(&args.brief, &args.mode)?;
     let baseline_commit =
         process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
             .ok()
@@ -136,6 +161,7 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
         name: args.name.unwrap_or_else(|| id.clone()),
         id,
         model: args.model,
+        extra: args.extra,
         repo,
         baseline_commit,
         brief: dir.join("input.md"),
@@ -147,7 +173,7 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
         created_at: store::timestamp()?,
     };
     store.publish(&mut locked, &run)?;
-    let result = runs::launch(&mut run, &dir, None, &args.extra, &locked);
+    let result = runs::launch(&mut run, &dir, None, &locked);
     let error = result.err().map(|e| format!("{e:#}"));
     let pane_error = if args.pane && error.is_none() {
         runs::pane(&run).err().map(|e| format!("worker recorded; pane failed: {e:#}"))

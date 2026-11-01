@@ -6,7 +6,17 @@ use crate::{
 use anyhow::Result;
 use std::{path::Path, process::Command};
 
-pub fn run(run: &mut Run, paths: Vec<String>, commands: Vec<String>, store: &Store) -> Result<()> {
+pub fn run(
+    run: &mut Run,
+    paths: Vec<String>,
+    commands: Vec<String>,
+    baseline: Option<String>,
+    store: &Store,
+) -> Result<()> {
+    let transition = baseline
+        .as_ref()
+        .map(|new| format!("baseline {} -> {new}\n", run.baseline_commit.as_deref().unwrap_or("none")))
+        .unwrap_or_default();
     let paths = if paths.is_empty() { &run.authorized_paths } else { &paths };
     let mut jobs = vec![("collect_evidence.sh".into(), {
         let mut cmd = Command::new(process::script("implementer-core", "collect_evidence"));
@@ -19,9 +29,9 @@ pub fn run(run: &mut Run, paths: Vec<String>, commands: Vec<String>, store: &Sto
         (text, cmd)
     }));
     let scope = (|| -> Result<String> {
-        let baseline = run
-            .baseline_commit
+        let baseline = baseline
             .as_deref()
+            .or(run.baseline_commit.as_deref())
             .ok_or_else(|| anyhow::anyhow!("no dispatch baseline; scope cannot be verified"))?;
         let mut files = std::collections::BTreeSet::new();
         for args in [
@@ -52,6 +62,7 @@ pub fn run(run: &mut Run, paths: Vec<String>, commands: Vec<String>, store: &Sto
         Ok(output) => Check { command: "baseline scope".into(), exit_code: Some(0), output },
         Err(error) => Check { command: "baseline scope".into(), exit_code: Some(1), output: format!("{error:#}") },
     }];
+    checks[0].output.insert_str(0, &transition);
     for (command, mut cmd) in jobs {
         let result = process::output(cmd.current_dir(&run.repo));
         let (exit_code, output) = result.unwrap_or_else(|e| (None, format!("{e:#}")));
@@ -61,6 +72,9 @@ pub fn run(run: &mut Run, paths: Vec<String>, commands: Vec<String>, store: &Sto
     let verification = Verification { verdict, checks, timestamp: timestamp()?, attempt: run.attempt };
     let locked = store.lock(&run.id)?;
     *run = locked.load()?;
+    if baseline.is_some() {
+        run.baseline_commit = baseline;
+    }
     run.verifications.push(verification);
     locked.save(run)
 }

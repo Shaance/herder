@@ -3,12 +3,12 @@ use crate::{claude, domain::*, process, scripts, store::LockedRun};
 use anyhow::{Result, bail, ensure};
 use std::{path::Path, process::Command};
 
-pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, extra: &[String], store: &LockedRun) -> Result<()> {
+pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun) -> Result<()> {
     let target = run.launch.target();
     let outcome = match target {
-        Target::Claude { .. } => claude::launch(run, dir, extra, store).map(Some),
-        Target::Vibe => ScriptExecutor::VIBE.launch(run, dir, delta, extra),
-        Target::Codex => ScriptExecutor::CODEX.launch(run, dir, delta, extra),
+        Target::Claude { .. } => claude::launch(run, dir, store).map(Some),
+        Target::Vibe => ScriptExecutor::VIBE.launch(run, dir, delta),
+        Target::Codex => ScriptExecutor::CODEX.launch(run, dir, delta),
     };
     let result = match outcome {
         Ok(Some(native)) => {
@@ -195,7 +195,7 @@ pub fn resume(run: &mut Run, delta: &Path, store: &LockedRun) -> Result<()> {
     crate::store::atomic(&delta, &contents)?;
     run.launch = Launch::PendingResume { previous: native, attempt, error: None };
     store.save(run)?;
-    launch(run, dir, Some(&delta), &[], store)
+    launch(run, dir, Some(&delta), store)
 }
 pub fn pane(run: &Run) -> Result<()> {
     let block = std::env::var("REX_BLOCK")?;
