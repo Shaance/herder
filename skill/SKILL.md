@@ -6,7 +6,7 @@ description: Use when coordinating other agents in Rex or asked to dispatch, tra
 ## When to use
 
 Use crew to dispatch Claude, Vibe or Codex workers and keep their run identities,
-evidence, verification results and workflow issues together. Any coordinating
+evidence and verification results together. Any coordinating
 agent or person can use the same CLI.
 
 ## The loop
@@ -53,7 +53,7 @@ Use the two printed run IDs for `<id1>` and `<id2>`, then read both reports.
 - Treat `unknown` as unresolved evidence, not completion or permission to retry.
 - Preserve recorded identities and profiles. Consult command help for stop,
   resume, dispatch's `--pane` flag and executor limitations.
-- When something surprises you, `crew issue log` it and continue with work that
+- When something surprises you, file it with `gh issue create -R Shaance/crew` and continue with work that
   remains safe and understood. Do not paper over an executor disagreement.
 
 All flag details and examples live in `crew <command> --help`.

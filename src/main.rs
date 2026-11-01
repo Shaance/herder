@@ -2,7 +2,6 @@ mod claude;
 mod doctor;
 mod domain;
 mod handlers;
-mod issues;
 mod process;
 mod render;
 mod runs;
@@ -117,11 +116,6 @@ enum Action {
         #[arg(long = "check")]
         checks: Vec<String>,
     },
-    #[command(about = "Log and resolve workflow problems", after_help = "Example: crew issue ls --open --json")]
-    Issue {
-        #[command(subcommand)]
-        command: IssueAction,
-    },
 }
 #[derive(Args)]
 struct Dispatch {
@@ -156,50 +150,6 @@ struct Dispatch {
     /// Arguments passed to the executor after -- (repeatable)
     #[arg(last = true)]
     extra: Vec<String>,
-}
-#[derive(Subcommand)]
-enum IssueAction {
-    #[command(
-        about = "Append an observed workflow problem",
-        after_help = "Example: crew issue log --title 'Missing report' --observed 'No file' --expected 'final.md'"
-    )]
-    Log {
-        /// Short issue title
-        #[arg(long, allow_hyphen_values = true)]
-        title: String,
-        /// What actually happened
-        #[arg(long, allow_hyphen_values = true)]
-        observed: String,
-        /// What should have happened
-        #[arg(long, allow_hyphen_values = true)]
-        expected: String,
-        /// Supporting evidence as free text, not a file to read (repeatable)
-        #[arg(long, allow_hyphen_values = true)]
-        evidence: Vec<String>,
-        /// Affected area, e.g. crew or executor:claude
-        #[arg(long, default_value = "crew")]
-        area: String,
-        /// run id, e.g. 20261101-120000-abcd
-        #[arg(long)]
-        run: Option<String>,
-    },
-    #[command(about = "Fold issue events into current issues", after_help = "Example: crew issue ls --open")]
-    Ls {
-        /// Show only unresolved issues
-        #[arg(long)]
-        open: bool,
-    },
-    #[command(
-        about = "Append a resolution to an issue",
-        after_help = "Example: crew issue resolve issue-0001 --note 'Fixed'"
-    )]
-    Resolve {
-        /// issue id, e.g. issue-0001
-        id: String,
-        /// Resolution and supporting evidence
-        #[arg(long, allow_hyphen_values = true)]
-        note: String,
-    },
 }
 fn main() {
     let args: Vec<_> = std::env::args_os().collect();

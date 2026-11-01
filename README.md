@@ -24,9 +24,6 @@ crew wait 20261101-120000-abcd --timeout 3600
 crew report 20261101-120000-abcd
 crew verify 20261101-120000-abcd --check 'cargo test --offline'
 # Review evidence before publishing as coordinator.
-crew issue log --title 'Unexpected result' --observed 'What happened' --expected 'What should happen'
-crew issue ls --open
-crew issue resolve issue-0001 --note 'Resolution and evidence'
 ```
 
 All commands accept `--json`: `{ "ok": boolean, "data": object|null,
@@ -39,7 +36,6 @@ Use `crew <command> --help` for examples and flags; no command prompts.
 State defaults to `~/.local/state/ai-skills/crew`, overridden by `CREW_STATE_DIR`.
 `runs/<id>/run.json` owns recorded run facts; scripts place evidence beside it.
 `input.md` is crew's brief copy; `final.md`, `final2.md`, etc. are attempt reports.
-`issues.jsonl` contains append-only events, folded by `issue ls`.
 Run writes use temporary files and rename under a per-run `run.lock` advisory lock,
 including status recovery. Read commands never wait for that lock: while busy,
 they show recorded state and `run busy` evidence without saving. Mutating lock

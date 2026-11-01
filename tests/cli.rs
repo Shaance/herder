@@ -433,40 +433,6 @@ fn verification_records_scope_and_each_check_without_changing_lifecycle() {
 }
 
 #[test]
-fn issue_events_fold_and_preserve_append_only_history() {
-    let f = Fixture::new();
-    let logged = f.call(
-        &[
-            "issue",
-            "log",
-            "--title",
-            "t",
-            "--observed",
-            "o",
-            "--expected",
-            "e",
-            "--area",
-            "executor:vibe",
-            "--evidence",
-            "a",
-            "--evidence",
-            "b",
-        ],
-        0,
-    );
-    let id = logged["data"]["issue"]["id"].as_str().unwrap();
-    let before = fs::read(f.state.join("issues.jsonl")).unwrap();
-    assert_eq!(f.call(&["issue", "ls", "--open"], 0)["data"]["issues"].as_array().unwrap().len(), 1);
-    f.call(&["issue", "resolve", id, "--note", "fixed"], 0);
-    let all = f.call(&["issue", "ls"], 0);
-    assert_eq!(all["data"]["issues"][0]["resolution"]["note"], "fixed");
-    assert_eq!(all["data"]["issues"][0]["log"]["evidence"], json!(["a", "b"]));
-    assert!(fs::read(f.state.join("issues.jsonl")).unwrap().starts_with(&before));
-    assert_eq!(f.call(&["issue", "ls", "--open"], 0)["data"]["issues"], json!([]));
-    f.call(&["issue", "resolve", "missing", "--note", "x"], 1);
-}
-
-#[test]
 fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
     let f = Fixture::new();
     for (extra, env, expected) in [
@@ -524,10 +490,6 @@ fn every_help_has_example_and_usage_errors_are_json() {
         vec!["stop"],
         vec!["resume"],
         vec!["verify"],
-        vec!["issue"],
-        vec!["issue", "log"],
-        vec!["issue", "ls"],
-        vec!["issue", "resolve"],
     ] {
         let out = f.cmd().args(command).arg("--help").output().unwrap();
         assert!(out.status.success());
@@ -629,12 +591,6 @@ fn human_actions_and_multiline_evidence() {
         (vec!["verify", &id], 2, "verify requires --path when none were recorded at dispatch\n".to_owned()),
         (vec!["verify", &id, "--path", "src/"], 0, "pass attempt 1\n".into()),
         (vec!["verify", &id, "--path", "src/", "--check", check], 1, format!("fail attempt 1\n{check}: first\n")),
-        (
-            vec!["issue", "log", "--title", "test", "--observed", "actual", "--expected", "expected"],
-            0,
-            "issue-0001\n".into(),
-        ),
-        (vec!["issue", "resolve", "issue-0001", "--note", "fixed"], 0, "issue-0001 resolved\n".into()),
     ] {
         let out = f.cmd().args(args).output().unwrap();
         assert_eq!(out.status.code(), Some(code));
@@ -659,42 +615,6 @@ fn human_actions_and_multiline_evidence() {
         "{text}"
     );
     assert!(!text.contains("\\n"), "{text}");
-}
-
-#[test]
-fn issue_free_text_accepts_leading_hyphens() {
-    let f = Fixture::new();
-    let value = "--disallowedTools ate the prompt";
-    let logged = f.call(
-        &[
-            "issue",
-            "log",
-            "--title",
-            value,
-            "--observed",
-            value,
-            "--expected",
-            value,
-            "--evidence",
-            value,
-            "--evidence",
-            "-second",
-        ],
-        0,
-    );
-    for field in ["title", "observed", "expected"] {
-        assert_eq!(logged["data"]["issue"][field], value);
-    }
-    assert_eq!(logged["data"]["issue"]["evidence"], json!([value, "-second"]));
-    let id = logged["data"]["issue"]["id"].as_str().unwrap();
-    for (resolved, expected) in [(false, "open"), (true, "resolved")] {
-        if resolved {
-            assert_eq!(f.call(&["issue", "resolve", id, "--note", value], 0)["data"]["issue"]["note"], value);
-        }
-        let out = f.cmd().args(["issue", "ls"]).output().unwrap();
-        assert!(out.status.success());
-        assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}\tcrew\t{value}\t{expected}\n"));
-    }
 }
 
 #[test]

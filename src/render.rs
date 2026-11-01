@@ -1,4 +1,4 @@
-use crate::{Action, IssueAction, domain::Run};
+use crate::{Action, domain::Run};
 use anyhow::Result;
 use serde_json::{Value, json};
 
@@ -92,18 +92,6 @@ pub fn human(action: &Action) -> fn(&Value) {
                     .unwrap_or_else(|| "none".into())
             );
         },
-        Action::Issue { command: IssueAction::Ls { .. } } => |data| {
-            for issue in data["issues"].as_array().expect("issue list") {
-                let log = &issue["log"];
-                println!(
-                    "{}\t{}\t{}\t{}",
-                    text(&log["id"]),
-                    text(&log["area"]),
-                    text(&log["title"]),
-                    if issue["resolution"].is_null() { "open" } else { "resolved" }
-                );
-            }
-        },
         Action::Dispatch(_) => |data| {
             if let Some(id) = data["run_id"].as_str() {
                 println!("{id}\t{}", text(&data["run"]["name"]).escape_debug());
@@ -157,10 +145,6 @@ pub fn human(action: &Action) -> fn(&Value) {
                 println!("{}", data["observation"]["evidence"].as_str().expect("observation evidence"));
             }
         },
-        Action::Issue { command: IssueAction::Log { .. } } => |data| println!("{}", text(&data["issue"]["id"])),
-        Action::Issue { command: IssueAction::Resolve { .. } } => {
-            |data| println!("{} resolved", text(&data["issue"]["id"]))
-        }
     }
 }
 

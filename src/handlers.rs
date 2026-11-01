@@ -1,7 +1,7 @@
 use crate::{
-    Action, Dispatch, IssueAction,
+    Action, Dispatch,
     domain::*,
-    issues, process, runs,
+    process, runs,
     store::{self, Store},
 };
 use anyhow::Result;
@@ -48,21 +48,6 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
                 }
             }
             Ok((json!({"runs":data,"summary":summary}), 0))
-        }
-        Action::Issue { command } => {
-            let data = match command {
-                IssueAction::Log { title, observed, expected, evidence, area, run } => {
-                    if let Some(id) = &run {
-                        store.load(id)?;
-                    }
-                    json!({"issue":issues::append(&store, issues::Event::Logged { id: issues::next_id(&store)?, title, observed, expected, evidence, area, run, timestamp: store::timestamp() })?})
-                }
-                IssueAction::Ls { open } => json!({"issues":issues::list(&store, open)?}),
-                IssueAction::Resolve { id, note } => {
-                    json!({"issue":issues::resolve(&store, id, note)?})
-                }
-            };
-            Ok((data, 0))
         }
         action => {
             let id = match &action {
