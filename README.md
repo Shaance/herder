@@ -48,10 +48,18 @@ Extra dispatch arguments after `--` go to the executor, including Vibe arguments
 past its launcher's separator; launcher policy flags are not crew flags.
 Launcher gate exit 3 preserves `starting`; crew returns 0, not 3, for that outcome.
 A late script identity can be recorded by status.
+Claude failures before acceptance remain terminal. Once Claude prints an accepted
+short ID, a later launch gate failure returns exit 1 but retains that ID and its
+diagnosis in `run.json`. Use status to observe that worker; do not relaunch it.
+Status validates cwd and a nonempty full session identity before recording it,
+then requires that same identity on every query and before stop. Gate errors
+remain historical facts even when the worker later runs or finishes. Existing
+failed records are unchanged and are not automatically attached to workers.
 Claude resume requires manual `claude attach <id>` with the recorded profile.
-The installed Codex status script reads only attempt 1: after a resumed process
-exits, crew reports `unknown` and still reads the correct numbered report.
-Fixing that script belongs upstream; crew does not infer completion from a report.
+Upstream `status_classic.sh` has fixed resumed-attempt status, but crew's adapter
+still intentionally reports `unknown` when a Codex attempt greater than 1 exits.
+Crew still reads the correct numbered report; updating this adapter limitation
+is separate work. Crew does not infer completion from a report.
 A report is never proof. Verification is separate from lifecycle and approval.
 
 ## Using crew from any agent

@@ -1,5 +1,5 @@
 use crate::{
-    domain::{Native, Observation, Run, State, Target},
+    domain::{Intent, Launch, Native, Observation, Run, State, Target},
     process::{checked, output},
 };
 use anyhow::{Result, bail, ensure};
@@ -43,7 +43,7 @@ fn agents(profile: Option<&Path>, repo: &Path) -> Result<Vec<Agent>> {
         serde_json::from_str(&checked(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?;
     Ok(listed.into_iter().filter_map(|l| if let Listed::Background(a) = l { Some(a) } else { None }).collect())
 }
-pub fn launch(run: &Run, dir: &Path, extra: &[String]) -> Result<Native> {
+pub fn launch(run: &mut Run, dir: &Path, extra: &[String]) -> Result<Native> {
     let Target::Claude { profile } = run.launch.target() else { bail!("Claude target required") };
     let prompt = format!(
         "{}\n\nWrite your final report to {}.\n",
@@ -67,40 +67,50 @@ pub fn launch(run: &Run, dir: &Path, extra: &[String]) -> Result<Native> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing background id: {text}"))?;
+    run.launch = Launch::Accepted { id: id.into(), profile, error: None };
     // A new background session reports idle for a moment before it starts working; give it the launch window.
     let deadline = Instant::now() + Duration::from_secs(30);
-    let a = loop {
-        let a = agents(profile.as_deref(), &run.repo)?
-            .into_iter()
-            .find(|a| a.id == id)
-            .ok_or_else(|| anyhow::anyhow!("background id {id} absent from agents: {text}"))?;
+    loop {
+        let a = identity(run)?;
         let started = a.status.as_deref() == Some("busy") || a.state == "done" || dir.join("final.md").exists();
         ensure!(started || Instant::now() < deadline, "background session {id} stayed idle for 30s with no report: {text}");
         if started {
-            break a;
+            break;
         }
         thread::sleep(Duration::from_secs(1));
-    };
-    ensure!(
-        Path::new(&a.cwd) == run.repo && !a.session_id.is_empty(),
-        "background identity disagrees with launch: {text}"
-    );
-    Ok(Native::Claude { id: id.into(), session_id: a.session_id, profile })
+    }
+    Ok(run.launch.native().expect("identity validated before launch gate").clone())
 }
-pub fn query(native: &Native, run: &Run, dir: &Path) -> Result<Observation> {
-    let Native::Claude { id, session_id, profile } = native else { bail!("Claude identity required") };
+// Resolve acceptance once; all later observations must match the full recorded identity.
+fn identity(run: &mut Run) -> Result<Agent> {
+    let (id, profile, session) = match &run.launch {
+        Launch::Accepted { id, profile, .. } => (id, profile, None),
+        Launch::Launched { native: Native::Claude { id, session_id, profile }, .. } => (id, profile, Some(session_id)),
+        _ => bail!("Claude identity required"),
+    };
     let a = agents(profile.as_deref(), &run.repo)?
         .into_iter()
         .find(|a| &a.id == id)
         .ok_or_else(|| anyhow::anyhow!("recorded Claude id {id} absent from agents"))?;
     ensure!(
-        &a.session_id == session_id && Path::new(&a.cwd) == run.repo,
-        "Claude identity mismatch: recorded={id}/{session_id}/{} observed={}/{}/{}",
-        run.repo.display(),
-        a.id,
-        a.session_id,
-        a.cwd
+        !a.session_id.is_empty() && Path::new(&a.cwd) == run.repo && session.is_none_or(|s| s == &a.session_id),
+        "Claude identity mismatch: recorded={id}/{session:?}/{} observed={}/{}/{}",
+        run.repo.display(), a.id, a.session_id, a.cwd
     );
+    if let Launch::Accepted { error, .. } = &run.launch {
+        run.launch = Launch::Launched {
+            native: Native::Claude { id: id.clone(), session_id: a.session_id.clone(), profile: profile.clone() },
+            intent: match error {
+                Some(error) => Intent::Unconfirmed { error: error.clone() },
+                None => Intent::Running,
+            },
+        };
+    }
+    Ok(a)
+}
+pub fn query(run: &mut Run, dir: &Path) -> Result<Observation> {
+    let a = identity(run)?;
+    let (id, session_id) = (&a.id, &a.session_id);
     let state = match (a.status.as_deref().unwrap_or(""), a.state.as_str()) {
         (_, "failed") => State::Failed,
         (_, "done") => State::Finished,

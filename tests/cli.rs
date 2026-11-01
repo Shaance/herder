@@ -59,6 +59,7 @@ if test -f "$CREW_SKILLS_DIR/scope-fail"; then echo 'outside authorized paths'; 
             r#"printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$CREW_STATE_DIR/profile"
 case "$1" in
 --bg)
+  echo accepted >> "$CREW_STATE_DIR/launch-count"
   printf '%s\n' "$@" > "$CREW_STATE_DIR/claude-args"
   for arg in "$@"; do
     if test "${next:-}" = yes; then dir=$arg; break; fi
@@ -71,7 +72,7 @@ case "$1" in
   echo 'backgrounded · abc123 · worker';;
 agents)
   test ! -f "$CREW_SKILLS_DIR/query-fail"
-  if test -f "$CREW_SKILLS_DIR/idle-once"; then rm "$CREW_SKILLS_DIR/idle-once"; sed 's/"busy"/"idle"/' "$CREW_SKILLS_DIR/agents.json"; exit 0; fi
+  if test -f "$CREW_SKILLS_DIR/idle-once"; then rm "$CREW_SKILLS_DIR/idle-once"; if test -f "$CREW_SKILLS_DIR/fail-after-identity"; then touch "$CREW_SKILLS_DIR/query-fail"; fi; sed 's/"busy"/"idle"/' "$CREW_SKILLS_DIR/agents.json"; exit 0; fi
   cat "$CREW_SKILLS_DIR/agents.json";;
 stop)
   printf '%s\n' "$@" > "$CREW_STATE_DIR/stop-args"
@@ -602,5 +603,86 @@ fn issue_free_text_accepts_leading_hyphens() {
         let out = f.cmd().args(["issue", "ls"]).output().unwrap();
         assert!(out.status.success());
         assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}\tcrew\t{value}\t{expected}\n"));
+    }
+}
+
+#[test]
+fn accepted_claude_gate_failure_recovers_without_relaunch() {
+    for mode in ["json", "query", "post-identity"] {
+        let f = Fixture::new();
+        match mode {
+            "json" => fs::write(f.skills.join("agents.json"), "not json").unwrap(),
+            "query" => fs::write(f.skills.join("query-fail"), "").unwrap(),
+            _ => {
+                fs::write(f.skills.join("idle-once"), "").unwrap();
+                fs::write(f.skills.join("fail-after-identity"), "").unwrap();
+            }
+        }
+        let result = f.dispatch("claude", &["--profile", "/tmp/profile"], 1);
+        let id = result["data"]["run_id"].as_str().unwrap();
+        let record = f.record(id);
+        let launch = &record["launch"];
+        let error = if mode == "post-identity" {
+            assert_eq!(launch["state"], "launched");
+            assert_eq!(launch["native"]["session_id"], "native-session");
+            assert_eq!(launch["intent"]["state"], "unconfirmed");
+            &launch["intent"]["error"]
+        } else {
+            assert_eq!(launch["state"], "accepted");
+            assert_eq!(launch["id"], "abc123");
+            assert_eq!(launch["profile"], "/tmp/profile");
+            assert!(launch.get("native").is_none());
+            &launch["error"]
+        };
+        assert!(result["data"]["launch_error"].as_str().unwrap().contains("do not relaunch"));
+        assert!(!error["message"].as_str().unwrap().is_empty());
+        assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "unknown");
+        assert_eq!(f.record(id), record);
+        f.call(&["stop", id], 1);
+        assert!(!f.state.join("stop-args").exists());
+        if mode != "json" {
+            fs::remove_file(f.skills.join("query-fail")).unwrap();
+        }
+        f.agents("busy", "working", "native-session");
+        assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "running");
+        let recovered = f.record(id);
+        assert_eq!(recovered["launch"]["native"]["session_id"], "native-session");
+        assert_eq!(recovered["launch"]["native"]["profile"], "/tmp/profile");
+        assert_eq!(recovered["launch"]["intent"]["error"], *error);
+        f.agents("idle", "done", "native-session");
+        assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "finished");
+        assert_eq!(fs::read_to_string(f.state.join("launch-count")).unwrap(), "accepted\n");
+    }
+}
+
+#[test]
+fn accepted_claude_identity_must_validate_before_observation_or_stop() {
+    for mode in ["cwd", "empty-session"] {
+        let f = Fixture::new();
+        f.agents("busy", "working", if mode == "empty-session" { "" } else { "native-session" });
+        if mode == "cwd" {
+            let path = f.skills.join("agents.json");
+            let mut agents: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            agents[1]["cwd"] = json!(f.root);
+            fs::write(path, agents.to_string()).unwrap();
+        }
+        let result = f.dispatch("claude", &[], 1);
+        let id = result["data"]["run_id"].as_str().unwrap();
+        let record = f.record(id);
+        assert_eq!(record["launch"]["state"], "accepted");
+        assert!(record["launch"]["error"]["message"].as_str().unwrap().contains("identity mismatch"));
+        assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "unknown");
+        f.call(&["stop", id], 1);
+        assert!(!f.state.join("stop-args").exists());
+        assert_eq!(f.record(id), record);
+        f.agents("busy", "working", "native-session");
+        assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "running");
+        f.agents("busy", "working", "different-session");
+        assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "unknown");
+        f.call(&["stop", id], 1);
+        assert!(!f.state.join("stop-args").exists());
+        f.agents("busy", "working", "native-session");
+        assert_eq!(f.call(&["stop", id], 0)["data"]["observation"]["state"], "stopped");
+        assert_eq!(fs::read_to_string(f.state.join("launch-count")).unwrap(), "accepted\n");
     }
 }

@@ -18,7 +18,9 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, extra: &[String],
         Ok(None) => Ok(()),
         Err(error) => {
             let message = format!("{error:#}");
-            let remediation = if message.contains("Workspace not trusted") {
+            let remediation = if matches!(run.launch, Launch::Accepted { .. } | Launch::Launched { native: Native::Claude { .. }, .. }) {
+                "worker accepted; use crew status to observe it; do not relaunch".into()
+            } else if message.contains("Workspace not trusted") {
                 let profile = match &target {
                     Target::Claude { profile } => {
                         profile.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "none (default)".into())
@@ -30,10 +32,11 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, extra: &[String],
                 "inspect the executor message and run crew doctor; correct the cause before retrying".into()
             };
             let error = LaunchError { message: message.clone(), remediation: remediation.clone() };
-            if let Launch::Launched { intent, .. } = &mut run.launch {
-                *intent = Intent::Failed { error };
-            } else {
-                run.launch = Launch::Failed { target, error };
+            match &mut run.launch {
+                Launch::Accepted { error: recorded, .. } => *recorded = Some(error),
+                Launch::Launched { native: Native::Claude { .. }, intent } => *intent = Intent::Unconfirmed { error },
+                Launch::Launched { intent, .. } => *intent = Intent::Failed { error },
+                _ => run.launch = Launch::Failed { target, error },
             }
             Err(anyhow::anyhow!("run {}: {message}; {remediation}", run.id))
         }
@@ -49,8 +52,13 @@ pub fn observe(run: &mut Run, store: &Store) -> Observation {
         let dir = store.dir(&run.id)?;
         let observed = match run.launch.target() {
             Target::Claude { profile } => {
-                if let Some(native) = run.launch.native() {
-                    claude::query(native, run, &dir)?
+                if run.launch.native().is_some() || matches!(run.launch, Launch::Accepted { .. }) {
+                    let accepted = matches!(run.launch, Launch::Accepted { .. });
+                    let observed = claude::query(run, &dir)?;
+                    if accepted {
+                        store.save(run)?;
+                    }
+                    observed
                 } else {
                     process::checked(
                         claude::command(profile.as_deref()).current_dir(&run.repo).args(["agents", "--json", "--all"]),

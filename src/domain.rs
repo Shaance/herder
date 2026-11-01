@@ -59,6 +59,7 @@ pub struct LaunchError {
 pub enum Intent {
     Starting,
     Running,
+    Unconfirmed { error: LaunchError },
     Failed { error: LaunchError },
     Stopped,
 }
@@ -66,6 +67,7 @@ pub enum Intent {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Launch {
     Starting { target: Target },
+    Accepted { id: String, profile: Option<PathBuf>, error: Option<LaunchError> },
     Failed { target: Target, error: LaunchError },
     Launched { native: Native, intent: Intent },
 }
@@ -73,6 +75,7 @@ impl Launch {
     pub fn target(&self) -> Target {
         match self {
             Self::Starting { target } | Self::Failed { target, .. } => target.clone(),
+            Self::Accepted { profile, .. } => Target::Claude { profile: profile.clone() },
             Self::Launched { native, .. } => native.target(),
         }
     }
@@ -87,6 +90,7 @@ impl Launch {
             Self::Starting { .. } | Self::Launched { intent: Intent::Starting, .. } => State::Starting,
             Self::Failed { .. } | Self::Launched { intent: Intent::Failed { .. }, .. } => State::Failed,
             Self::Launched { intent: Intent::Stopped, .. } => State::Stopped,
+            Self::Accepted { .. } => State::Unknown,
             Self::Launched { .. } => State::Running,
         }
     }
