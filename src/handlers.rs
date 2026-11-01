@@ -8,12 +8,14 @@ use anyhow::Result;
 use serde_json::{Value, json};
 use std::num::NonZeroU32;
 
-pub fn handle(action: Action) -> Result<(Value, i32)> {
+pub fn handle(action: Action, json_output: bool) -> Result<(Value, i32)> {
     let store = Store::new()?;
     match action {
         Action::Doctor { executor, profile } => crate::doctor::run(executor, profile),
         Action::Dispatch(args) => dispatch(args, &store),
+        Action::Wait { runs, all, timeout } => wait(&store, &runs, all, timeout, json_output),
         Action::Ls { goal } => {
+            let mut summary = std::collections::BTreeMap::<String, std::collections::BTreeMap<String, usize>>::new();
             let mut data = vec![];
             for id in store.runs()? {
                 let entry = (|| -> Result<_> {
@@ -23,6 +25,9 @@ pub fn handle(action: Action) -> Result<(Value, i32)> {
                         return Ok(None);
                     }
                     let observation = runs::observe(&mut run, locked.as_ref());
+                    let executor = serde_json::to_value(run.launch.target())?["executor"].as_str().unwrap().to_owned();
+                    let state = serde_json::to_value(observation.state)?.as_str().unwrap().to_owned();
+                    *summary.entry(executor).or_default().entry(state).or_default() += 1;
                     Ok(Some(json!({"run":run,"observation":observation})))
                 })();
                 match entry {
@@ -31,7 +36,7 @@ pub fn handle(action: Action) -> Result<(Value, i32)> {
                     Err(error) => data.push(json!({"run_id":id,"error":format!("{error:#}")})),
                 }
             }
-            Ok((json!({"runs":data}), 0))
+            Ok((json!({"runs":data,"summary":summary}), 0))
         }
         Action::Issue { command } => {
             let data = match command {
@@ -145,10 +150,56 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
     let result = runs::launch(&mut run, &dir, None, &args.extra, &locked);
     let error = result.err().map(|e| format!("{e:#}"));
     let pane_error = if args.pane && error.is_none() {
-        runs::pane(&run, &dir).err().map(|e| format!("worker recorded; pane failed: {e:#}"))
+        runs::pane(&run).err().map(|e| format!("worker recorded; pane failed: {e:#}"))
     } else {
         None
     };
     let code = if error.is_some() || pane_error.is_some() { 1 } else { 0 };
     Ok((json!({"run_id":run.id,"run":run,"launch_error":error,"pane_error":pane_error}), code))
+}
+
+fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: bool) -> Result<(Value, i32)> {
+    use std::time::{Duration, Instant};
+    let started = Instant::now();
+    let timeout = Duration::from_secs(timeout);
+    let mut previous = vec![None; ids.len()];
+    loop {
+        let mut data = Vec::with_capacity(ids.len());
+        let (mut settled, mut unknown) = (0, false);
+        for (index, id) in ids.iter().enumerate() {
+            // The guard is dropped at the end of this iteration, before sleeping.
+            let locked = store.try_lock(id)?;
+            let mut run = store.load(id)?;
+            let observation = runs::observe(&mut run, locked.as_ref());
+            let state = observation.state;
+            if previous[index] != Some(state) {
+                if !json_output {
+                    println!(
+                        "{}\t{}\t{}",
+                        run.id,
+                        run.name.escape_debug(),
+                        serde_json::to_value(state)?.as_str().unwrap()
+                    );
+                }
+                previous[index] = Some(state);
+            }
+            settled += usize::from(matches!(state, State::Finished | State::Failed | State::Stopped | State::Blocked));
+            unknown |= state == State::Unknown;
+            data.push(
+                json!({"id":run.id,"name":run.name,"state":state,"report_path":store.dir(id)?.join(run.report_name())}),
+            );
+        }
+        let met = if all { settled == ids.len() } else { settled > 0 };
+        let message = if unknown {
+            Some("unknown state: inspect run evidence")
+        } else if met {
+            None
+        } else if started.elapsed() >= timeout {
+            Some("wait timed out")
+        } else {
+            std::thread::sleep(Duration::from_secs(5).min(timeout.saturating_sub(started.elapsed())));
+            continue;
+        };
+        return Ok((json!({"runs":data,"message":message}), i32::from(message.is_some())));
+    }
 }

@@ -197,7 +197,7 @@ pub fn resume(run: &mut Run, delta: &Path, store: &LockedRun) -> Result<()> {
     store.save(run)?;
     launch(run, dir, Some(&delta), &[], store)
 }
-pub fn pane(run: &Run, dir: &Path) -> Result<()> {
+pub fn pane(run: &Run) -> Result<()> {
     let block = std::env::var("REX_BLOCK")?;
     let mut cmd = Command::new("rex");
     cmd.arg("split");
@@ -215,13 +215,16 @@ pub fn pane(run: &Run, dir: &Path) -> Result<()> {
             }
             cmd.args(["claude", "attach", id]);
         }
-        native @ (Native::Vibe { .. } | Native::Codex { .. }) => {
-            let executor = match native {
-                Native::Vibe { .. } => ScriptExecutor::VIBE,
-                _ => ScriptExecutor::CODEX,
-            };
-            // watch owns the display loop; no shell command strings are constructed.
-            cmd.args(["watch", "-n", "2", "-x"]).arg(executor.path("status")).arg(dir).args(executor.status_args(run));
+        Native::Vibe { .. } | Native::Codex { .. } => {
+            cmd.arg("env");
+            if let Some(root) = std::env::var_os("CREW_STATE_DIR") {
+                let mut assignment = std::ffi::OsString::from("CREW_STATE_DIR=");
+                assignment.push(std::path::absolute(Path::new(&root))?);
+                cmd.arg(assignment);
+            } else {
+                cmd.args(["-u", "CREW_STATE_DIR"]);
+            }
+            cmd.arg(std::env::current_exe()?).arg("wait").arg(&run.id);
         }
     }
     process::checked(&mut cmd)?;

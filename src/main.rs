@@ -41,7 +41,7 @@ enum Action {
     },
     #[command(
         about = "Lint a brief and launch a recorded worker",
-        after_help = "Example: crew dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nLauncher gate exit 3 leaves the run starting; crew returns 0. Use status to follow progress."
+        after_help = "Example: crew dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nLauncher gate exit 3 leaves the run starting; crew returns 0. Use crew wait to await settlement or status to follow progress."
     )]
     Dispatch(Dispatch),
     #[command(about = "List runs with fresh executor status", after_help = "Example: crew ls --goal feature-1 --json")]
@@ -49,6 +49,21 @@ enum Action {
         /// Match the exact goal string recorded at dispatch
         #[arg(long)]
         goal: Option<String>,
+    },
+    #[command(
+        about = "Wait for any or all runs to settle",
+        after_help = "Example: crew wait 20261101-120000-abcd 20261101-120001-ef01 --all --timeout 60\nSettled: finished, failed, stopped, blocked (exit 0). Unknown or timeout exits 1.\nPolls every 5 seconds; final output includes every run and its report path."
+    )]
+    Wait {
+        /// Run ids to observe
+        #[arg(required = true, num_args = 1..)]
+        runs: Vec<String>,
+        /// Wait for all runs instead of any run
+        #[arg(long)]
+        all: bool,
+        /// Maximum wait in seconds
+        #[arg(long, default_value = "3600")]
+        timeout: u64,
     },
     #[command(
         about = "Query a run's current executor status",
@@ -128,7 +143,7 @@ struct Dispatch {
     /// Claude configuration directory (--profile > CLAUDE_CONFIG_DIR > none, Claude default)
     #[arg(long)]
     profile: Option<PathBuf>,
-    #[arg(long, help = "Show worker in Rex; Vibe/Codex require watch with -x support")]
+    #[arg(long, help = "Show worker in Rex; Vibe/Codex panes use crew wait")]
     pane: bool,
     #[arg(long = "path", help = "Authorized path prefix for verification evidence (repeatable)")]
     paths: Vec<String>,
@@ -194,5 +209,5 @@ fn main() {
         }
     };
     let human = render::human(&cli.command);
-    render::emit(cli.json, handlers::handle(cli.command), 1, human);
+    render::emit(cli.json, handlers::handle(cli.command, cli.json), 1, human);
 }

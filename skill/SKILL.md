@@ -16,7 +16,12 @@ agent or person can use the same CLI.
    implementer-core's direct-mode contract blocks, scope and checks. Name every skill the worker
    must load (for example `$write-rust`); workers do not reliably load them unasked.
 3. Use `crew dispatch`; retain the printed run ID and optional goal label.
-4. Follow progress with `crew ls` and `crew status`; read `crew report`.
+4. Follow progress with `crew ls` (models and executor state tallies) and `crew status`.
+   Use `crew wait <run>...` for any settled run, or `--all` for all runs;
+   `--timeout <secs>` defaults to 3600. It polls every 5 seconds, exits 0 for
+   finished/failed/stopped/blocked, and exits 1 for unknown or timeout. Final output
+   lists every run and report path. Example: `crew wait run-id --timeout 60`.
+   Vibe/Codex `--pane` uses wait and closes on exit. Read `crew report`.
 5. Inspect the actual changes and run `crew verify` with scope paths and checks.
    Resolve each review finding or record its approved deferral.
 6. The coordinator handles approval and publication outside crew.

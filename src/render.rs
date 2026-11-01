@@ -30,7 +30,6 @@ pub fn human(action: &Action) -> fn(&Value) {
                 println!("claude profile: {}", text(&data["claude_profile"]));
             }
             print_check(data["rex"]["ok"] == true, "rex", &data["rex"]["fix"]);
-            print_check(data["pane_loop"]["watch_available"] == true, "watch", &data["pane_loop"]["fix"]);
         },
         Action::Ls { .. } => |data| {
             for entry in data["runs"].as_array().expect("run list") {
@@ -40,14 +39,36 @@ pub fn human(action: &Action) -> fn(&Value) {
                 }
                 let run: Run = serde_json::from_value(entry["run"].clone()).expect("serialized run");
                 println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
                     run.id,
                     if run.name == run.id { "-" } else { &run.name }.escape_debug(),
                     run.goal.as_deref().unwrap_or("-").escape_debug(),
                     text(&json!(run.launch.target())["executor"]),
                     text(&entry["observation"]["state"]),
-                    run.attempt
+                    run.attempt,
+                    run.model.as_deref().unwrap_or("-").escape_debug()
                 );
+            }
+            for (executor, states) in data["summary"].as_object().expect("ls summary") {
+                let states = states.as_object().expect("state counts");
+                let total: u64 = states.values().map(|count| count.as_u64().unwrap()).sum();
+                let counts =
+                    states.iter().map(|(state, count)| format!("{state} {count}")).collect::<Vec<_>>().join(", ");
+                println!("{executor}: {total} runs ({counts})");
+            }
+        },
+        Action::Wait { .. } => |data| {
+            for run in data["runs"].as_array().expect("wait runs") {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    text(&run["id"]),
+                    text(&run["name"]).escape_debug(),
+                    text(&run["state"]),
+                    text(&run["report_path"])
+                );
+            }
+            if let Some(message) = data["message"].as_str() {
+                eprintln!("{message}");
             }
         },
         Action::Status { .. } => |data| {

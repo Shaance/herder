@@ -51,6 +51,7 @@ impl ScriptExecutor {
     }
     pub fn launch(&self, run: &Run, dir: &Path, delta: Option<&Path>, extra: &[String]) -> Result<Option<Native>> {
         let mut cmd = Command::new(self.path(if delta.is_some() { "resume" } else { "launch" }));
+        cmd.env_remove("REX_SESSION").env_remove("REX_BLOCK").env_remove("REX_SERVER");
         if let Some(delta) = delta {
             cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.launch_attempt().to_string());
         } else {

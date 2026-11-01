@@ -14,6 +14,8 @@ mod corrections;
 mod durability;
 #[path = "cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "cases/workflow.rs"]
+mod workflow;
 
 struct Fixture {
     _temp: TempDir,
@@ -284,7 +286,12 @@ fn script_dispatch_status_and_report_use_executor_artifacts() {
         assert!(args.contains("input.md"));
         assert!(args.contains("--model\nmodel-x"));
         let pane = fs::read_to_string(f.state.join("rex-args")).unwrap();
-        assert!(pane.contains("watch\n-n\n2\n-x\n"));
+        assert!(pane.contains(&format!(
+            "--shell=none\n--\nenv\nCREW_STATE_DIR={}\n{}\nwait\n{id}\n",
+            f.state.display(),
+            env!("CARGO_BIN_EXE_crew")
+        )));
+        assert!(!pane.contains("watch"));
     }
 }
 
@@ -468,14 +475,14 @@ fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
         let data: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(data["data"]["claude_profile"], expected);
         assert_eq!(data["data"]["rex"]["fix"], Value::Null);
-        assert_eq!(data["data"]["pane_loop"]["fix"], Value::Null);
+        assert!(data["data"].get("pane_loop").is_none());
         assert!(data["data"]["rex"].get("detail").is_none());
     }
     let out = f.cmd().args(["doctor", "--executor", "claude"]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with("ok claude: claude\n"));
-    assert!(text.contains("claude profile: none\nok rex\nok watch\n"));
+    assert!(text.contains("claude profile: none\nok rex\n"));
     assert!(!text.contains("fix:"));
     f.executable(&f.bin.join("rex"), "echo private-identity; exit 1");
     fs::remove_file(f.bin.join("watch")).unwrap();
@@ -483,14 +490,14 @@ fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
     let doctor = f.call(&["doctor", "--executor", "vibe"], 1);
     assert!(doctor.to_string().contains("install vibe and put its executable on PATH"));
     assert!(doctor["data"]["rex"]["fix"].is_string());
-    assert!(doctor["data"]["pane_loop"]["fix"].is_string());
+    assert!(doctor["data"].get("pane_loop").is_none());
     assert!(!doctor.to_string().contains("private-identity"));
     let out = f.cmd().args(["doctor", "--executor", "vibe"]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("missing vibe: vibe; fix: install vibe and put its executable on PATH"));
     assert!(text.contains("missing rex; fix:"));
-    assert!(text.contains("missing watch; fix:"));
+    assert!(!text.contains("watch"));
 }
 
 #[test]
@@ -502,6 +509,7 @@ fn every_help_has_example_and_usage_errors_are_json() {
         vec!["dispatch"],
         vec!["ls"],
         vec!["status"],
+        vec!["wait"],
         vec!["report"],
         vec!["stop"],
         vec!["resume"],
@@ -556,7 +564,7 @@ fn human_lists_and_status_show_run_facts() {
         let f = Fixture::new();
         let id = f.launch(executor);
         for (args, expected) in [
-            (vec!["ls"], vec![format!("{id}\t-\t-\t{executor}\trunning\t1")]),
+            (vec!["ls"], vec![format!("{id}\t-\t-\t{executor}\trunning\t1\t-")]),
             (
                 vec!["status", &id],
                 vec![
@@ -602,7 +610,10 @@ fn human_actions_and_multiline_evidence() {
         .unwrap()
         .to_owned();
     let out = f.cmd().arg("ls").output().unwrap();
-    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}\tworker\\nname\tpolish\tcodex\trunning\t1\n"));
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        format!("{id}\tworker\\nname\tpolish\tcodex\trunning\t1\t-\ncodex: 1 runs (running 1)\n")
+    );
     let check = "echo first; echo second; exit 1";
     for (args, code, expected) in [
         (vec!["verify", &id], 2, "verify requires --path when none were recorded at dispatch\n".to_owned()),

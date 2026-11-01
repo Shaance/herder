@@ -17,9 +17,10 @@ Keep briefs outside `--repo`; an untracked brief inside it fails verify scope. W
 
 ```sh
 crew dispatch --executor codex --brief /tmp/task.md --repo . --goal feature-1 --path src/
-# Use the printed run ID below; check it until the worker finishes.
+# Use the printed run ID below.
 crew ls --goal feature-1
 crew status 20261101-120000-abcd
+crew wait 20261101-120000-abcd --timeout 3600
 crew report 20261101-120000-abcd
 crew verify 20261101-120000-abcd --check 'cargo test --offline'
 # Review evidence before publishing as coordinator.
@@ -52,7 +53,16 @@ Broken published directories appear as individual errors in `ls`, alongside heal
 Claude profile precedence is `--profile`, `CLAUDE_CONFIG_DIR`, then explicitly
 none (Claude's default). Dispatch detects trust failures without editing trust.
 
-`--pane` uses Rex; Vibe/Codex displays require `watch` with `-x` support.
+`crew wait <run>...` polls every 5 seconds, returning when any run settles;
+`--all` waits for every listed run. Finished, failed, stopped and blocked count as
+settled (exit 0); unknown evidence or timeout exits 1. The default timeout is 3600
+seconds. Human output shows state changes; final human and JSON output includes
+every run's id, name, state and current report path.
+`crew ls` includes models and a per-executor state tally (`data.summary` in JSON),
+scoped by `--goal` when supplied. Broken entries remain errors outside the tally.
+`--pane` uses Rex; Vibe/Codex panes run `crew wait` and close when it exits.
+Claude panes continue to use `claude attach`. Vibe/Codex launch and resume scripts
+receive no inherited `REX_SESSION`, `REX_BLOCK` or `REX_SERVER`.
 Extra dispatch arguments after `--` go to the executor, including Vibe arguments
 past its launcher's separator. Crew Vibe runs are auto-approve only.
 Launcher gate exit 3 preserves `starting` or `pending_resume`; crew returns 0.
