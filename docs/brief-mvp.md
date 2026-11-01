@@ -4,6 +4,10 @@ Rex terminal pane) dispatch work to Claude, Vibe or Codex workers, track them, r
 output and log workflow problems. Read `docs/design.md` first: it is the frozen product design. Where it and this
 brief differ, this brief wins (the design predates the Rust decision).
 
+Skills: before writing any code, load and follow `$write-rust` (ownership, state modeling, errors, crate
+boundaries). Apply `$make-states-unrepresentable` as a design rule from the start (parse, don't validate), not
+as a cleanup afterwards. A reviewer will run a make-states-unrepresentable and over-engineering pass on your diff.
+
 Repo: current directory, a fresh `cargo init` (binary `crew`), toolchain 1.88.0. Dependencies are already
 fetched: clap (derive), serde, serde_json, anyhow; dev: tempfile. Build and test with `--offline`.
 Authorized paths: `src/**`, `tests/**`, `skill/SKILL.md`, `README.md`, `Cargo.toml` (only to add `[[test]]`
@@ -87,9 +91,19 @@ because it requires user confirmation per record. New surfaces: the `crew` binar
 </workstream_contract>
 
 <implementation_authority>
-Direct mode. You own the internal design inside this contract. Suggested split by job, each file under ~250
-lines: `main.rs` (clap + dispatch to handlers), `store.rs` (run records and issues), `claude.rs`, `vibe.rs`,
-`codex.rs` (one adapter each). Vibe and Codex adapters shell out to the existing scripts; never re-implement
+Direct mode. You own the internal design inside this contract.
+
+Architecture (required):
+- Three layers, dependencies pointing inward: domain types and pure logic (no IO, no process spawning, no
+  printing) ← executor adapters and the state store (all process and file IO) ← CLI (clap parsing, calling
+  handlers, rendering human or `--json` output in one place). Domain code never imports clap or std::process.
+- Model states so invalid combinations do not compile. Examples to apply where they fit: one `Executor`-specific
+  native identity enum (Claude: short id + session id + profile; Vibe: session id + pid; Codex: thread id + pid)
+  instead of a struct of `Option` fields; a run state enum; a launch outcome enum carrying the failure reason and
+  remediation; a verify verdict type. Parse executor output into these types once, at the adapter boundary, and
+  never pass raw strings inward.
+- No god module, no `utils`/`helpers`/`manager` files. Each file has one job and stays under ~250 lines.
+  Suggested split: `main.rs` (clap), `domain.rs`, `store.rs`, `claude.rs`, `vibe.rs`, `codex.rs`, `render.rs`. Vibe and Codex adapters shell out to the existing scripts; never re-implement
 their flags, gates or report extraction. Use `std::process::Command` with argument vectors, never a shell
 string, except for user-supplied `--check` commands.
 </implementation_authority>
