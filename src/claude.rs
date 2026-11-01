@@ -53,6 +53,8 @@ pub fn launch(run: &mut Run, dir: &Path, extra: &[String], store: &LockedRun) ->
     );
     let mut cmd = command(profile.as_deref());
     cmd.current_dir(&run.repo).arg("--bg").arg(prompt).arg("-n").arg(&run.name).arg("--add-dir").arg(dir);
+    // Edit --repo in place like Vibe/Codex; --bg otherwise moves into .claude/worktrees/, which verify never sees.
+    cmd.args(["--settings", r#"{"worktree":{"bgIsolation":"none"}}"#]);
     if let Some(m) = &run.model {
         cmd.arg("--model").arg(m);
     }
