@@ -71,6 +71,7 @@ case "$1" in
   echo 'backgrounded · abc123 · worker';;
 agents)
   test ! -f "$CREW_SKILLS_DIR/query-fail"
+  if test -f "$CREW_SKILLS_DIR/idle-once"; then rm "$CREW_SKILLS_DIR/idle-once"; sed 's/"busy"/"idle"/' "$CREW_SKILLS_DIR/agents.json"; exit 0; fi
   cat "$CREW_SKILLS_DIR/agents.json";;
 stop)
   printf '%s\n' "$@" > "$CREW_STATE_DIR/stop-args"
@@ -191,6 +192,8 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
 #[test]
 fn claude_dispatch_records_identity_profile_and_prompt_first() {
     let f = Fixture::new();
+    // A fresh background session reports idle once before it starts working.
+    fs::write(f.skills.join("idle-once"), "").unwrap();
     let result = f.dispatch(
         "claude",
         &["--profile", "/tmp/explicit-profile", "--model", "model-x", "--goal", "goal-1", "--pane"],

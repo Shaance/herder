@@ -4,7 +4,13 @@ use crate::{
 };
 use anyhow::{Result, bail, ensure};
 use serde::Deserialize;
-use std::{fs, path::Path, process::Command};
+use std::{
+    fs,
+    path::Path,
+    process::Command,
+    thread,
+    time::{Duration, Instant},
+};
 
 pub fn command(profile: Option<&Path>) -> Command {
     let mut cmd = Command::new("claude");
@@ -61,17 +67,23 @@ pub fn launch(run: &Run, dir: &Path, extra: &[String]) -> Result<Native> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .ok_or_else(|| anyhow::anyhow!("missing background id: {text}"))?;
-    let a = agents(profile.as_deref(), &run.repo)?
-        .into_iter()
-        .find(|a| a.id == id)
-        .ok_or_else(|| anyhow::anyhow!("background id {id} absent from agents: {text}"))?;
+    // A new background session reports idle for a moment before it starts working; give it the launch window.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let a = loop {
+        let a = agents(profile.as_deref(), &run.repo)?
+            .into_iter()
+            .find(|a| a.id == id)
+            .ok_or_else(|| anyhow::anyhow!("background id {id} absent from agents: {text}"))?;
+        let started = a.status.as_deref() == Some("busy") || a.state == "done" || dir.join("final.md").exists();
+        ensure!(started || Instant::now() < deadline, "background session {id} stayed idle for 30s with no report: {text}");
+        if started {
+            break a;
+        }
+        thread::sleep(Duration::from_secs(1));
+    };
     ensure!(
         Path::new(&a.cwd) == run.repo && !a.session_id.is_empty(),
         "background identity disagrees with launch: {text}"
-    );
-    ensure!(
-        a.status.as_deref() == Some("busy") || dir.join("final.md").exists(),
-        "background session {id} is idle with no report: {text}"
     );
     Ok(Native::Claude { id: id.into(), session_id: a.session_id, profile })
 }
