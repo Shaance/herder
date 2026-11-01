@@ -38,6 +38,9 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Valu
     }
     let rex = process::checked(Command::new("rex").args(["--autostart=false", "whoami", "--json"]));
     healthy &= rex.is_ok();
-    let data = json!({"executors":executors,"claude_profile":profile,"profile_resolution":"--profile > CLAUDE_CONFIG_DIR > none", "rex":{"ok":rex.is_ok(),"detail":match rex {Ok(s)=>s,Err(e)=>format!("{e:#}")},"fix":"start Rex and set REX_SERVER to its reachable control socket"},"pane_loop":{"watch_available":process::on_path("watch"),"fix":"install watch to view Vibe/Codex panes"}});
+    let watch = process::on_path("watch");
+    let data = json!({"executors":executors,"claude_profile":profile,"profile_resolution":"--profile > CLAUDE_CONFIG_DIR > none",
+        "rex":{"ok":rex.is_ok(),"fix":if rex.is_ok() {None} else {Some("start Rex and set REX_SERVER to its reachable control socket")}},
+        "pane_loop":{"watch_available":watch,"fix":if watch {None} else {Some("install watch to view Vibe/Codex panes")}}});
     Ok((data, if healthy { 0 } else { 1 }))
 }

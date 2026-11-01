@@ -9,7 +9,7 @@ mod runs;
 mod scripts;
 mod store;
 mod verify;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, builder::TypedValueParser};
 use domain::Executor;
 use std::path::PathBuf;
 
@@ -17,7 +17,7 @@ use std::path::PathBuf;
 #[command(
     version,
     about = "Dispatch, track and verify agent workers",
-    after_help = "Example: crew doctor --json\nExit codes: 0 success, 1 operational failure, 2 usage error."
+    after_help = "Example: crew doctor --json\nEnvironment: CREW_STATE_DIR (state), CREW_SKILLS_DIR (scripts), CLAUDE_CONFIG_DIR (Claude profile).\nExit codes: 0 success, 1 operational failure, 2 usage error."
 )]
 struct Cli {
     #[arg(long, global = true, help = "Emit a stable {ok,data,error} JSON envelope")]
@@ -32,8 +32,10 @@ enum Action {
         after_help = "Example: crew doctor --executor claude --profile ~/.claude"
     )]
     Doctor {
-        #[arg(long)]
+        /// Executor to use
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["claude", "vibe", "codex"]).map(|s| s.parse::<Executor>().expect("listed executor is valid")))]
         executor: Option<Executor>,
+        /// Claude configuration directory (overrides CLAUDE_CONFIG_DIR)
         #[arg(long)]
         profile: Option<PathBuf>,
     },
@@ -44,6 +46,7 @@ enum Action {
     Dispatch(Dispatch),
     #[command(about = "List runs with fresh executor status", after_help = "Example: crew ls --goal feature-1 --json")]
     Ls {
+        /// Goal label for grouping runs
         #[arg(long)]
         goal: Option<String>,
     },
@@ -51,17 +54,28 @@ enum Action {
         about = "Query a run's current executor status",
         after_help = "Example: crew status 20261101-120000-abcd"
     )]
-    Status { run: String },
+    Status {
+        /// run id, e.g. 20261101-120000-abcd
+        run: String,
+    },
     #[command(about = "Read the current attempt's report", after_help = "Example: crew report 20261101-120000-abcd")]
-    Report { run: String },
+    Report {
+        /// run id, e.g. 20261101-120000-abcd
+        run: String,
+    },
     #[command(about = "Stop the exact recorded worker", after_help = "Example: crew stop 20261101-120000-abcd")]
-    Stop { run: String },
+    Stop {
+        /// run id, e.g. 20261101-120000-abcd
+        run: String,
+    },
     #[command(
         about = "Resume an exact session with a delta brief",
         after_help = "Example: crew resume 20261101-120000-abcd --brief delta.md"
     )]
     Resume {
+        /// run id, e.g. 20261101-120000-abcd
         run: String,
+        /// Brief file to send to the worker
         #[arg(long)]
         brief: PathBuf,
     },
@@ -70,9 +84,12 @@ enum Action {
         after_help = "Example: crew verify 20261101-120000-abcd --path src/ --check 'cargo test --offline'"
     )]
     Verify {
+        /// run id, e.g. 20261101-120000-abcd
         run: String,
+        /// Authorized path prefix (repeatable)
         #[arg(long = "path")]
         paths: Vec<String>,
+        /// Shell command to verify in the repository (repeatable)
         #[arg(long = "check")]
         checks: Vec<String>,
     },
@@ -84,24 +101,32 @@ enum Action {
 }
 #[derive(Args)]
 struct Dispatch {
-    #[arg(long)]
+    /// Executor to use
+    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["claude", "vibe", "codex"]).map(|s| s.parse::<Executor>().expect("listed executor is valid")))]
     executor: Executor,
+    /// Brief file to send to the worker
     #[arg(long)]
     brief: PathBuf,
+    /// Repository directory for the worker
     #[arg(long)]
     repo: PathBuf,
+    /// Executor model name
     #[arg(long)]
     model: Option<String>,
+    /// Goal label for grouping runs
     #[arg(long)]
     goal: Option<String>,
+    /// Worker display name
     #[arg(long)]
     name: Option<String>,
+    /// Claude configuration directory (overrides CLAUDE_CONFIG_DIR)
     #[arg(long)]
     profile: Option<PathBuf>,
     #[arg(long, help = "Show worker in Rex; Vibe/Codex require watch")]
     pane: bool,
     #[arg(long = "path", help = "Authorized prefix for collect_evidence.sh (repeatable)")]
     paths: Vec<String>,
+    /// Arguments passed to the executor after -- (repeatable)
     #[arg(last = true)]
     extra: Vec<String>,
 }
@@ -112,21 +137,28 @@ enum IssueAction {
         after_help = "Example: crew issue log --title 'Missing report' --observed 'No file' --expected 'final.md'"
     )]
     Log {
-        #[arg(long)]
+        /// Short issue title
+        #[arg(long, allow_hyphen_values = true)]
         title: String,
-        #[arg(long)]
+        /// What actually happened
+        #[arg(long, allow_hyphen_values = true)]
         observed: String,
-        #[arg(long)]
+        /// What should have happened
+        #[arg(long, allow_hyphen_values = true)]
         expected: String,
-        #[arg(long)]
+        /// Supporting evidence (repeatable)
+        #[arg(long, allow_hyphen_values = true)]
         evidence: Vec<String>,
+        /// Affected area, e.g. crew or executor:claude
         #[arg(long, default_value = "crew")]
         area: String,
+        /// run id, e.g. 20261101-120000-abcd
         #[arg(long)]
         run: Option<String>,
     },
     #[command(about = "Fold issue events into current issues", after_help = "Example: crew issue ls --open")]
     Ls {
+        /// Show only unresolved issues
         #[arg(long)]
         open: bool,
     },
@@ -135,8 +167,10 @@ enum IssueAction {
         after_help = "Example: crew issue resolve issue-0001 --note 'Fixed'"
     )]
     Resolve {
+        /// issue id, e.g. issue-0001
         id: String,
-        #[arg(long)]
+        /// Resolution and supporting evidence
+        #[arg(long, allow_hyphen_values = true)]
         note: String,
     },
 }
@@ -150,8 +184,9 @@ fn main() {
                 let _ = e.print();
                 std::process::exit(0);
             }
-            render::emit(json, Err(anyhow::anyhow!(e.to_string())), 2);
+            render::emit(json, Err(anyhow::anyhow!(e.to_string())), 2, render::pretty);
         }
     };
-    render::emit(cli.json, handlers::handle(cli.command), 1);
+    let human = render::human(&cli.command);
+    render::emit(cli.json, handlers::handle(cli.command), 1, human);
 }

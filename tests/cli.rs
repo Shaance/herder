@@ -441,10 +441,30 @@ fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
         assert!(out.status.success());
         let data: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(data["data"]["claude_profile"], expected);
+        assert_eq!(data["data"]["rex"]["fix"], Value::Null);
+        assert_eq!(data["data"]["pane_loop"]["fix"], Value::Null);
+        assert!(data["data"]["rex"].get("detail").is_none());
     }
+    let out = f.cmd().args(["doctor", "--executor", "claude"]).output().unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.starts_with("ok claude\n"));
+    assert!(text.contains("claude profile: none\nok rex\nok watch\n"));
+    assert!(!text.contains("fix:"));
+    f.executable(&f.bin.join("rex"), "echo private-identity; exit 1");
+    fs::remove_file(f.bin.join("watch")).unwrap();
     fs::remove_file(f.bin.join("vibe")).unwrap();
     let doctor = f.call(&["doctor", "--executor", "vibe"], 1);
     assert!(doctor.to_string().contains("install vibe and put its executable on PATH"));
+    assert!(doctor["data"]["rex"]["fix"].is_string());
+    assert!(doctor["data"]["pane_loop"]["fix"].is_string());
+    assert!(!doctor.to_string().contains("private-identity"));
+    let out = f.cmd().args(["doctor", "--executor", "vibe"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("missing vibe; fix: install vibe and put its executable on PATH"));
+    assert!(text.contains("missing rex; fix:"));
+    assert!(text.contains("missing watch; fix:"));
 }
 
 #[test]
@@ -479,4 +499,105 @@ fn non_claude_profile_is_a_usage_error() {
     let result = f.dispatch("vibe", &["--profile", "/tmp/profile"], 2);
     assert_eq!(result["data"]["message"], "--profile applies only to Claude");
     assert!(!f.state.join("runs").exists());
+}
+
+#[test]
+fn failed_launch_observation_keeps_error_without_querying() {
+    for mode in ["trust", "idle"] {
+        let f = Fixture::new();
+        fs::write(f.skills.join(mode), "").unwrap();
+        let result = f.dispatch("claude", &["--profile", "/tmp/profile"], 1);
+        let id = result["data"]["run_id"].as_str().unwrap();
+        let record = f.record(id);
+        f.executable(&f.bin.join("claude"), "touch \"$CREW_STATE_DIR/queried\"; exit 99");
+        for args in [vec!["status", id], vec!["ls"], vec!["report", id]] {
+            let result = f.call(&args, if args[0] == "report" { 1 } else { 0 });
+            let data = if args[0] == "ls" { &result["data"]["runs"][0] } else { &result["data"] };
+            assert_eq!(data["observation"]["state"], "failed");
+            let evidence = data["observation"]["evidence"].as_str().unwrap();
+            for field in ["message", "remediation"] {
+                assert!(evidence.contains(record["launch"]["error"][field].as_str().unwrap()));
+            }
+        }
+        assert!(!f.state.join("queried").exists());
+        assert_eq!(f.record(id), record);
+    }
+}
+
+#[test]
+fn human_lists_and_status_show_run_facts() {
+    for executor in ["claude", "vibe", "codex"] {
+        let f = Fixture::new();
+        let id = f.launch(executor);
+        for (args, expected) in [
+            (vec!["ls"], vec![format!("{id}\t{id}\t{executor}\trunning\t1")]),
+            (
+                vec!["status", &id],
+                vec![
+                    "state: running".into(),
+                    "evidence: ".into(),
+                    format!("executor: {executor}"),
+                    "attempt: 1".into(),
+                    format!("run dir: {}", f.dir(&id).display()),
+                    format!("report path: {}/final.md", f.dir(&id).display()),
+                    "latest verdict: none".into(),
+                ],
+            ),
+        ] {
+            let out = f.cmd().args(args).output().unwrap();
+            assert!(out.status.success());
+            let text = String::from_utf8(out.stdout).unwrap();
+            assert!(!text.starts_with('{'));
+            for expected in expected {
+                assert!(text.contains(&expected), "{text}");
+            }
+        }
+        if executor != "claude" {
+            f.call(&["verify", &id, "--path", "src/"], 0);
+            f.status("exited", "COMPLETED");
+            f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+            let out = f.cmd().args(["status", &id]).output().unwrap();
+            assert!(out.status.success());
+            let text = String::from_utf8(out.stdout).unwrap();
+            for expected in ["attempt: 2", "final2.md", "latest verdict: pass"] {
+                assert!(text.contains(expected), "{text}");
+            }
+        }
+    }
+}
+
+#[test]
+fn issue_free_text_accepts_leading_hyphens() {
+    let f = Fixture::new();
+    let value = "--disallowedTools ate the prompt";
+    let logged = f.call(
+        &[
+            "issue",
+            "log",
+            "--title",
+            value,
+            "--observed",
+            value,
+            "--expected",
+            value,
+            "--evidence",
+            value,
+            "--evidence",
+            "-second",
+        ],
+        0,
+    );
+    for field in ["title", "observed", "expected"] {
+        assert_eq!(logged["data"]["issue"][field], value);
+    }
+    assert_eq!(logged["data"]["issue"]["evidence"], json!([value, "-second"]));
+    let id = logged["data"]["issue"]["id"].as_str().unwrap();
+    for (resolved, expected) in [(false, "open"), (true, "resolved")] {
+        if resolved {
+            assert_eq!(f.call(&["issue", "resolve", id, "--note", value], 0)["data"]["issue"]["note"], value);
+        }
+        let out = f.cmd().args(["issue", "ls"]).output().unwrap();
+        assert!(out.status.success());
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}\tcrew\t{value}\t{expected}\n"));
+    }
 }

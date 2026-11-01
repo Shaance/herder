@@ -42,6 +42,9 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, extra: &[String],
     result
 }
 pub fn observe(run: &mut Run, store: &Store) -> Observation {
+    if let Launch::Failed { error, .. } = &run.launch {
+        return Observation { state: State::Failed, evidence: format!("{}; {}", error.message, error.remediation) };
+    }
     let result = (|| -> Result<Observation> {
         let dir = store.dir(&run.id)?;
         let observed = match run.launch.target() {

@@ -46,7 +46,8 @@ none (Claude's default). Dispatch detects trust failures without editing trust.
 `--pane` uses Rex; Vibe/Codex displays require `watch` with `-x` support.
 Extra dispatch arguments after `--` go to the executor, including Vibe arguments
 past its launcher's separator; launcher policy flags are not crew flags.
-Gate exit 3 preserves `starting`; a late script identity can be recorded by status.
+Launcher gate exit 3 preserves `starting`; crew returns 0, not 3, for that outcome.
+A late script identity can be recorded by status.
 Claude resume requires manual `claude attach <id>` with the recorded profile.
 The installed Codex status script reads only attempt 1: after a resumed process
 exits, crew reports `unknown` and still reads the correct numbered report.
