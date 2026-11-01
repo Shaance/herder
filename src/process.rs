@@ -15,9 +15,10 @@ pub fn output(cmd: &mut Command) -> Result<(Option<i32>, String)> {
     Ok((out.status.code(), text))
 }
 pub fn checked(cmd: &mut Command) -> Result<String> {
-    let (code, text) = output(cmd)?;
-    ensure!(code == Some(0), "exit {code:?}: {text}");
-    Ok(text)
+    let out = cmd.stdin(Stdio::null()).output().with_context(|| format!("execute {:?}", cmd.get_program()))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    ensure!(out.status.success(), "exit {:?}: {}{}", out.status.code(), stdout, String::from_utf8_lossy(&out.stderr));
+    Ok(stdout.into_owned())
 }
 pub fn query(cmd: &mut Command) -> Result<String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);

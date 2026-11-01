@@ -407,6 +407,7 @@ fn verification_records_scope_and_each_check_without_changing_lifecycle() {
         if mode == "scope-fail" {
             fs::write(f.skills.join(mode), "").unwrap();
         }
+        f.status("exited", "COMPLETED");
         let check = if mode == "check-fail" { "exit 7" } else { "pwd" };
         let verification =
             f.call(&["verify", id, "--check", check, "--check", "printf last"], if mode == "pass" { 0 } else { 1 });
@@ -428,6 +429,7 @@ fn verification_records_scope_and_each_check_without_changing_lifecycle() {
     }
     let f = Fixture::new();
     let id = f.launch("codex");
+    f.status("exited", "COMPLETED");
     f.call(&["verify", &id], 2);
     f.call(&["verify", &id, "--path", "tests/"], 0);
 }
@@ -559,6 +561,7 @@ fn human_lists_and_status_show_run_facts() {
             }
         }
         if executor != "claude" {
+            f.status("exited", "COMPLETED");
             f.call(&["verify", &id, "--path", "src/"], 0);
             f.status("exited", "COMPLETED");
             let out = f.cmd().args(["resume", &id, "--brief"]).arg(f.root.join("brief.md")).output().unwrap();
@@ -586,6 +589,7 @@ fn human_actions_and_multiline_evidence() {
         String::from_utf8(out.stdout).unwrap(),
         format!("{id}\tworker\\nname\tpolish\tcodex\trunning\t1\t-\ncodex: 1 runs (running 1)\n")
     );
+    f.status("exited", "COMPLETED");
     let check = "echo first; echo second; exit 1";
     for (args, code, expected) in [
         (vec!["verify", &id], 2, "verify requires --path when none were recorded at dispatch\n".to_owned()),
@@ -596,6 +600,7 @@ fn human_actions_and_multiline_evidence() {
         assert_eq!(out.status.code(), Some(code));
         assert_eq!(String::from_utf8(out.stdout).unwrap(), expected);
     }
+    f.status("alive", "RUNNING");
     fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(&id).join("final.md").display())).unwrap();
     let kill = fs::read(f.bin.join("kill")).unwrap();
     f.executable(&f.bin.join("kill"), "exit 0");

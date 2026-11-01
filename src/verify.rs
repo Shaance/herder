@@ -33,30 +33,40 @@ pub fn run(
             .as_deref()
             .or(run.baseline_commit.as_deref())
             .ok_or_else(|| anyhow::anyhow!("no dispatch baseline; scope cannot be verified"))?;
-        let mut files = std::collections::BTreeSet::new();
-        for args in [
-            vec!["diff", "--name-only", "--no-renames", "-z", baseline, "HEAD", "--"],
-            vec!["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"],
-            vec!["diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--"],
-            vec!["ls-files", "--others", "--exclude-standard", "-z"],
-        ] {
-            let text = process::checked(Command::new("git").current_dir(&run.repo).args(args))?;
-            files.extend(text.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
+        let mut files = dirty_paths(&run.repo)?;
+        let text = process::checked(Command::new("git").current_dir(&run.repo).args([
+            "diff",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            baseline,
+            "HEAD",
+            "--",
+        ]))?;
+        files.extend(text.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
+        let mut pre_existing = Vec::new();
+        for path in &files {
+            if let Some(hash) = run.dispatch_dirty.get(path)
+                && &content_hash(&run.repo, path)? == hash
+            {
+                pre_existing.push(path.clone());
+            }
         }
         let violations: Vec<_> = files
             .iter()
             .filter(|f| {
-                !paths.iter().any(|p| {
-                    let prefix = Path::new(p);
-                    Path::new(f).starts_with(prefix.strip_prefix(".").unwrap_or(prefix))
-                })
+                !pre_existing.contains(f)
+                    && !paths.iter().any(|p| {
+                        let prefix = Path::new(p);
+                        Path::new(f).starts_with(prefix.strip_prefix(".").unwrap_or(prefix))
+                    })
             })
             .collect();
         anyhow::ensure!(
             violations.is_empty(),
-            "outside authorized paths since {baseline}: {violations:?}; files={files:?}"
+            "outside authorized paths since {baseline}: {violations:?}; files={files:?}; pre-existing and unchanged={pre_existing:?}"
         );
-        Ok(format!("baseline={baseline}; files={files:?}"))
+        Ok(format!("baseline={baseline}; files={files:?}; pre-existing and unchanged={pre_existing:?}"))
     })();
     let mut checks = vec![match scope {
         Ok(output) => Check { command: "baseline scope".into(), exit_code: Some(0), output },
@@ -77,4 +87,28 @@ pub fn run(
     }
     run.verifications.push(verification);
     locked.save(run)
+}
+
+pub fn dirty_paths(repo: &Path) -> Result<std::collections::BTreeSet<String>> {
+    let mut files = std::collections::BTreeSet::new();
+    for args in [
+        vec!["diff", "--name-only", "--no-renames", "-z", "HEAD", "--"],
+        vec!["diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--"],
+        vec!["ls-files", "--others", "--exclude-standard", "-z"],
+    ] {
+        let text = process::checked(Command::new("git").current_dir(repo).args(args))?;
+        files.extend(text.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
+    }
+    Ok(files)
+}
+
+pub fn content_hash(repo: &Path, path: &str) -> Result<Option<String>> {
+    match std::fs::symlink_metadata(repo.join(path)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+        Ok(_) => {
+            process::checked(Command::new("git").current_dir(repo).args(["hash-object", "--no-filters", "--", path]))
+                .map(|hash| Some(hash.trim().to_owned()))
+        }
+    }
 }

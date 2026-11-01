@@ -10,7 +10,7 @@ ln -s "$PWD/skill" ~/.ai-skills/skills/crew && bash ~/.ai-skills/setup.sh   # in
 crew doctor --json
 ```
 
-Keep briefs outside `--repo`; an untracked brief inside it fails verify scope. Write `/tmp/task.md` with implementer-core's direct-mode contract blocks: `task`,
+Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. Write `/tmp/task.md` with implementer-core's direct-mode contract blocks: `task`,
 `workstream_contract`, `implementation_authority`, `action_safety`,
 `default_follow_through_policy`, `verification_loop`, `economy_contract`, and
 `structured_output_contract`. Name authorized paths and rejected alternatives.

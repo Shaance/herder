@@ -103,6 +103,12 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
                     observation = runs::observe(&mut run, locked.as_ref());
                 }
                 Action::Verify { paths, checks, .. } => {
+                    if matches!(observation.state, State::Starting | State::Running | State::Blocked) {
+                        return Ok((
+                            json!({"message":format!("cannot verify worker in state {}", serde_json::to_value(observation.state)?.as_str().unwrap())}),
+                            2,
+                        ));
+                    }
                     if paths.is_empty() && run.authorized_paths.is_empty() {
                         return Ok((
                             json!({"message":"verify requires --path when none were recorded at dispatch"}),
@@ -134,6 +140,13 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
         process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
             .ok()
             .map(|s| s.trim().to_owned());
+    let mut dispatch_dirty = std::collections::BTreeMap::new();
+    if baseline_commit.is_some() {
+        for path in crate::verify::dirty_paths(&repo)? {
+            let hash = crate::verify::content_hash(&repo, &path)?;
+            dispatch_dirty.insert(path, hash);
+        }
+    }
     let (id, mut locked) = store.create()?;
     let dir = store.dir(&id)?;
     store::copy(&args.brief, &locked.dir.join("input.md"))?;
@@ -149,6 +162,7 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
         extra: args.extra,
         repo,
         baseline_commit,
+        dispatch_dirty,
         brief: dir.join("input.md"),
         goal: args.goal,
         launch: Launch::Starting { target },

@@ -12,7 +12,7 @@ agent or person can use the same CLI.
 ## The loop
 
 1. Run `crew doctor` for the intended executor and profile.
-2. Keep briefs outside `--repo`; an untracked brief inside it fails verify scope. Use
+2. Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. Use
    implementer-core's direct-mode contract blocks, scope and checks. Name every skill the worker
    must load (for example `$write-rust`); workers do not reliably load them unasked.
 3. Use `crew dispatch`; retain the printed run ID, name and optional goal label.

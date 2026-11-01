@@ -8,6 +8,7 @@ fn a4_scope_includes_committed_staged_unstaged_and_untracked_paths() {
     fs::write(f.repo.join("committed"), "committed").unwrap();
     f.git(&["add", "committed"]);
     f.git(&["commit", "-qm", "worker change"]);
+    f.status("exited", "COMPLETED");
     let verified = f.call(&["verify", &id, "--path", "nothing/"], 1);
     assert!(verified["data"]["run"]["verifications"][0]["checks"].to_string().contains("committed"));
     fs::write(f.repo.join("staged"), "staged").unwrap();
@@ -28,6 +29,7 @@ fn a4_scope_includes_committed_staged_unstaged_and_untracked_paths() {
 fn a5_current_attempt_does_not_inherit_previous_verdict() {
     let f = Fixture::new();
     let id = f.launch("codex");
+    f.status("exited", "COMPLETED");
     f.call(&["verify", &id, "--path", "src/"], 0);
     f.status("exited", "COMPLETED");
     f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);

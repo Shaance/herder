@@ -161,7 +161,9 @@ fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
     assert_eq!(f.call(&["status", "review worker"], 0)["data"]["run"]["id"], id);
     fs::write(f.dir(id).join("final.md"), "review").unwrap();
     assert_eq!(f.call(&["report", "review worker"], 0)["data"]["report"]["content"], "review");
+    f.status("exited", "COMPLETED");
     f.call(&["verify", "review worker", "--path", "src/"], 0);
+    f.status("alive", "RUNNING");
     fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(id).join("final.md").display())).unwrap();
     f.call(&["stop", "review worker"], 0);
     assert_eq!(f.call(&["wait", "review worker", "--all"], 0)["data"]["runs"][0]["id"], id);
@@ -217,6 +219,7 @@ fn baseline_override_after_rebase_narrows_scope_and_persists() {
     f.git(&["commit", "-qm", "worker"]);
     f.git(&["rebase", "upstream"]);
     assert_eq!(f.git(&["merge-base", &old, "HEAD"]), old);
+    f.status("exited", "COMPLETED");
     f.call(&["verify", &id], 1);
     let before = fs::read(f.dir(&id).join("run.json")).unwrap();
     for invalid in ["does-not-exist", "HEAD:src/worker.rs"] {

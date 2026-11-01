@@ -144,6 +144,8 @@ pub struct Run {
     pub extra: Vec<String>,
     pub repo: PathBuf,
     pub baseline_commit: Option<String>,
+    #[serde(default)]
+    pub dispatch_dirty: std::collections::BTreeMap<String, Option<String>>,
     pub brief: PathBuf,
     pub goal: Option<String>,
     pub name: String,
