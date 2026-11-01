@@ -121,7 +121,7 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
         f.status("alive", "RUNNING");
         f.agents("busy", "working", "native-session");
         let stopped =
-            json!([{"id":"abc123","sessionId":"native-session","cwd":f.repo,"status":"idle","state":"stopped"}]);
+            json!([{"id":"abc123","kind":"background","sessionId":"native-session","cwd":f.repo,"status":"idle","state":"stopped"}]);
         fs::write(f.skills.join("stopped.json"), stopped.to_string()).unwrap();
         f
     }
@@ -140,7 +140,7 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
     fn agents(&self, status: &str, state: &str, session: &str) {
         fs::write(
             self.skills.join("agents.json"),
-            json!([{"id":"abc123","sessionId":session,"cwd":self.repo,"status":status,"state":state}]).to_string(),
+            json!([{"pid":1,"kind":"interactive","sessionId":"other","cwd":self.repo,"status":"idle"},{"id":"abc123","kind":"background","sessionId":session,"cwd":self.repo,"status":status,"state":state}]).to_string(),
         )
         .unwrap();
     }

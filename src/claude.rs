@@ -15,17 +15,27 @@ pub fn command(profile: Option<&Path>) -> Command {
     }
     cmd
 }
+// `claude agents` also lists interactive sessions, which carry no short id; only background ones are workers.
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+enum Listed {
+    Background(Agent),
+    #[serde(other)]
+    Other,
+}
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Agent {
     id: String,
     session_id: String,
     cwd: String,
-    status: String,
+    status: Option<String>,
     state: String,
 }
 fn agents(profile: Option<&Path>, repo: &Path) -> Result<Vec<Agent>> {
-    Ok(serde_json::from_str(&checked(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?)
+    let listed: Vec<Listed> =
+        serde_json::from_str(&checked(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?;
+    Ok(listed.into_iter().filter_map(|l| if let Listed::Background(a) = l { Some(a) } else { None }).collect())
 }
 pub fn launch(run: &Run, dir: &Path, extra: &[String]) -> Result<Native> {
     let Target::Claude { profile } = run.launch.target() else { bail!("Claude target required") };
@@ -60,7 +70,7 @@ pub fn launch(run: &Run, dir: &Path, extra: &[String]) -> Result<Native> {
         "background identity disagrees with launch: {text}"
     );
     ensure!(
-        a.status == "busy" || dir.join("final.md").exists(),
+        a.status.as_deref() == Some("busy") || dir.join("final.md").exists(),
         "background session {id} is idle with no report: {text}"
     );
     Ok(Native::Claude { id: id.into(), session_id: a.session_id, profile })
@@ -79,8 +89,9 @@ pub fn query(native: &Native, run: &Run, dir: &Path) -> Result<Observation> {
         a.session_id,
         a.cwd
     );
-    let state = match (a.status.as_str(), a.state.as_str()) {
+    let state = match (a.status.as_deref().unwrap_or(""), a.state.as_str()) {
         (_, "failed") => State::Failed,
+        (_, "done") => State::Finished,
         (_, "stopped" | "exited") => State::Stopped,
         (_, "blocked" | "waiting_for_permission") => State::Blocked,
         ("busy", _) => State::Running,
@@ -88,5 +99,5 @@ pub fn query(native: &Native, run: &Run, dir: &Path) -> Result<Observation> {
         ("idle", _) => State::Blocked,
         _ => State::Unknown,
     };
-    Ok(Observation { state, evidence: format!("id={id} session={session_id} status={} state={}", a.status, a.state) })
+    Ok(Observation { state, evidence: format!("id={id} session={session_id} status={} state={}", a.status.as_deref().unwrap_or("none"), a.state) })
 }
