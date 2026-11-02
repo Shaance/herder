@@ -12,6 +12,8 @@ mod contracts;
 mod corrections;
 #[path = "cases/durability.rs"]
 mod durability;
+#[path = "cases/handoff.rs"]
+mod handoff;
 #[path = "cases/lifecycle.rs"]
 mod lifecycle;
 #[path = "cases/workflow.rs"]
@@ -57,7 +59,7 @@ echo 'verdict: DIED' >> "$CREW_SKILLS_DIR/status""#,
         f.script(
             "implementer-core",
             "check_brief",
-            r#"test "$2" = direct
+            r#"case "$2" in direct|review) ;; *) exit 2 ;; esac
 if test -f "$CREW_SKILLS_DIR/lint-fail"; then echo 'invalid brief' >&2; exit 1; fi"#,
         );
         f.script(
@@ -505,6 +507,7 @@ fn every_help_has_example_and_usage_errors_are_json() {
         vec![],
         vec!["doctor"],
         vec!["dispatch"],
+        vec!["handoff"],
         vec!["ls"],
         vec!["status"],
         vec!["wait"],

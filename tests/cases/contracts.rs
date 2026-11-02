@@ -137,3 +137,42 @@ fn real_status_scripts_reject_recycled_pids() {
         assert_ne!(status["data"]["observation"]["state"], "running", "{status}");
     }
 }
+
+#[test]
+fn real_linter_accepts_generated_handoff_prompt_and_rejects_plain_dispatch() {
+    let (f, skills) = setup();
+    fs::write(
+        f.bin.join("codex"),
+        r#"#!/usr/bin/python3
+import sys,pathlib
+args=sys.argv
+pathlib.Path(args[args.index('-o')+1]).write_text('stub report')
+print('{"type":"thread.started","thread_id":"stub-thread"}')
+print('{"type":"turn.completed"}')"#,
+    )
+    .unwrap();
+    // A plain continuation document, including surface-check trigger words.
+    let doc = "# Continuation\n\nPlain context: keep the rename, finish tests. New flag discussion deferred.\n";
+    f.write("HANDOFF.md", doc);
+    let brief = f.root.join("HANDOFF.md");
+    let brief = brief.to_str().unwrap();
+    let (code, handoff) = call(&f, &skills, &["handoff", "--executor", "codex", "--repo", ".", "--brief", brief]);
+    assert_eq!(code, 0, "{handoff}");
+    let id = handoff["data"]["run_id"].as_str().unwrap();
+    let input = fs::read_to_string(f.dir(id).join("input.md")).unwrap();
+    assert!(input.contains(doc), "{input}");
+    for block in ["<task>", "<action_safety>", "<default_follow_through_policy>", "<structured_output_contract>"] {
+        assert!(input.contains(block), "{block}");
+    }
+    // Review mode passes the real linter too and keeps the generated input read-only.
+    let (code, review) =
+        call(&f, &skills, &["handoff", "--executor", "codex", "--mode", "review", "--repo", ".", "--brief", brief]);
+    assert_eq!(code, 0, "{review}");
+    let review_id = review["data"]["run_id"].as_str().unwrap();
+    assert!(fs::read_to_string(f.dir(review_id).join("input.md")).unwrap().contains("read-only"));
+    // Ordinary dispatch still rejects the same plain document with the real linter.
+    let (code, rejected) = call(&f, &skills, &["dispatch", "--executor", "codex", "--repo", ".", "--brief", brief]);
+    assert_eq!(code, 1, "{rejected}");
+    assert!(rejected["error"].as_str().unwrap().contains("missing required blocks"), "{rejected}");
+    assert_eq!(f.call(&["ls"], 0)["data"]["runs"].as_array().unwrap().len(), 2);
+}

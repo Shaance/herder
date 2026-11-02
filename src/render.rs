@@ -92,7 +92,7 @@ pub fn human(action: &Action) -> fn(&Value) {
                     .unwrap_or_else(|| "none".into())
             );
         },
-        Action::Dispatch(_) => |data| {
+        Action::Dispatch(_) | Action::Handoff(_) => |data| {
             if let Some(id) = data["run_id"].as_str() {
                 println!("{id}\t{}", text(&data["run"]["name"]).escape_debug());
                 for key in ["launch_error", "pane_error"] {
