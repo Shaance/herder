@@ -90,7 +90,7 @@ enum Action {
     },
     #[command(
         about = "Resume an exact session with a delta brief",
-        after_help = "Example: crew resume 20261101-120000-abcd --brief /tmp/delta.md\nVibe/Codex resume the recorded session with a non-empty delta after finished, failed or stopped.\nClaude requires manual claude attach <id> under the recorded profile.\nA failed pending resume can retry the same attempt after terminal executor evidence confirms no live worker;\nrunning/unknown blocks retry and executor restrictions still apply. Gate exit 3 leaves pending_resume and returns 0."
+        after_help = "Example: crew resume 20261101-120000-abcd --brief /tmp/delta.md --request-id sync-42\nVibe/Codex resume the recorded session with a non-empty delta after finished, failed or stopped.\nClaude requires manual claude attach <id> under the recorded profile.\nA failed pending resume can retry the same attempt after terminal executor evidence confirms no live worker;\nrunning/unknown blocks retry and executor restrictions still apply. Gate exit 3 leaves pending_resume and returns 0.\n--request-id KEY (1-200 bytes, no control characters) records the request before launch: replaying KEY with\nbyte-identical --brief returns the recorded run without another launch; a different brief under KEY is rejected."
     )]
     Resume {
         /// Run id or unique dispatch name
@@ -98,6 +98,9 @@ enum Action {
         /// Brief file to send to the worker
         #[arg(long)]
         brief: PathBuf,
+        /// Optional request identity making replays with identical brief bytes return the recorded run
+        #[arg(long)]
+        request_id: Option<String>,
     },
     #[command(
         about = "Record scope and command verification",

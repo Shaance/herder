@@ -156,7 +156,13 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
-pub fn resume(run: &mut Run, delta: &Path, store: &LockedRun) -> Result<()> {
+pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &LockedRun) -> Result<()> {
+    if let Some(id) = request_id {
+        ensure!(
+            !id.is_empty() && id.len() <= 200 && !id.chars().any(char::is_control),
+            "request id must be 1-200 bytes without control characters"
+        );
+    }
     if let Some(Native::Claude { id, .. }) = match &run.launch {
         Launch::PendingResume { previous, .. } => Some(previous),
         _ => run.launch.native(),
@@ -166,9 +172,21 @@ pub fn resume(run: &mut Run, delta: &Path, store: &LockedRun) -> Result<()> {
         );
     }
     let contents = std::fs::read(delta)?;
+    if let Some(attempt) = request_id.and_then(|id| run.request_attempts.get(id).copied()) {
+        // Known request: a replay returns the recorded run without another launch.
+        let input = store.dir.join(format!("input{attempt}.md"));
+        ensure!(
+            std::fs::read(&input).ok().as_deref() == Some(contents.as_slice()),
+            "request id {request_id:?} already owns attempt {attempt} with different brief bytes"
+        );
+        return Ok(());
+    }
     ensure!(!contents.is_empty(), "delta brief missing or empty");
     let dir = &store.dir;
     let (native, attempt) = if let Launch::PendingResume { previous, attempt, error: Some(_) } = &run.launch {
+        if request_id.is_some() && run.request_attempts.values().any(|a| a == attempt) {
+            bail!("pending attempt {attempt} is reserved by another request id; resolve it with status first");
+        }
         let executor = match previous {
             Native::Vibe { .. } => ScriptExecutor::VIBE,
             _ => ScriptExecutor::CODEX,
@@ -192,7 +210,16 @@ pub fn resume(run: &mut Run, delta: &Path, store: &LockedRun) -> Result<()> {
         (native.clone(), run.attempt.checked_add(1).ok_or_else(|| anyhow::anyhow!("attempt overflow"))?)
     };
     let delta = dir.join(format!("input{attempt}.md"));
+    if run.request_attempts.values().any(|a| *a == attempt) {
+        ensure!(
+            std::fs::read(&delta).ok().as_deref() == Some(contents.as_slice()),
+            "input for attempt {attempt} is reserved by a request id with different content"
+        );
+    }
     crate::store::atomic(&delta, &contents)?;
+    if let Some(id) = request_id {
+        run.request_attempts.insert(id.to_owned(), attempt);
+    }
     run.launch = Launch::PendingResume { previous: native, attempt, error: None };
     store.save(run)?;
     launch(run, dir, Some(&delta), store)

@@ -98,8 +98,13 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
                 Action::Stop { .. } => {
                     observation = runs::stop(&mut run, locked.as_ref().expect("stop acquired lock"))?;
                 }
-                Action::Resume { brief, .. } => {
-                    runs::resume(&mut run, &brief, locked.as_ref().expect("resume acquired lock"))?;
+                Action::Resume { brief, request_id, .. } => {
+                    runs::resume(
+                        &mut run,
+                        &brief,
+                        request_id.as_deref(),
+                        locked.as_ref().expect("resume acquired lock"),
+                    )?;
                     observation = runs::observe(&mut run, locked.as_ref());
                 }
                 Action::Verify { paths, checks, .. } => {
@@ -167,6 +172,7 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
         goal: args.goal,
         launch: Launch::Starting { target },
         attempt: NonZeroU32::MIN,
+        request_attempts: Default::default(),
         authorized_paths: args.paths,
         verifications: vec![],
         created_at: store::timestamp(),

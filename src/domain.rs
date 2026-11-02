@@ -151,6 +151,8 @@ pub struct Run {
     pub name: String,
     pub launch: Launch,
     pub attempt: NonZeroU32,
+    #[serde(default)]
+    pub request_attempts: std::collections::BTreeMap<String, NonZeroU32>,
     pub authorized_paths: Vec<String>,
     pub verifications: Vec<Verification>,
     pub created_at: String,
