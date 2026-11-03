@@ -6,6 +6,53 @@ use std::{
 };
 
 #[test]
+fn output_envelopes_and_escaped_wait_and_report_text_are_stable() {
+    let mut f = Fixture::new();
+    let name = "worker\nname\\tail";
+    let dispatched = f.dispatch("codex", &["--name", name], 0);
+    let id = dispatched["data"]["run_id"].as_str().unwrap();
+    let state = f.root.join("state\nwith\\controls");
+    fs::rename(&f.state, &state).unwrap();
+    f.state = state;
+    assert_eq!(dispatched["ok"], true);
+    assert_eq!(dispatched["error"], Value::Null);
+    assert_eq!(dispatched["data"]["launch_error"], Value::Null);
+    assert_eq!(dispatched["data"]["pane_error"], Value::Null);
+    assert!(dispatched["data"].get("launch_error").is_some());
+    assert!(dispatched["data"].get("pane_error").is_some());
+
+    let status = f.call(&["status", id], 0);
+    assert_eq!(status["data"]["report"], Value::Null);
+    assert!(status["data"].get("report").is_some());
+
+    let out = f.cmd().args(["wait", id, "--timeout", "0"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let escaped = name.escape_debug().to_string();
+    assert_eq!(
+        String::from_utf8(out.stdout).unwrap(),
+        format!(
+            "{id}\t{escaped}\trunning\n{id}\t{}\trunning\t{}\n",
+            escaped.escape_debug(),
+            f.dir(id).join("final.md").to_str().unwrap().escape_debug()
+        )
+    );
+    assert_eq!(String::from_utf8(out.stderr).unwrap(), "wait timed out\n");
+
+    let path = f.dir(id).join("final.md");
+    let report = f.call(&["report", id], 1);
+    assert_eq!(report["data"]["report"], json!({"path":path,"message":"no report yet"}));
+    let out = f.cmd().args(["report", id]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{}\n", path.display()));
+    assert_eq!(String::from_utf8(out.stderr).unwrap(), "no report yet; state=\"running\"\n");
+    fs::write(&path, "a report\nwithout more\n").unwrap();
+    let out = f.cmd().args(["report", id]).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{}\na report\nwithout more\n", path.display()));
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
 fn wait_any_returns_first_settled_and_all_polls_until_every_run_settles() {
     let f = Fixture::new();
     let first = f.launch("vibe");

@@ -1,167 +1,180 @@
-use crate::{Action, domain::Run};
+use crate::{
+    domain::{Executor, Run, State},
+    handlers::{ListEntry, Output, RunDetail},
+};
 use anyhow::Result;
 use serde_json::{Value, json};
+use std::path::Path;
 
-pub fn emit(json_output: bool, result: Result<(Value, i32)>, failure_code: i32, human: fn(&Value)) -> ! {
-    let (data, error, code) = match result {
-        Ok((data, code)) => (data, None, code),
-        Err(e) => (Value::Null, Some(format!("{e:#}")), failure_code),
+pub fn emit(json_output: bool, result: Result<(Output, i32)>, failure_code: i32) -> ! {
+    let (output, error, code) = match result {
+        Ok((output, code)) => (Some(output), None, code),
+        Err(e) => (None, Some(format!("{e:#}")), failure_code),
     };
     if json_output {
+        let data = output.as_ref().map(data).unwrap_or(Value::Null);
         println!("{}", json!({"ok":code == 0,"data":data,"error":error}));
     } else if let Some(error) = error {
         eprintln!("{error}");
-    } else {
-        human(&data);
+    } else if let Some(output) = output {
+        human(&output);
     }
     std::process::exit(code)
 }
 
-pub fn human(action: &Action) -> fn(&Value) {
-    match action {
-        Action::Doctor { .. } => |data| {
-            for executor in data["executors"].as_array().expect("doctor executors") {
-                for check in executor["checks"].as_array().expect("executor checks") {
-                    let item = format!("{}: {}", text(&executor["executor"]), text(&check["item"]));
-                    print_check(check["ok"] == true, &item, &check["fix"]);
+fn data(output: &Output) -> Value {
+    match output {
+        Output::Doctor(doctor) => json!(doctor),
+        Output::Ls { runs, summary } => json!({"runs":runs,"summary":summary}),
+        Output::Wait { runs, message } => json!({"runs":runs,"message":message}),
+        Output::Launch { run, launch_error, pane_error } => {
+            json!({"run_id":run.id,"run":run,"launch_error":launch_error,"pane_error":pane_error})
+        }
+        Output::Run { run, observation, detail } => {
+            let report = match detail {
+                RunDetail::Report { path, content: Some(content) } => json!({"path":path,"content":content}),
+                RunDetail::Report { path, content: None } => json!({"path":path,"message":"no report yet"}),
+                _ => Value::Null,
+            };
+            json!({"run":run,"observation":observation,"report":report})
+        }
+        Output::Message(message) | Output::Rejection(message) => json!({"message":message}),
+    }
+}
+
+fn human(output: &Output) {
+    match output {
+        Output::Doctor(doctor) => {
+            for executor in &doctor.executors {
+                for check in &executor.checks {
+                    let item = format!("{}: {}", executor.executor.as_str(), path_text(&check.item).escape_debug());
+                    print_check(check.ok, &item, check.fix.as_deref());
                 }
             }
-            if data["executors"].as_array().expect("doctor executors").iter().any(|e| e["executor"] == "claude") {
-                println!("claude profile: {}", text(&data["claude_profile"]));
+            if doctor.executors.iter().any(|e| e.executor == Executor::Claude) {
+                let profile = doctor.claude_profile.as_deref().map(path_text).unwrap_or("none");
+                println!("claude profile: {}", profile.escape_debug());
             }
-            print_check(data["rex"]["ok"] == true, "rex", &data["rex"]["fix"]);
-        },
-        Action::Ls { .. } => |data| {
-            for entry in data["runs"].as_array().expect("run list") {
-                if entry["error"].is_string() {
-                    println!("{}\tbroken\t{}", text(&entry["run_id"]), text(&entry["error"]));
-                    continue;
+            print_check(doctor.rex.ok, "rex", doctor.rex.fix);
+        }
+        Output::Ls { runs, summary } => {
+            for entry in runs {
+                match entry {
+                    ListEntry::Broken { run_id, error } => {
+                        println!("{}\tbroken\t{}", run_id.escape_debug(), error.escape_debug());
+                    }
+                    ListEntry::Run { run, observation } => println!(
+                        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                        run.id,
+                        if run.name == run.id { "-" } else { &run.name }.escape_debug(),
+                        run.goal.as_deref().unwrap_or("-").escape_debug(),
+                        run.launch.target().executor().as_str(),
+                        observation.state.as_str(),
+                        run.attempt,
+                        run.model.as_deref().unwrap_or("-").escape_debug()
+                    ),
                 }
-                let run: Run = serde_json::from_value(entry["run"].clone()).expect("serialized run");
-                println!(
-                    "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-                    run.id,
-                    if run.name == run.id { "-" } else { &run.name }.escape_debug(),
-                    run.goal.as_deref().unwrap_or("-").escape_debug(),
-                    text(&json!(run.launch.target())["executor"]),
-                    text(&entry["observation"]["state"]),
-                    run.attempt,
-                    run.model.as_deref().unwrap_or("-").escape_debug()
-                );
             }
-            for (executor, states) in data["summary"].as_object().expect("ls summary") {
-                let states = states.as_object().expect("state counts");
-                let total: u64 = states.values().map(|count| count.as_u64().unwrap()).sum();
+            for (executor, states) in summary {
+                let total: usize = states.values().sum();
                 let counts =
                     states.iter().map(|(state, count)| format!("{state} {count}")).collect::<Vec<_>>().join(", ");
                 println!("{executor}: {total} runs ({counts})");
             }
-        },
-        Action::Wait { .. } => |data| {
-            for run in data["runs"].as_array().expect("wait runs") {
+        }
+        Output::Wait { runs, message } => {
+            for run in runs {
                 println!(
                     "{}\t{}\t{}\t{}",
-                    text(&run["id"]),
-                    text(&run["name"]).escape_debug(),
-                    text(&run["state"]),
-                    text(&run["report_path"])
+                    run.id.escape_debug(),
+                    run.name.escape_debug().to_string().escape_debug(),
+                    run.state.as_str(),
+                    path_text(&run.report_path).escape_debug()
                 );
             }
-            if let Some(message) = data["message"].as_str() {
+            if let Some(message) = message {
                 eprintln!("{message}");
             }
-        },
-        Action::Status { .. } => |data| {
-            let run: Run = serde_json::from_value(data["run"].clone()).expect("serialized run");
-            let dir = run.brief.parent().expect("brief is stored in the run directory");
-            println!("state: {}\nevidence:", text(&data["observation"]["state"]));
-            for line in data["observation"]["evidence"].as_str().expect("observation evidence").lines() {
-                println!("  {line}");
+        }
+        Output::Launch { run, launch_error, pane_error } => {
+            println!("{}\t{}", run.id, run.name.escape_debug().to_string().escape_debug());
+            for error in [launch_error, pane_error].into_iter().flatten() {
+                eprintln!("{error}");
             }
+        }
+        Output::Message(message) => println!("{message}"),
+        Output::Rejection(message) => {
             println!(
-                "executor: {}\nattempt: {}\nrun dir: {}\nreport path: {}\nlatest verdict: {}",
-                text(&json!(run.launch.target())["executor"]),
-                run.attempt,
-                dir.display(),
-                dir.join(run.report_name()).display(),
-                run.verifications
-                    .iter()
-                    .rev()
-                    .find(|v| v.attempt == run.attempt)
-                    .map(|v| text(&json!(v.verdict)))
-                    .unwrap_or_else(|| "none".into())
+                "{}",
+                serde_json::to_string_pretty(&json!({"message":message})).expect("JSON value is serializable")
             );
-        },
-        Action::Dispatch(_) | Action::Handoff(_) => |data| {
-            if let Some(id) = data["run_id"].as_str() {
-                println!("{id}\t{}", text(&data["run"]["name"]).escape_debug());
-                for key in ["launch_error", "pane_error"] {
-                    if let Some(e) = data[key].as_str() {
-                        eprintln!("{e}");
+        }
+        Output::Run { run, observation, detail } => match detail {
+            RunDetail::Status => {
+                let dir = run.brief.parent().expect("brief is stored in the run directory");
+                println!("state: {}\nevidence:", observation.state.as_str());
+                for line in observation.evidence.lines() {
+                    println!("  {line}");
+                }
+                println!(
+                    "executor: {}\nattempt: {}\nrun dir: {}\nreport path: {}\nlatest verdict: {}",
+                    run.launch.target().executor().as_str(),
+                    run.attempt,
+                    dir.display(),
+                    dir.join(run.report_name()).display(),
+                    run.verifications
+                        .iter()
+                        .rev()
+                        .find(|v| v.attempt == run.attempt)
+                        .map(|v| v.verdict.as_str())
+                        .unwrap_or("none")
+                );
+            }
+            RunDetail::Report { path, content } => {
+                println!("{}", path_text(path));
+                if let Some(content) = content {
+                    print!("{content}");
+                } else {
+                    eprintln!("no report yet; state=\"{}\"", observation.state.as_str());
+                }
+            }
+            RunDetail::Resume => {
+                println!("{} attempt {}: {}", run.id.escape_debug(), run.attempt, observation.state.as_str());
+            }
+            RunDetail::Verify => {
+                let verification = run.verifications.last().expect("verify records a verification");
+                println!("{} attempt {}", verification.verdict.as_str(), verification.attempt);
+                for check in &verification.checks {
+                    if check.exit_code != Some(0) {
+                        println!("{}: {}", check.command.escape_debug(), check.output.lines().next().unwrap_or(""));
                     }
                 }
-            } else {
-                pretty(data);
             }
-        },
-        Action::Report { .. } => |data| {
-            let report = &data["report"];
-            println!("{}", report["path"].as_str().expect("report path"));
-            if let Some(content) = report["content"].as_str() {
-                print!("{content}");
-            } else {
-                eprintln!("no report yet; state={}", data["observation"]["state"]);
-            }
-        },
-        Action::Resume { .. } => |data| {
-            println!(
-                "{} attempt {}: {}",
-                text(&data["run"]["id"]),
-                data["run"]["attempt"],
-                text(&data["observation"]["state"])
-            );
-        },
-        Action::Verify { .. } => |data| {
-            if let Some(message) = data["message"].as_str() {
-                println!("{message}");
-                return;
-            }
-            let verification =
-                data["run"]["verifications"].as_array().expect("verifications").last().expect("recorded verification");
-            println!("{} attempt {}", text(&verification["verdict"]), verification["attempt"]);
-            for check in verification["checks"].as_array().expect("verification checks") {
-                if check["exit_code"] != 0 {
-                    println!(
-                        "{}: {}",
-                        text(&check["command"]),
-                        check["output"].as_str().expect("check output").lines().next().unwrap_or("")
-                    );
+            RunDetail::Stop => {
+                println!("{}: {}", run.id.escape_debug(), observation.state.as_str());
+                if observation.state != State::Stopped {
+                    println!("{}", observation.evidence);
                 }
-            }
-        },
-        Action::Stop { .. } => |data| {
-            println!("{}: {}", text(&data["run"]["id"]), text(&data["observation"]["state"]));
-            if data["observation"]["state"] != "stopped" {
-                println!("{}", data["observation"]["evidence"].as_str().expect("observation evidence"));
             }
         },
     }
 }
 
-fn text(value: &Value) -> String {
-    match value {
-        Value::String(s) => s.escape_debug().to_string(),
-        Value::Null => "none".into(),
-        _ => value.to_string(),
-    }
+pub fn wait_progress(run: &Run, state: State) {
+    println!("{}\t{}\t{}", run.id, run.name.escape_debug(), state.as_str());
 }
-fn print_check(ok: bool, item: &str, fix: &Value) {
+
+pub fn path_text(path: &Path) -> &str {
+    // Match Serde's Path serialization error before a typed output is returned.
+    path.to_str()
+        .ok_or_else(|| <serde_json::Error as serde::ser::Error>::custom("path contains invalid UTF-8 characters"))
+        .unwrap()
+}
+
+fn print_check(ok: bool, item: &str, fix: Option<&str>) {
     print!("{} {item}", if ok { "ok" } else { "missing" });
     if !ok {
-        print!("; fix: {}", text(fix));
+        print!("; fix: {}", fix.unwrap_or("none").escape_debug());
     }
     println!();
-}
-pub fn pretty(data: &Value) {
-    println!("{}", serde_json::to_string_pretty(data).expect("JSON value is serializable"));
 }

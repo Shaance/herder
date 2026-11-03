@@ -170,9 +170,8 @@ fn main() {
                 let _ = e.print();
                 std::process::exit(0);
             }
-            render::emit(json, Err(anyhow::anyhow!(e.to_string())), 2, render::pretty);
+            render::emit(json, Err(anyhow::anyhow!(e.to_string())), 2);
         }
     };
-    let human = render::human(&cli.command);
-    render::emit(cli.json, handlers::handle(cli.command, cli.json), 1, human);
+    render::emit(cli.json, handlers::handle(cli.command, cli.json), 1);
 }
