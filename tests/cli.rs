@@ -270,6 +270,57 @@ fn claude_launch_failures_and_lint_never_claim_success() {
 }
 
 #[test]
+fn human_launch_failures_and_rejections_keep_their_output_streams() {
+    let f = Fixture::new();
+    fs::write(f.skills.join("trust"), "").unwrap();
+    let brief = f.root.join("brief.md");
+    let name = "worker\nname";
+    let out = f
+        .cmd()
+        .args(["dispatch", "--executor", "claude", "--brief"])
+        .arg(&brief)
+        .args(["--repo", ".", "--profile", "/tmp/profile", "--name", name])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let (id, displayed_name) = stdout.trim_end().split_once('\t').unwrap();
+    assert_eq!(displayed_name, name.escape_debug().to_string().escape_debug().to_string());
+    let record = f.record(id);
+    let error = &record["launch"]["error"];
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        format!("run {id}: {}; {}\n", error["message"].as_str().unwrap(), error["remediation"].as_str().unwrap())
+    );
+
+    let out = f
+        .cmd()
+        .env_remove("REX_BLOCK")
+        .args(["dispatch", "--executor", "codex", "--brief"])
+        .arg(&brief)
+        .args(["--repo", ".", "--pane"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8(out.stdout).unwrap().contains('\t'));
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        "worker recorded; pane failed: environment variable not found\n"
+    );
+
+    let out = f
+        .cmd()
+        .args(["dispatch", "--executor", "vibe", "--brief"])
+        .arg(&brief)
+        .args(["--repo", ".", "--profile", "/tmp/profile"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "{\n  \"message\": \"--profile applies only to Claude\"\n}\n");
+    assert!(out.stderr.is_empty());
+}
+
+#[test]
 fn script_dispatch_status_and_report_use_executor_artifacts() {
     for executor in ["vibe", "codex"] {
         let f = Fixture::new();
@@ -498,6 +549,60 @@ fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
     assert!(text.contains("missing vibe: vibe; fix: install vibe and put its executable on PATH"));
     assert!(text.contains("missing rex; fix:"));
     assert!(!text.contains("watch"));
+}
+
+#[test]
+fn doctor_preserves_paths_in_json_and_escapes_them_in_human_output() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let f = Fixture::new();
+    let skills = f.root.join("skills\nwith\\controls");
+    std::os::unix::fs::symlink(&f.skills, &skills).unwrap();
+    let profile = f.root.join("profile\nwith\\controls");
+    let mut cmd = f.cmd();
+    let out = cmd
+        .env("CREW_SKILLS_DIR", &skills)
+        .arg("doctor")
+        .args(["--executor", "claude", "--profile"])
+        .arg(&profile)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let data: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(data["data"]["claude_profile"], json!(profile));
+    assert_eq!(
+        data["data"]["executors"][0]["checks"][1]["item"],
+        json!(skills.join("implementer-core/scripts/check_brief.sh"))
+    );
+    let out = f
+        .cmd()
+        .env("CREW_SKILLS_DIR", &skills)
+        .arg("doctor")
+        .args(["--executor", "claude", "--profile"])
+        .arg(&profile)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains(&format!(
+        "ok claude: {}\n",
+        skills.join("implementer-core/scripts/check_brief.sh").to_str().unwrap().escape_debug()
+    )));
+    assert!(text.contains(&format!("claude profile: {}\n", profile.to_str().unwrap().escape_debug())));
+
+    let invalid_profile = f.root.join(std::ffi::OsString::from_vec(vec![b'p', 0xff]));
+    let out = f
+        .cmd()
+        .arg("doctor")
+        .args(["--executor", "vibe", "--profile"])
+        .arg(&invalid_profile)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(101));
+    assert!(out.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("path contains invalid UTF-8 characters"));
 }
 
 #[test]

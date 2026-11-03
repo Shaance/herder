@@ -1,9 +1,36 @@
 use crate::{domain::Executor, process, scripts::ScriptExecutor};
 use anyhow::Result;
-use serde_json::{Value, json};
+use serde::Serialize;
 use std::{path::PathBuf, process::Command};
 
-pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Value, i32)> {
+#[derive(Serialize)]
+pub struct Doctor {
+    pub executors: Vec<ExecutorChecks>,
+    pub claude_profile: Option<PathBuf>,
+    pub profile_resolution: &'static str,
+    pub rex: RexCheck,
+}
+
+#[derive(Serialize)]
+pub struct ExecutorChecks {
+    pub executor: Executor,
+    pub checks: Vec<DoctorCheck>,
+}
+
+#[derive(Serialize)]
+pub struct DoctorCheck {
+    pub item: PathBuf,
+    pub ok: bool,
+    pub fix: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RexCheck {
+    pub ok: bool,
+    pub fix: Option<&'static str>,
+}
+
+pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doctor, i32)> {
     let profile = process::profile(profile)?;
     let mut executors = vec![];
     let mut healthy = true;
@@ -20,7 +47,11 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Valu
         for exe in if e == Executor::Claude { vec![name] } else { vec![name, "bash", "jq"] } {
             let present = process::on_path(exe);
             healthy &= present;
-            checks.push(json!({"item":exe,"ok":present,"fix":if present {None} else {Some(format!("install {exe} and put its executable on PATH"))}}));
+            checks.push(DoctorCheck {
+                item: exe.into(),
+                ok: present,
+                fix: (!present).then(|| format!("install {exe} and put its executable on PATH")),
+            });
         }
         let mut paths = vec![
             process::script("implementer-core", "check_brief"),
@@ -32,13 +63,23 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Valu
         for path in paths {
             let present = process::executable(&path);
             healthy &= present;
-            checks.push(json!({"item":path,"ok":present,"fix":if present {None} else {Some(format!("restore executable {} or set CREW_SKILLS_DIR to the skills directory", path.display()))}}));
+            let fix = (!present).then(|| {
+                format!("restore executable {} or set CREW_SKILLS_DIR to the skills directory", path.display())
+            });
+            checks.push(DoctorCheck { item: path, ok: present, fix });
         }
-        executors.push(json!({"executor":e,"checks":checks}));
+        executors.push(ExecutorChecks { executor: e, checks });
     }
     let rex = process::checked(Command::new("rex").args(["--autostart=false", "whoami", "--json"]));
     healthy &= rex.is_ok();
-    let data = json!({"executors":executors,"claude_profile":profile,"profile_resolution":"--profile > CLAUDE_CONFIG_DIR > none",
-        "rex":{"ok":rex.is_ok(),"fix":if rex.is_ok() {None} else {Some("start Rex and set REX_SERVER to its reachable control socket")}}});
+    let data = Doctor {
+        executors,
+        claude_profile: profile,
+        profile_resolution: "--profile > CLAUDE_CONFIG_DIR > none",
+        rex: RexCheck {
+            ok: rex.is_ok(),
+            fix: rex.is_err().then_some("start Rex and set REX_SERVER to its reachable control socket"),
+        },
+    };
     Ok((data, if healthy { 0 } else { 1 }))
 }

@@ -8,6 +8,15 @@ pub enum Executor {
     Vibe,
     Codex,
 }
+impl Executor {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Vibe => "vibe",
+            Self::Codex => "codex",
+        }
+    }
+}
 impl FromStr for Executor {
     type Err = String;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -25,6 +34,15 @@ pub enum Target {
     Claude { profile: Option<PathBuf> },
     Vibe,
     Codex,
+}
+impl Target {
+    pub fn executor(&self) -> Executor {
+        match self {
+            Self::Claude { .. } => Executor::Claude,
+            Self::Vibe => Executor::Vibe,
+            Self::Codex => Executor::Codex,
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "executor", rename_all = "snake_case")]
@@ -113,11 +131,32 @@ pub enum State {
     Stopped,
     Unknown,
 }
+impl State {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Blocked => "blocked",
+            Self::Finished => "finished",
+            Self::Failed => "failed",
+            Self::Stopped => "stopped",
+            Self::Unknown => "unknown",
+        }
+    }
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Pass,
     Fail,
+}
+impl Verdict {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+        }
+    }
 }
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Check {

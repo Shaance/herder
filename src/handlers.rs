@@ -5,11 +5,43 @@ use crate::{
     store::{self, Store},
 };
 use anyhow::Result;
-use serde_json::{Value, json};
-use std::num::NonZeroU32;
-use std::path::PathBuf;
+use serde::Serialize;
+use std::{collections::BTreeMap, num::NonZeroU32, path::PathBuf};
 
-pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
+pub enum Output {
+    Doctor(crate::doctor::Doctor),
+    Ls { runs: Vec<ListEntry>, summary: BTreeMap<&'static str, BTreeMap<&'static str, usize>> },
+    Wait { runs: Vec<WaitEntry>, message: Option<&'static str> },
+    Launch { run: Box<Run>, launch_error: Option<String>, pane_error: Option<String> },
+    Run { run: Box<Run>, observation: Observation, detail: RunDetail },
+    Message(String),
+    Rejection(String),
+}
+
+pub enum RunDetail {
+    Status,
+    Report { path: PathBuf, content: Option<String> },
+    Stop,
+    Resume,
+    Verify,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum ListEntry {
+    Run { run: Box<Run>, observation: Observation },
+    Broken { run_id: String, error: String },
+}
+
+#[derive(Serialize)]
+pub struct WaitEntry {
+    pub id: String,
+    pub name: String,
+    pub state: State,
+    pub report_path: PathBuf,
+}
+
+pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
     let store = Store::new()?;
     match &mut action {
         Action::Status { run }
@@ -23,12 +55,14 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
         _ => {}
     }
     match action {
-        Action::Doctor { executor, profile } => crate::doctor::run(executor, profile),
+        Action::Doctor { executor, profile } => {
+            crate::doctor::run(executor, profile).map(|(doctor, code)| (Output::Doctor(doctor), code))
+        }
         Action::Dispatch(args) => dispatch(args, &store),
         Action::Handoff(args) => handoff(args, &store),
         Action::Wait { runs, all, timeout } => wait(&store, &runs, all, timeout, json_output),
         Action::Ls { goal } => {
-            let mut summary = std::collections::BTreeMap::<String, std::collections::BTreeMap<String, usize>>::new();
+            let mut summary = BTreeMap::<&str, BTreeMap<&str, usize>>::new();
             let mut data = vec![];
             for id in store.runs()? {
                 let entry = (|| -> Result<_> {
@@ -38,18 +72,18 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
                         return Ok(None);
                     }
                     let observation = runs::observe(&mut run, locked.as_ref());
-                    let executor = serde_json::to_value(run.launch.target())?["executor"].as_str().unwrap().to_owned();
-                    let state = serde_json::to_value(observation.state)?.as_str().unwrap().to_owned();
+                    let executor = run.launch.target().executor().as_str();
+                    let state = observation.state.as_str();
                     *summary.entry(executor).or_default().entry(state).or_default() += 1;
-                    Ok(Some(json!({"run":run,"observation":observation})))
+                    Ok(Some(ListEntry::Run { run: Box::new(run), observation }))
                 })();
                 match entry {
                     Ok(Some(entry)) => data.push(entry),
                     Ok(None) => {}
-                    Err(error) => data.push(json!({"run_id":id,"error":format!("{error:#}")})),
+                    Err(error) => data.push(ListEntry::Broken { run_id: id, error: format!("{error:#}") }),
                 }
             }
-            Ok((json!({"runs":data,"summary":summary}), 0))
+            Ok((Output::Ls { runs: data, summary }, 0))
         }
         action => {
             let id = match &action {
@@ -85,20 +119,18 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
                 runs::observe(&mut run, locked.as_ref())
             };
             let mut code = 0;
-            let mut report = Value::Null;
-            match action {
+            let detail = match action {
                 Action::Report { .. } => {
                     let path = store.dir(&run.id)?.join(run.report_name());
-                    match store::report(&path)? {
-                        Some(content) => report = json!({"path":path,"content":content}),
-                        None => {
-                            code = 1;
-                            report = json!({"path":path,"message":"no report yet"});
-                        }
+                    let content = store::report(&path)?;
+                    if content.is_none() {
+                        code = 1;
                     }
+                    RunDetail::Report { path, content }
                 }
                 Action::Stop { .. } => {
                     observation = runs::stop(&mut run, locked.as_ref().expect("stop acquired lock"))?;
+                    RunDetail::Stop
                 }
                 Action::Resume { brief, request_id, .. } => {
                     runs::resume(
@@ -108,17 +140,18 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
                         locked.as_ref().expect("resume acquired lock"),
                     )?;
                     observation = runs::observe(&mut run, locked.as_ref());
+                    RunDetail::Resume
                 }
                 Action::Verify { paths, checks, .. } => {
                     if matches!(observation.state, State::Starting | State::Running | State::Blocked) {
                         return Ok((
-                            json!({"message":format!("cannot verify worker in state {}", serde_json::to_value(observation.state)?.as_str().unwrap())}),
+                            Output::Message(format!("cannot verify worker in state {}", observation.state.as_str())),
                             2,
                         ));
                     }
                     if paths.is_empty() && run.authorized_paths.is_empty() {
                         return Ok((
-                            json!({"message":"verify requires --path when none were recorded at dispatch"}),
+                            Output::Message("verify requires --path when none were recorded at dispatch".into()),
                             2,
                         ));
                     }
@@ -130,34 +163,36 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
                     locked = store.try_lock(&run.id)?;
                     run = store.load(&run.id)?;
                     observation = runs::observe(&mut run, locked.as_ref());
+                    RunDetail::Verify
                 }
-                _ => {}
-            }
-            Ok((json!({"run":run,"observation":observation,"report":report}), code))
+                Action::Status { .. } => RunDetail::Status,
+                _ => unreachable!(),
+            };
+            Ok((Output::Run { run: Box::new(run), observation, detail }, code))
         }
     }
 }
 fn profile_misuse(args: &Dispatch) -> Option<&'static str> {
     (args.executor != Executor::Claude && args.profile.is_some()).then_some("--profile applies only to Claude")
 }
-fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
+fn dispatch(args: Dispatch, store: &Store) -> Result<(Output, i32)> {
     if let Some(message) = profile_misuse(&args) {
-        return Ok((json!({"message":message}), 2));
+        return Ok((Output::Rejection(message.into()), 2));
     }
     let repo = store::repo(&args.repo)?;
     process::lint(&args.brief, &args.mode)?;
     let brief = args.brief.clone();
     launch_run(store, args, repo, Input::Brief(brief))
 }
-fn handoff(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
+fn handoff(args: Dispatch, store: &Store) -> Result<(Output, i32)> {
     if let Some(message) = profile_misuse(&args) {
-        return Ok((json!({"message":message}), 2));
+        return Ok((Output::Rejection(message.into()), 2));
     }
     let repo = store::repo(&args.repo)?;
     // Validate the continuation document before any staging or launch side effect.
     let document = match crate::handoff::document(&args.brief) {
         Ok(document) => document,
-        Err(error) => return Ok((json!({"message":format!("{error:#}")}), 2)),
+        Err(error) => return Ok((Output::Rejection(format!("{error:#}")), 2)),
     };
     let prompt = crate::handoff::prompt(&args.mode, &document);
     launch_run(store, args, repo, Input::Generated(prompt.into_bytes()))
@@ -168,7 +203,7 @@ enum Input {
     /// Handoff stages the generated prompt as input.md and lints it inside the staging directory.
     Generated(Vec<u8>),
 }
-fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Result<(Value, i32)> {
+fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Result<(Output, i32)> {
     let baseline_commit =
         process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
             .ok()
@@ -227,10 +262,10 @@ fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Res
         None
     };
     let code = if error.is_some() || pane_error.is_some() { 1 } else { 0 };
-    Ok((json!({"run_id":run.id,"run":run,"launch_error":error,"pane_error":pane_error}), code))
+    Ok((Output::Launch { run: Box::new(run), launch_error: error, pane_error }, code))
 }
 
-fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: bool) -> Result<(Value, i32)> {
+fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: bool) -> Result<(Output, i32)> {
     use std::time::{Duration, Instant};
     let started = Instant::now();
     let timeout = Duration::from_secs(timeout);
@@ -246,20 +281,14 @@ fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: boo
             let state = observation.state;
             if previous[index] != Some(state) {
                 if !json_output {
-                    println!(
-                        "{}\t{}\t{}",
-                        run.id,
-                        run.name.escape_debug(),
-                        serde_json::to_value(state)?.as_str().unwrap()
-                    );
+                    crate::render::wait_progress(&run, state);
                 }
                 previous[index] = Some(state);
             }
             settled += usize::from(matches!(state, State::Finished | State::Failed | State::Stopped | State::Blocked));
             unknown |= state == State::Unknown;
-            data.push(
-                json!({"id":run.id,"name":run.name,"state":state,"report_path":store.dir(id)?.join(run.report_name())}),
-            );
+            let report_path = store.dir(id)?.join(run.report_name());
+            data.push(WaitEntry { id: run.id, name: run.name, state, report_path });
         }
         let met = if all { settled == ids.len() } else { settled > 0 };
         // A status query can time out under load; only an unknown that outlasts the wait is reported.
@@ -271,6 +300,6 @@ fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: boo
             std::thread::sleep(Duration::from_secs(5).min(timeout.saturating_sub(started.elapsed())));
             continue;
         };
-        return Ok((json!({"runs":data,"message":message}), i32::from(message.is_some())));
+        return Ok((Output::Wait { runs: data, message }, i32::from(message.is_some())));
     }
 }
