@@ -121,6 +121,31 @@ crew wait <id1> <id2> --all
 Use the two printed run IDs for `<id1>` and `<id2>`, then read both reports.
 `--mode` selects brief linting only; the brief must enforce read-only behavior.
 
+## Handing a conversation to another agent
+
+When this coordinating conversation moves to another agent, write the continuation
+context yourself (decisions, constraints, remaining work, explicit authorizations)
+into a plain UTF-8 document, stop editing the task and repository, then:
+
+```sh
+crew handoff --executor claude --brief /tmp/HANDOFF.md --repo . --path src/
+```
+
+`crew handoff` reuses dispatch's options, launch, store and `--pane`, but accepts a
+plain continuation document instead of a structured implementer brief: it snapshots
+the document's full bytes into the run's `input.md` behind a standard continuation
+contract and sends that durable input to the worker. The generated prompt still
+passes the same brief linter as dispatch. Missing, empty, whitespace-only or
+non-UTF-8 documents fail before any launch and leave no run record; later edits or
+deletion of the original file cannot change what the worker receives, and the
+document is never printed to stdout.
+
+This launches a continuation only: it does not transfer hidden conversation, stop
+another writer, change Board task owners, or prove the context was understood, and
+the launch result is launch evidence only. Use `--pane` for the existing Claude
+attach functionality when in Rex. `--mode review` instructs the receiver to stay read-only; it does not add an OS sandbox. No delegation or
+publication happens unless the document or you expressly authorized it.
+
 ## Using crew from any agent
 
 crew is a plain CLI, so any agent that can run shell commands can coordinate with it. Each host needs

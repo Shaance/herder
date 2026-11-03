@@ -45,6 +45,23 @@ crew wait <id1> <id2> --all
 Use the two printed run IDs for `<id1>` and `<id2>`, then read both reports.
 `--mode` selects brief linting only; the brief must enforce read-only behavior.
 
+## Handing off to another agent
+
+When the coordinating conversation moves to another agent, write the continuation
+context (decisions, constraints, remaining work, explicit authorizations) into a
+plain UTF-8 file, stop editing the task and repository, then run
+`crew handoff --executor claude --brief /tmp/HANDOFF.md --repo . [dispatch options]`.
+Handoff reuses dispatch's launch, store and `--pane` (Claude attach in Rex), but
+accepts a plain continuation document: its full bytes are snapshotted into the
+run's `input.md` behind the standard continuation contract and linted like any
+brief, so later edits to the file cannot change what the worker receives. It
+launches a continuation only: it does not transfer hidden conversation, stop
+another writer, change Board task owners, or prove the context was understood, and
+the launch result is launch evidence only. Invalid documents fail before launch
+with no run record. `--mode review` instructs the receiver to stay read-only; it does not add an OS
+sandbox. No delegation or publication unless the document or the user expressly
+authorized it.
+
 ## Rules
 
 - Route work per AGENT_DEFAULTS; crew never selects an executor. Vibe runs are auto-approve only.

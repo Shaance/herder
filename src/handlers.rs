@@ -7,6 +7,7 @@ use crate::{
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::num::NonZeroU32;
+use std::path::PathBuf;
 
 pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
     let store = Store::new()?;
@@ -24,6 +25,7 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
     match action {
         Action::Doctor { executor, profile } => crate::doctor::run(executor, profile),
         Action::Dispatch(args) => dispatch(args, &store),
+        Action::Handoff(args) => handoff(args, &store),
         Action::Wait { runs, all, timeout } => wait(&store, &runs, all, timeout, json_output),
         Action::Ls { goal } => {
             let mut summary = std::collections::BTreeMap::<String, std::collections::BTreeMap<String, usize>>::new();
@@ -135,12 +137,38 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Value, i32)> {
         }
     }
 }
+fn profile_misuse(args: &Dispatch) -> Option<&'static str> {
+    (args.executor != Executor::Claude && args.profile.is_some()).then_some("--profile applies only to Claude")
+}
 fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
-    if args.executor != Executor::Claude && args.profile.is_some() {
-        return Ok((json!({"message":"--profile applies only to Claude"}), 2));
+    if let Some(message) = profile_misuse(&args) {
+        return Ok((json!({"message":message}), 2));
     }
     let repo = store::repo(&args.repo)?;
     process::lint(&args.brief, &args.mode)?;
+    let brief = args.brief.clone();
+    launch_run(store, args, repo, Input::Brief(brief))
+}
+fn handoff(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
+    if let Some(message) = profile_misuse(&args) {
+        return Ok((json!({"message":message}), 2));
+    }
+    let repo = store::repo(&args.repo)?;
+    // Validate the continuation document before any staging or launch side effect.
+    let document = match crate::handoff::document(&args.brief) {
+        Ok(document) => document,
+        Err(error) => return Ok((json!({"message":format!("{error:#}")}), 2)),
+    };
+    let prompt = crate::handoff::prompt(&args.mode, &document);
+    launch_run(store, args, repo, Input::Generated(prompt.into_bytes()))
+}
+enum Input {
+    /// Dispatch byte-copies the already linted brief file into the run staging directory.
+    Brief(PathBuf),
+    /// Handoff stages the generated prompt as input.md and lints it inside the staging directory.
+    Generated(Vec<u8>),
+}
+fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Result<(Value, i32)> {
     let baseline_commit =
         process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
             .ok()
@@ -154,7 +182,20 @@ fn dispatch(args: Dispatch, store: &Store) -> Result<(Value, i32)> {
     }
     let (id, mut locked) = store.create()?;
     let dir = store.dir(&id)?;
-    store::copy(&args.brief, &locked.dir.join("input.md"))?;
+    let input_md = locked.dir.join("input.md");
+    match &input {
+        Input::Brief(source) => {
+            store::copy(source, &input_md)?;
+        }
+        Input::Generated(bytes) => {
+            store::atomic(&input_md, bytes)?;
+            if let Err(error) = process::lint(&input_md, &args.mode) {
+                // Rejected handoff input must leave neither staging nor a published run behind.
+                let _ = std::fs::remove_dir_all(&locked.dir);
+                return Err(error);
+            }
+        }
+    }
     let target = match args.executor {
         Executor::Claude => Target::Claude { profile: process::profile(args.profile)? },
         Executor::Vibe => Target::Vibe,

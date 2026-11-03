@@ -2,6 +2,7 @@ mod claude;
 mod doctor;
 mod domain;
 mod handlers;
+mod handoff;
 mod process;
 mod render;
 mod runs;
@@ -43,6 +44,11 @@ enum Action {
         after_help = "Example: crew dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nLauncher gate exit 3 leaves the run starting; crew returns 0. Use crew wait to await settlement or status to follow progress."
     )]
     Dispatch(Dispatch),
+    #[command(
+        about = "Hand a plain continuation document to a worker and launch it",
+        after_help = "Example: crew handoff --executor claude --brief /tmp/HANDOFF.md --repo . --path src/\nAccepts a plain UTF-8 continuation document instead of a structured brief: its full bytes are snapshotted into the run's input.md behind the standard continuation contract, linted like any brief, and sent to the worker. Missing, empty, whitespace-only or non-UTF-8 documents fail before launch and leave no run record; later edits to the original file cannot change the stored input.\nThis launches a continuation only: it does not transfer hidden conversation, stop another writer, change Board task owners, or prove the context was understood. The launch result is launch evidence only. Use --pane for the existing Claude attach functionality when in Rex."
+    )]
+    Handoff(Dispatch),
     #[command(about = "List runs with fresh executor status", after_help = "Example: crew ls --goal feature-1 --json")]
     Ls {
         /// Match the exact goal string recorded at dispatch
