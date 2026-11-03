@@ -734,3 +734,107 @@ fn accepted_claude_identity_must_validate_before_observation_or_stop() {
         assert_eq!(fs::read_to_string(f.state.join("launch-count")).unwrap(), "accepted\n");
     }
 }
+
+#[test]
+fn request_id_replays_return_the_recorded_run_without_relaunching() {
+    for executor in ["vibe", "codex"] {
+        let f = Fixture::new();
+        let id = f.launch(executor);
+        f.status("exited", "COMPLETED");
+        let suffix = if executor == "vibe" { "vibe" } else { "classic" };
+        let original =
+            fs::read_to_string(f.skills.join(format!("{executor}-implementer/scripts/resume_{suffix}.sh"))).unwrap();
+        f.script(
+            &format!("{executor}-implementer"),
+            &format!("resume_{suffix}_impl"),
+            &original.replace("43211", "RESUME_PID"),
+        );
+        f.script(
+            &format!("{executor}-implementer"),
+            &format!("resume_{suffix}"),
+            &format!(
+                "echo call >> \"$CREW_STATE_DIR/resume-count\"\npid=$((43210 + $(wc -l < \"$CREW_STATE_DIR/resume-count\")))\nsed \"s/RESUME_PID/$pid/g\" \"$(dirname \"$0\")/resume_{suffix}_impl.sh\" | sh -s -- \"$@\""
+            ),
+        );
+        f.write("delta.md", "sync payload one");
+        let brief = f.root.join("delta.md");
+        let brief = brief.to_str().unwrap();
+        let args = ["resume", id.as_str(), "--brief", brief, "--request-id", "sync-1"];
+        let count = |f: &Fixture| fs::read_to_string(f.state.join("resume-count")).unwrap();
+        let first = f.call(&args, 0);
+        assert_eq!(first["data"]["run"]["attempt"], 2);
+        assert_eq!(first["data"]["run"]["request_attempts"], json!({"sync-1": 2}));
+        assert_eq!(count(&f), "call\n");
+        // Replay while the resumed attempt is running.
+        let replay = f.call(&args, 0);
+        assert_eq!(replay["data"]["run"]["attempt"], 2);
+        assert_eq!(replay["data"]["observation"]["state"], "running");
+        assert_eq!(count(&f), "call\n");
+        // Replay after the attempt settles: still one executor invocation.
+        fs::write(f.skills.join("status"), "state=exited pid=43211\nverdict: COMPLETED\n").unwrap();
+        assert_eq!(f.call(&["status", &id], 0)["data"]["observation"]["state"], "finished");
+        let settled = f.call(&args, 0);
+        assert_eq!(settled["data"]["run"]["attempt"], 2);
+        assert_eq!(settled["data"]["observation"]["state"], "finished");
+        assert_eq!(count(&f), "call\n");
+        // The same id with different brief bytes is rejected.
+        f.write("delta.md", "sync payload two");
+        let rejected = f.call(&args, 1);
+        assert!(rejected["error"].as_str().unwrap().contains("sync-1"), "{rejected}");
+        assert_eq!(count(&f), "call\n");
+        // A different request id reserves a later attempt.
+        let second = f.call(&["resume", &id, "--brief", brief, "--request-id", "sync-2"], 0);
+        assert_eq!(second["data"]["run"]["attempt"], 3);
+        assert_eq!(second["data"]["run"]["request_attempts"], json!({"sync-1": 2, "sync-2": 3}));
+        assert_eq!(count(&f), "call\ncall\n");
+    }
+}
+
+#[test]
+fn request_id_reservation_is_saved_before_launch_and_protects_its_input() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    f.status("exited", "COMPLETED");
+    f.script("codex-implementer", "resume_classic", "echo call >> \"$CREW_STATE_DIR/resume-count\"\nexit 1");
+    f.write("delta.md", "reserved payload");
+    let brief = f.root.join("delta.md");
+    let brief = brief.to_str().unwrap();
+    let count = || fs::read_to_string(f.state.join("resume-count")).unwrap();
+    f.call(&["resume", &id, "--brief", brief, "--request-id", "sync-9"], 1);
+    let record = f.record(&id);
+    assert_eq!(record["launch"]["state"], "pending_resume");
+    assert_eq!(record["request_attempts"], json!({"sync-9": 2}));
+    assert_eq!(fs::read_to_string(f.dir(&id).join("input2.md")).unwrap(), "reserved payload");
+    assert_eq!(count(), "call\n");
+    // A replayed key after the failed launch stays explicit and never relaunches.
+    let replay = f.call(&["resume", &id, "--brief", brief, "--request-id", "sync-9"], 0);
+    assert_eq!(replay["data"]["run"]["launch"]["state"], "pending_resume");
+    assert_eq!(replay["data"]["run"]["request_attempts"], json!({"sync-9": 2}));
+    assert_eq!(count(), "call\n");
+    // A no-id resume cannot rewrite the reserved input with different content.
+    f.write("delta.md", "different content");
+    let denied = f.call(&["resume", &id, "--brief", brief], 1);
+    assert!(denied["error"].as_str().unwrap().contains("reserved"), "{denied}");
+    assert_eq!(fs::read_to_string(f.dir(&id).join("input2.md")).unwrap(), "reserved payload");
+    assert_eq!(count(), "call\n");
+    // A new id cannot steal the pending attempt reserved by another id.
+    let steal = f.call(&["resume", &id, "--brief", brief, "--request-id", "sync-10"], 1);
+    assert!(steal["error"].as_str().unwrap().contains("reserved"), "{steal}");
+    assert_eq!(f.record(&id)["request_attempts"], json!({"sync-9": 2}));
+    assert_eq!(count(), "call\n");
+}
+
+#[test]
+fn request_id_is_bounded_and_control_free() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    f.status("exited", "COMPLETED");
+    let brief = f.root.join("brief.md");
+    let before = f.record(&id);
+    let long = "x".repeat(201);
+    for bad in ["", long.as_str(), "a\tb"] {
+        let result = f.call(&["resume", &id, "--brief", brief.to_str().unwrap(), "--request-id", bad], 1);
+        assert!(result["error"].as_str().unwrap().contains("request id"), "{result}");
+    }
+    assert_eq!(f.record(&id), before);
+}

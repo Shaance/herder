@@ -74,6 +74,16 @@ After correcting a recorded pending-resume error, `crew resume` retries the same
 attempt using its previous identity when the executor confirms no live worker.
 Running or unknown executor states block retry. Executor rejection diagnostics
 still apply, including Vibe's refusal to reuse existing attempt evidence files.
+`crew resume --request-id KEY` (KEY: 1-200 bytes, no control characters) makes a
+resume idempotent: Crew records the request id and its attempt in `run.json`
+(`request_attempts`) in the same saved mutation that marks the resume pending,
+before launching. Replaying a known KEY with byte-identical `--brief` content
+returns the recorded run and observation without another launch, whatever its
+state; the same KEY with different bytes is rejected. A new KEY never takes over
+a pending attempt reserved by another KEY, and a resume without an id cannot
+rewrite an input file reserved by a KEY with different content. A stored request
+means accepted by Crew, not agent receipt or success; a failed or unknown launch
+is never automatically relaunched under a replayed key.
 A late script identity can be recorded by status.
 Claude failures before acceptance remain terminal. Once Claude prints an accepted
 short ID, a later launch gate failure returns exit 1 but retains that ID and its
