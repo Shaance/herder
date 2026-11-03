@@ -106,6 +106,10 @@ pub fn content_hash(repo: &Path, path: &str) -> Result<Option<String>> {
     match std::fs::symlink_metadata(repo.join(path)) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
+        // git hash-object follows symlinks and fails on a link to a directory.
+        Ok(meta) if meta.file_type().is_symlink() => {
+            Ok(Some(format!("symlink:{}", std::fs::read_link(repo.join(path))?.display())))
+        }
         Ok(_) => {
             process::checked(Command::new("git").current_dir(repo).args(["hash-object", "--no-filters", "--", path]))
                 .map(|hash| Some(hash.trim().to_owned()))
