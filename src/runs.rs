@@ -6,7 +6,7 @@ use std::{path::Path, process::Command};
 pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun) -> Result<()> {
     let target = run.launch.target();
     let outcome = match target {
-        Target::Claude { .. } => claude::launch(run, dir, store).map(Some),
+        Target::Claude { .. } => claude::launch(run, dir, delta, store).map(Some),
         Target::Vibe => ScriptExecutor::VIBE.launch(run, dir, delta),
         Target::Codex => ScriptExecutor::CODEX.launch(run, dir, delta),
     };
@@ -63,9 +63,17 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
         let dir = &store.dir;
         let mut observed = match run.launch.target() {
             Target::Claude { profile } => {
-                if run.launch.native().is_some() || matches!(run.launch, Launch::Accepted { .. }) {
+                if run.launch.native().is_some()
+                    || matches!(
+                        run.launch,
+                        Launch::Accepted { .. } | Launch::PendingResume { previous: Native::Claude { .. }, .. }
+                    )
+                {
                     let accepted = matches!(run.launch, Launch::Accepted { .. });
                     let observed = claude::query(run)?;
+                    if matches!(run.launch, Launch::PendingResume { .. }) {
+                        return Ok(observed);
+                    }
                     if accepted {
                         store.save(run)?;
                     }
@@ -130,7 +138,10 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     let observed = observe(run, Some(store));
     ensure!(matches!(observed.state, State::Running | State::Blocked), "cannot stop: {observed}");
     let dir = &store.dir;
-    let native = run.launch.native().ok_or_else(|| anyhow::anyhow!("no recorded identity"))?;
+    let native = match &run.launch {
+        Launch::PendingResume { previous: native @ Native::Claude { .. }, .. } => native,
+        _ => run.launch.native().ok_or_else(|| anyhow::anyhow!("no recorded identity"))?,
+    };
     match native {
         Native::Claude { id, profile, .. } => {
             process::checked(claude::command(profile.as_deref()).current_dir(&run.repo).args(["stop", id]))?;
@@ -163,14 +174,6 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
             "request id must be 1-200 bytes without control characters"
         );
     }
-    if let Some(Native::Claude { id, .. }) = match &run.launch {
-        Launch::PendingResume { previous, .. } => Some(previous),
-        _ => run.launch.native(),
-    } {
-        bail!(
-            "Claude has no live background follow-up command; use `claude attach {id}` under the run's recorded profile"
-        );
-    }
     let contents = std::fs::read(delta)?;
     if let Some(attempt) = request_id.and_then(|id| run.request_attempts.get(id).copied()) {
         // Known request: a replay returns the recorded run without another launch.
@@ -183,22 +186,33 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
     }
     ensure!(!contents.is_empty(), "delta brief missing or empty");
     let dir = &store.dir;
-    let (native, attempt) = if let Launch::PendingResume { previous, attempt, error: Some(_) } = &run.launch {
-        if request_id.is_some() && run.request_attempts.values().any(|a| a == attempt) {
-            bail!("pending attempt {attempt} is reserved by another request id; resolve it with status first");
+    let (native, attempt) = if let Launch::PendingResume { previous, attempt, error } = &run.launch
+        && (error.is_some() || matches!(previous, Native::Claude { .. }))
+    {
+        let (previous, attempt) = (previous.clone(), *attempt);
+        if request_id.is_some() && run.request_attempts.values().any(|a| *a == attempt) {
+            bail!(
+                "pending attempt {attempt} is reserved by another request id; resolve it with status first, or retry without --request-id to continue the same attempt"
+            );
         }
-        let executor = match previous {
-            Native::Vibe { .. } => ScriptExecutor::VIBE,
-            _ => ScriptExecutor::CODEX,
+        let executor = match &previous {
+            Native::Claude { .. } => None,
+            Native::Vibe { .. } => Some(ScriptExecutor::VIBE),
+            Native::Codex { .. } => Some(ScriptExecutor::CODEX),
         };
-        let observed = executor.query(run, dir)?;
+        let observed = match &executor {
+            Some(executor) => executor.query(run, dir)?,
+            None => claude::query(run)?,
+        };
         ensure!(
             matches!(observed.state, State::Finished | State::Failed | State::Stopped),
             "cannot retry pending resume: {observed}"
         );
-        let recorded = executor.identity(dir)?;
-        ensure!(recorded.process().map(|p| p.2) == previous.process().map(|p| p.2), "resume identity changed");
-        (previous.clone(), *attempt)
+        if let Some(executor) = executor {
+            let recorded = executor.identity(dir)?;
+            ensure!(recorded.process().map(|p| p.2) == previous.process().map(|p| p.2), "resume identity changed");
+        }
+        (previous, attempt)
     } else {
         let observed = observe(run, Some(store));
         ensure!(
@@ -206,7 +220,9 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
             "cannot resume: {observed}"
         );
         let native = run.launch.native().ok_or_else(|| anyhow::anyhow!("no recorded identity to resume"))?;
-        scripts::confirm(native, dir)?;
+        if !matches!(native, Native::Claude { .. }) {
+            scripts::confirm(native, dir)?;
+        }
         (native.clone(), run.attempt.checked_add(1).ok_or_else(|| anyhow::anyhow!("attempt overflow"))?)
     };
     let delta = dir.join(format!("input{attempt}.md"));

@@ -69,7 +69,7 @@ past its launcher's separator. Crew Vibe runs are auto-approve only.
 Launcher gate exit 3 preserves `starting` or `pending_resume`; crew returns 0.
 A resume requires a non-empty delta; the delta can use `<task>`, `<verification_loop>`
 and `<constraints>` without dispatch's full brief contract. The accepted attempt
-and report remain current until a different PID with the same executor identity is recorded.
+and report remain current until resume succeeds (Vibe/Codex require a new PID with the same executor identity).
 After correcting a recorded pending-resume error, `crew resume` retries the same
 attempt using its previous identity when the executor confirms no live worker.
 Running or unknown executor states block retry. Executor rejection diagnostics
@@ -85,14 +85,16 @@ rewrite an input file reserved by a KEY with different content. A stored request
 means accepted by Crew, not agent receipt or success; a failed or unknown launch
 is never automatically relaunched under a replayed key.
 A late script identity can be recorded by status.
-Claude failures before acceptance remain terminal. Once Claude prints an accepted
+Initial Claude dispatch failures before acceptance remain terminal. Once Claude prints an accepted
 short ID, a later launch gate failure returns exit 1 but retains that ID and its
 diagnosis in `run.json`. Use status to observe that worker; do not relaunch it.
 Status validates cwd and a nonempty full session identity before recording it,
 then requires that same identity on every query and before stop. Gate errors
 remain historical facts even when the worker later runs or finishes. Existing
 failed records are unchanged and are not automatically attached to workers.
-Claude resume requires manual `claude attach <id>` with the recorded profile.
+Claude resume stops a settled session if still live, then wakes the same session
+with its saved options and recorded profile. No launch flags are replayed. Copies
+are stopped and rejected; failed pending resumes can retry the same attempt.
 Codex `status_classic.sh` inspects the newest resumed attempt itself, so crew
 passes no attempt suffix and checks the reported pid against the resumed worker.
 Executor queries time out after two seconds with `unknown` evidence; existing reports

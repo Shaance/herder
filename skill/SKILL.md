@@ -20,6 +20,8 @@ agent or person can use the same CLI.
    `--name`; existing IDs take precedence; ambiguous or unknown names list matches or similar names.
    Dispatch defaults to `--mode direct`; use `--mode review` for read-only briefs.
    Vibe/Codex resume replays the recorded model and extra arguments after `--`.
+Claude resume stops a settled live session, then wakes the same identity with its
+saved options under the recorded profile; copies are stopped and rejected.
 4. Follow progress with `crew ls` (models and executor state tallies) and `crew status`.
    Use `crew wait <run>...` for any settled run, or `--all` for all runs;
    `--timeout <secs>` defaults to 3600. It polls every 5 seconds, exits 0 for

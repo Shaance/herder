@@ -75,6 +75,30 @@ case "$1" in
 --bg)
   echo accepted >> "$CREW_STATE_DIR/launch-count"
   printf '%s\n' "$@" > "$CREW_STATE_DIR/claude-args"
+  if test "$2" = --resume; then
+    printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$CREW_STATE_DIR/resume-profile"
+    test "$#" = 4
+    test "$3" = native-session
+    test "$(pwd)" = "$(cat "$CREW_STATE_DIR/resume-repo")"
+    printf '%s\n' "$@" > "$CREW_STATE_DIR/resume-args"
+    if test -f "$CREW_SKILLS_DIR/resume-output"; then cat "$CREW_SKILLS_DIR/resume-output"; exit 0; fi
+    if test -f "$CREW_SKILLS_DIR/delayed-wake"; then touch "$CREW_SKILLS_DIR/waking"; echo 'backgrounded · abc123 · worker'; exit 0; fi
+    if test -f "$CREW_SKILLS_DIR/resume-copy"; then
+      if ! grep -q '^id-only$' "$CREW_SKILLS_DIR/resume-copy"; then
+        echo 'note: background session abc123 keeps its own saved options, so the flags you passed started a copy as def456. Without flags, the same command continues abc123 itself.'
+      fi
+      if ! grep -q '^note-only$' "$CREW_SKILLS_DIR/resume-copy"; then echo 'backgrounded · def456 · worker'; fi
+      exit 0
+    fi
+    grep -q '"status":null' "$CREW_SKILLS_DIR/agents.json"
+    report=$(printf '%s' "$4" | sed -n 's/^Write your final report to \(.*\)\.$/\1/p')
+    printf 'attempt 2\n' > "$report"
+    sed 's/"stopped"/"done"/' "$CREW_SKILLS_DIR/agents.json" > "$CREW_SKILLS_DIR/resumed.json"
+    mv "$CREW_SKILLS_DIR/resumed.json" "$CREW_SKILLS_DIR/agents.json"
+    echo 'prompt: started a copy as deadbeef'
+    echo 'backgrounded · abc123 · worker'
+    exit 0
+  fi
   for arg in "$@"; do
     if test "${next:-}" = yes; then dir=$arg; break; fi
     if test "$arg" = --add-dir; then next=yes; fi
@@ -85,11 +109,23 @@ case "$1" in
   if test -f "$CREW_SKILLS_DIR/idle"; then echo '(idle — send a prompt to start)'; exit 0; fi
   echo 'backgrounded · abc123 · worker';;
 agents)
+  if test -f "$CREW_SKILLS_DIR/waking"; then
+    rm "$CREW_SKILLS_DIR/waking"
+    touch "$CREW_SKILLS_DIR/awake"
+    sed 's/"stopped"/"done"/' "$CREW_SKILLS_DIR/agents.json"
+    exit 0
+  fi
+  if test -f "$CREW_SKILLS_DIR/awake"; then sed 's/"status":null/"status":"busy"/' "$CREW_SKILLS_DIR/agents.json"; exit 0; fi
   test ! -f "$CREW_SKILLS_DIR/query-fail"
   if test -f "$CREW_SKILLS_DIR/idle-once"; then rm "$CREW_SKILLS_DIR/idle-once"; if test -f "$CREW_SKILLS_DIR/fail-after-identity"; then touch "$CREW_SKILLS_DIR/query-fail"; fi; sed 's/"busy"/"idle"/' "$CREW_SKILLS_DIR/agents.json"; exit 0; fi
   cat "$CREW_SKILLS_DIR/agents.json";;
 stop)
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$CREW_STATE_DIR/stop-profile"
   printf '%s\n' "$@" > "$CREW_STATE_DIR/stop-args"
+  echo "$2" >> "$CREW_STATE_DIR/stops"
+  if test -f "$CREW_SKILLS_DIR/stop-live"; then exit 0; fi
+  if test "$2" != abc123 && test -f "$CREW_SKILLS_DIR/stop-fail"; then exit 1; fi
+  if test "$2" = def456; then exit 0; fi
   cp "$CREW_SKILLS_DIR/stopped.json" "$CREW_SKILLS_DIR/agents.json";;
 *) exit 90;;
 esac"#,
@@ -137,7 +173,7 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
         }
         f.status("alive", "RUNNING");
         f.agents("busy", "working", "native-session");
-        let stopped = json!([{"id":"abc123","kind":"background","sessionId":"native-session","cwd":f.repo,"status":"idle","state":"stopped"}]);
+        let stopped = json!([{"id":"abc123","kind":"background","sessionId":"native-session","cwd":f.repo,"status":null,"state":"stopped"}]);
         fs::write(f.skills.join("stopped.json"), stopped.to_string()).unwrap();
         f
     }
@@ -378,11 +414,203 @@ fn resume_selects_current_attempt_report_and_retains_native_session() {
         let state = f.call(&["status", &id], 0);
         assert_eq!(state["data"]["observation"]["state"], "finished");
     }
+}
+
+#[test]
+fn claude_resume_stops_idle_and_wakes_same_identity() {
+    let f = Fixture::new();
+    let result =
+        f.dispatch("claude", &["--profile", "/tmp/resume-profile", "--model", "saved-model", "--", "--verbose"], 0);
+    let id = result["data"]["run_id"].as_str().unwrap();
+    let native = f.record(id)["launch"]["native"].clone();
+    f.agents("idle", "done", "native-session");
+    fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
+    fs::write(f.dir(id).join("final.md"), "earlier evidence").unwrap();
+    let brief = f.root.join("brief.md");
+    f.call(&["resume", id, "--brief", brief.to_str().unwrap(), "--request-id", "delta"], 0);
+    assert_eq!(f.record(id)["attempt"], 2);
+    assert_eq!(f.record(id)["launch"]["native"], native);
+    for operation in ["stop-profile", "resume-profile"] {
+        assert_eq!(fs::read_to_string(f.state.join(operation)).unwrap(), "/tmp/resume-profile\n");
+    }
+    assert_eq!(fs::read_to_string(f.state.join("stops")).unwrap(), "abc123\n");
+    assert_eq!(
+        fs::read_to_string(f.state.join("resume-args")).unwrap(),
+        format!(
+            "--bg\n--resume\nnative-session\nimplement this task\n\n\nWrite your final report to {}/final2.md.\n\n",
+            f.dir(id).display()
+        )
+    );
+    assert_eq!(f.call(&["report", id], 0)["data"]["report"]["content"], "attempt 2\n");
+    assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "finished");
+    f.call(&["wait", id, "--timeout", "1"], 0);
+    f.call(&["verify", id, "--path", "src/"], 0);
+    f.call(&["resume", id, "--brief", brief.to_str().unwrap(), "--request-id", "delta"], 0);
+    assert_eq!(f.record(id)["attempt"], 2);
+    assert_eq!(fs::read_to_string(f.dir(id).join("final.md")).unwrap(), "earlier evidence");
+}
+
+#[test]
+fn claude_resume_rejects_copy_and_cleans_it_up() {
+    for mode in ["both", "id-only", "note-only"] {
+        let f = Fixture::new();
+        let id = f.launch("claude");
+        let native = f.record(&id)["launch"]["native"].clone();
+        f.agents("idle", "done", "native-session");
+        fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
+        fs::write(f.skills.join("resume-copy"), mode).unwrap();
+        fs::write(f.dir(&id).join("final.md"), "earlier evidence").unwrap();
+        let brief = f.root.join("brief.md");
+        let error = f.call(&["resume", &id, "--brief", brief.to_str().unwrap()], 1);
+        assert!(error["error"].as_str().unwrap().contains("created a copy"));
+        let record = f.record(&id);
+        assert_eq!(record["attempt"], 1);
+        assert_eq!(record["launch"]["state"], "pending_resume");
+        assert_eq!(record["launch"]["previous"], native);
+        assert_eq!(f.call(&["status", &id], 0)["data"]["observation"]["state"], "stopped");
+        assert_eq!(f.record(&id), record);
+        assert!(record["launch"]["error"]["message"].as_str().unwrap().contains("copy"));
+        assert_eq!(fs::read_to_string(f.state.join("stops")).unwrap(), "abc123\ndef456\n");
+        assert_eq!(fs::read_to_string(f.dir(&id).join("final.md")).unwrap(), "earlier evidence");
+    }
+}
+
+#[test]
+fn claude_resume_refuses_running_session() {
     let f = Fixture::new();
     let id = f.launch("claude");
-    let error = f.call(&["resume", &id, "--brief", "delta.md"], 1);
-    assert!(error["error"].as_str().unwrap().contains("claude attach abc123"));
+    let before = f.record(&id);
+    let brief = f.root.join("brief.md");
+    let error = f.call(&["resume", &id, "--brief", brief.to_str().unwrap()], 1);
+    assert!(error["error"].as_str().unwrap().contains("cannot resume"));
+    assert_eq!(f.record(&id), before);
+    assert!(!f.state.join("stop-args").exists());
+    assert!(!f.dir(&id).join("input2.md").exists());
+}
+
+#[test]
+fn claude_resume_retries_pending_error_with_identity_checks() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    let native = f.record(&id)["launch"]["native"].clone();
+    f.agents("idle", "done", "native-session");
+    fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
+    fs::write(f.skills.join("resume-copy"), "").unwrap();
+    let brief = f.root.join("brief.md");
+    f.call(&["resume", &id, "--brief", brief.to_str().unwrap()], 1);
+    fs::remove_file(f.skills.join("resume-copy")).unwrap();
+    let pending = f.record(&id);
+    f.agents("idle", "done", "different-session");
+    let error = f.call(&["resume", &id, "--brief", brief.to_str().unwrap()], 1);
+    assert!(error["error"].as_str().unwrap().contains("identity mismatch"));
+    assert_eq!(f.record(&id), pending);
+    f.agents("busy", "working", "native-session");
+    f.call(&["resume", &id, "--brief", brief.to_str().unwrap()], 1);
+    assert_eq!(f.record(&id), pending);
+    f.agents("idle", "done", "native-session");
+    f.call(&["resume", &id, "--brief", brief.to_str().unwrap()], 0);
+    assert_eq!(f.record(&id)["attempt"], 2);
+    assert_eq!(f.record(&id)["launch"]["native"], native);
+    assert!(!f.dir(&id).join("input3.md").exists());
+}
+
+#[test]
+fn claude_pending_interrupted_resume_retries_same_attempt() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    let mut record = f.record(&id);
+    let native = record["launch"]["native"].clone();
+    record["launch"] = json!({"state":"pending_resume", "previous":native, "attempt":2, "error":null});
+    fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
+    let brief = f.root.join("brief.md");
+    fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
+    f.call(&["resume", &id, "--brief", brief.to_str().unwrap()], 1);
+    assert_eq!(f.record(&id), record);
+    f.agents("idle", "done", "native-session");
+    f.call(&["resume", &id, "--brief", brief.to_str().unwrap()], 0);
+    assert_eq!(f.record(&id)["attempt"], 2);
+    assert_eq!(f.record(&id)["launch"]["native"], native);
+    assert!(!f.dir(&id).join("input3.md").exists());
+}
+
+#[test]
+fn claude_pending_stop_uses_recorded_identity() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    let mut record = f.record(&id);
+    record["launch"] =
+        json!({"state":"pending_resume", "previous":record["launch"]["native"], "attempt":2, "error":null});
+    fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
+    assert_eq!(f.call(&["stop", &id], 0)["data"]["observation"]["state"], "stopped");
+    assert_eq!(fs::read_to_string(f.state.join("stop-args")).unwrap(), "stop\nabc123\n");
+    assert_eq!(f.record(&id), record);
+}
+
+#[test]
+fn claude_resume_help_describes_saved_options() {
+    let f = Fixture::new();
+    let out = f.cmd().args(["resume", "--help"]).output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8(out.stdout).unwrap().contains(
+        "Claude stops a settled live session and resumes the same identity with saved options under the recorded profile."));
+}
+
+#[test]
+fn claude_resume_waits_for_fresh_evidence() {
+    for stale_report in [false, true] {
+        let f = Fixture::new();
+        let id = f.launch("claude");
+        f.agents("idle", "done", "native-session");
+        fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
+        fs::write(f.skills.join("delayed-wake"), "").unwrap();
+        if stale_report {
+            fs::write(f.dir(&id).join("final2.md"), "stale").unwrap();
+        }
+        let started = std::time::Instant::now();
+        f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+        assert!(started.elapsed() >= std::time::Duration::from_secs(1), "gate accepted stale evidence");
+        assert_eq!(f.record(&id)["attempt"], 2);
+    }
+}
+
+#[test]
+fn claude_resume_refuses_wake_if_stop_leaves_session_live() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    f.agents("idle", "done", "native-session");
+    fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
+    fs::write(f.skills.join("stop-live"), "").unwrap();
+    let error = f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 1);
+    assert!(error["error"].as_str().unwrap().contains("still live after stop"));
+    assert!(!f.state.join("resume-args").exists());
     assert_eq!(f.record(&id)["attempt"], 1);
+}
+
+#[test]
+fn claude_resume_parses_notes_and_attempts_all_copy_cleanup() {
+    for output in
+        ["note: started a copy as def456!\nbackgrounded · fed123 · worker", "note: started a copy as ?unknown"]
+    {
+        let f = Fixture::new();
+        let id = f.launch("claude");
+        f.agents("idle", "done", "native-session");
+        fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
+        fs::write(f.skills.join("resume-output"), output).unwrap();
+        fs::write(f.skills.join("stop-fail"), "").unwrap();
+        let error = f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 1);
+        assert!(error["error"].as_str().unwrap().contains(output));
+        if output.contains("?unknown") {
+            assert!(!error["error"].as_str().unwrap().contains("cleanup failures:"));
+            assert!(
+                error["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("no copy id could be parsed; the copy must be stopped manually")
+            );
+        }
+        let stops = fs::read_to_string(f.state.join("stops")).unwrap();
+        assert_eq!(stops, if output.contains("def456") { "abc123\ndef456\nfed123\n" } else { "abc123\n" });
+    }
 }
 
 #[test]
@@ -415,7 +643,11 @@ fn mismatched_identity_or_reused_pid_is_never_stopped_or_resumed() {
         assert!(!f.state.join("kill-args").exists());
         assert!(!f.state.join("stop-args").exists());
         if mode != "ps" {
-            f.call(&["resume", &id, "--brief", "delta.md"], 1);
+            fs::write(f.repo.join("delta.md"), "delta").unwrap();
+            let error = f.call(&["resume", &id, "--brief", "delta.md"], 1);
+            if mode == "claude" {
+                assert!(error["error"].as_str().unwrap().contains("identity mismatch"));
+            }
             assert!(!f.state.join("resume-args").exists());
         }
     }
@@ -977,6 +1209,7 @@ fn request_id_reservation_is_saved_before_launch_and_protects_its_input() {
     // A new id cannot steal the pending attempt reserved by another id.
     let steal = f.call(&["resume", &id, "--brief", brief, "--request-id", "sync-10"], 1);
     assert!(steal["error"].as_str().unwrap().contains("reserved"), "{steal}");
+    assert!(steal["error"].as_str().unwrap().contains("retry without --request-id"));
     assert_eq!(f.record(&id)["request_attempts"], json!({"sync-9": 2}));
     assert_eq!(count(), "call\n");
 }
