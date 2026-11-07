@@ -126,7 +126,7 @@ enum Action {
         checks: Vec<String>,
     },
 }
-#[derive(Args)]
+#[derive(Args, Clone)]
 struct Dispatch {
     /// Brief lint mode
     #[arg(long, default_value = "direct", value_parser = ["direct", "review"])]
@@ -140,9 +140,9 @@ struct Dispatch {
     /// Repository directory for the worker
     #[arg(long)]
     repo: PathBuf,
-    /// Executor model name (passed through unchecked)
+    /// Executor model name (passed through unchecked); repeat with --mode review to launch one run per model
     #[arg(long)]
-    model: Option<String>,
+    model: Vec<String>,
     /// Optional goal string; ls --goal matches it exactly
     #[arg(long)]
     goal: Option<String>,

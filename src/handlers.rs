@@ -10,12 +10,30 @@ use std::{collections::BTreeMap, num::NonZeroU32, path::PathBuf};
 
 pub enum Output {
     Doctor(crate::doctor::Doctor),
-    Ls { runs: Vec<ListEntry>, summary: BTreeMap<&'static str, BTreeMap<&'static str, usize>> },
-    Wait { runs: Vec<WaitEntry>, message: Option<&'static str> },
-    Launch { run: Box<Run>, launch_error: Option<String>, pane_error: Option<String> },
-    Run { run: Box<Run>, observation: Observation, detail: RunDetail },
+    Ls {
+        runs: Vec<ListEntry>,
+        summary: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
+    },
+    Wait {
+        runs: Vec<WaitEntry>,
+        message: Option<&'static str>,
+    },
+    Launch(Launched),
+    /// One review dispatch fanned out to several models.
+    Launches(Vec<Launched>),
+    Run {
+        run: Box<Run>,
+        observation: Observation,
+        detail: RunDetail,
+    },
     Message(String),
     Rejection(String),
+}
+
+pub struct Launched {
+    pub run: Box<Run>,
+    pub launch_error: Option<String>,
+    pub pane_error: Option<String>,
 }
 
 pub enum RunDetail {
@@ -172,20 +190,40 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
         }
     }
 }
-fn profile_misuse(args: &Dispatch) -> Option<&'static str> {
-    (args.executor != Executor::Claude && args.profile.is_some()).then_some("--profile applies only to Claude")
+fn misuse(args: &Dispatch, handoff: bool) -> Option<&'static str> {
+    if args.executor != Executor::Claude && args.profile.is_some() {
+        Some("--profile applies only to Claude")
+    } else if args.model.len() > 1 && (handoff || args.mode != "review") {
+        // Several writers in one worktree would edit the same files concurrently.
+        Some("repeat --model only on a --mode review dispatch; writers and handoffs run one model")
+    } else {
+        None
+    }
 }
-fn dispatch(args: Dispatch, store: &Store) -> Result<(Output, i32)> {
-    if let Some(message) = profile_misuse(&args) {
+fn dispatch(mut args: Dispatch, store: &Store) -> Result<(Output, i32)> {
+    if let Some(message) = misuse(&args, false) {
         return Ok((Output::Rejection(message.into()), 2));
     }
     let repo = store::repo(&args.repo)?;
     process::lint(&args.brief, &args.mode)?;
     let brief = args.brief.clone();
-    launch_run(store, args, repo, Input::Brief(brief))
+    if args.model.len() < 2 {
+        let (launched, code) = launch_run(store, args, repo, Input::Brief(brief))?;
+        return Ok((Output::Launch(launched), code));
+    }
+    let (mut launches, mut code) = (vec![], 0);
+    for model in std::mem::take(&mut args.model) {
+        let mut one = args.clone();
+        one.name = args.name.as_ref().map(|name| format!("{name}-{model}"));
+        one.model = vec![model];
+        let (launched, one_code) = launch_run(store, one, repo.clone(), Input::Brief(brief.clone()))?;
+        launches.push(launched);
+        code = code.max(one_code);
+    }
+    Ok((Output::Launches(launches), code))
 }
 fn handoff(args: Dispatch, store: &Store) -> Result<(Output, i32)> {
-    if let Some(message) = profile_misuse(&args) {
+    if let Some(message) = misuse(&args, true) {
         return Ok((Output::Rejection(message.into()), 2));
     }
     let repo = store::repo(&args.repo)?;
@@ -195,7 +233,8 @@ fn handoff(args: Dispatch, store: &Store) -> Result<(Output, i32)> {
         Err(error) => return Ok((Output::Rejection(format!("{error:#}")), 2)),
     };
     let prompt = crate::handoff::prompt(&args.mode, &document);
-    launch_run(store, args, repo, Input::Generated(prompt.into_bytes()))
+    let (launched, code) = launch_run(store, args, repo, Input::Generated(prompt.into_bytes()))?;
+    Ok((Output::Launch(launched), code))
 }
 enum Input {
     /// Dispatch byte-copies the already linted brief file into the run staging directory.
@@ -203,7 +242,8 @@ enum Input {
     /// Handoff stages the generated prompt as input.md and lints it inside the staging directory.
     Generated(Vec<u8>),
 }
-fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Result<(Output, i32)> {
+/// Launches one run; `misuse` has already limited `args.model` to at most one entry.
+fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Result<(Launched, i32)> {
     let baseline_commit =
         process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
             .ok()
@@ -239,7 +279,7 @@ fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Res
     let mut run = Run {
         name: args.name.unwrap_or_else(|| id.clone()),
         id,
-        model: args.model,
+        model: args.model.into_iter().next(),
         extra: args.extra,
         repo,
         baseline_commit,
@@ -262,7 +302,7 @@ fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Res
         None
     };
     let code = if error.is_some() || pane_error.is_some() { 1 } else { 0 };
-    Ok((Output::Launch { run: Box::new(run), launch_error: error, pane_error }, code))
+    Ok((Launched { run: Box::new(run), launch_error: error, pane_error }, code))
 }
 
 fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: bool) -> Result<(Output, i32)> {

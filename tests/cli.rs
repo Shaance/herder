@@ -650,6 +650,37 @@ fn non_claude_profile_is_a_usage_error() {
 }
 
 #[test]
+fn review_dispatch_launches_one_named_run_per_model() {
+    let f = Fixture::new();
+    let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev", "--goal", "g"];
+    let runs = f.dispatch("vibe", &args, 0)["data"]["runs"].as_array().unwrap().clone();
+    let recorded: Vec<_> = runs
+        .iter()
+        .map(|launch| {
+            let record = f.record(launch["run_id"].as_str().unwrap());
+            (record["name"].clone(), record["model"].clone(), record["goal"].clone())
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        [(json!("rev-model-a"), json!("model-a"), json!("g")), (json!("rev-model-b"), json!("model-b"), json!("g"))]
+    );
+    assert_eq!(f.call(&["ls", "--goal", "g"], 0)["data"]["runs"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn several_models_are_refused_for_writers_and_handoffs() {
+    let f = Fixture::new();
+    let brief = f.root.join("brief.md");
+    for command in ["dispatch", "handoff"] {
+        let args = [command, "--executor", "vibe", "--brief", brief.to_str().unwrap(), "--repo", "."];
+        let result = f.call(&[&args[..], &["--model", "model-a", "--model", "model-b"]].concat(), 2);
+        assert!(result["data"]["message"].as_str().unwrap().contains("--mode review"), "{result}");
+    }
+    assert!(!f.state.join("runs").exists());
+}
+
+#[test]
 fn failed_launch_observation_keeps_error_without_querying() {
     for mode in ["trust", "idle"] {
         let f = Fixture::new();

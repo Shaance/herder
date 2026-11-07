@@ -110,15 +110,18 @@ Legacy `starting` intents load as running, and untagged legacy verdicts belong t
 
 For paired read-only reviews, write one brief containing `task`, `action_safety`,
 `default_follow_through_policy` and `structured_output_contract`. Dispatch it twice
-with the same goal; select a Codex model and let Vibe use its configured default:
+with the same goal; select a Codex model, and repeat `--model` to review with several
+Vibe models (use the review models your host instructions name):
 
 ```sh
 crew dispatch --mode review --executor codex --model <codex-model> --brief /tmp/review.md --repo . --goal paired-review --name codex-review
-crew dispatch --mode review --executor vibe --brief /tmp/review.md --repo . --goal paired-review --name vibe-review
-crew wait <id1> <id2> --all
+crew dispatch --mode review --executor vibe --model <vibe-model-1> --model <vibe-model-2> --brief /tmp/review.md --repo . --goal paired-review --name vibe-review
+crew wait <id1> <id2> <id3> --all
 ```
 
-Use the two printed run IDs for `<id1>` and `<id2>`, then read both reports.
+A repeated `--model` launches one recorded run per model, named `<name>-<model>`, and
+prints every run ID; it is refused outside `--mode review` and for handoffs, because
+one worktree has one writer. Wait on all printed run IDs, then read every report.
 `--mode` selects brief linting only; the brief must enforce read-only behavior.
 
 ## Handing a conversation to another agent
