@@ -1,6 +1,6 @@
 use crate::{
     domain::{Executor, Run, State},
-    handlers::{ListEntry, Output, RunDetail},
+    handlers::{Launched, ListEntry, Output, RunDetail},
 };
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -27,8 +27,9 @@ fn data(output: &Output) -> Value {
         Output::Doctor(doctor) => json!(doctor),
         Output::Ls { runs, summary } => json!({"runs":runs,"summary":summary}),
         Output::Wait { runs, message } => json!({"runs":runs,"message":message}),
-        Output::Launch { run, launch_error, pane_error } => {
-            json!({"run_id":run.id,"run":run,"launch_error":launch_error,"pane_error":pane_error})
+        Output::Launch(launched) => launch_data(launched),
+        Output::Launches { runs, error } => {
+            json!({"runs":runs.iter().map(launch_data).collect::<Vec<_>>(),"error":error})
         }
         Output::Run { run, observation, detail } => {
             let report = match detail {
@@ -39,6 +40,17 @@ fn data(output: &Output) -> Value {
             json!({"run":run,"observation":observation,"report":report})
         }
         Output::Message(message) | Output::Rejection(message) => json!({"message":message}),
+    }
+}
+
+fn launch_data(Launched { run, launch_error, pane_error }: &Launched) -> Value {
+    json!({"run_id":run.id,"run":run,"launch_error":launch_error,"pane_error":pane_error})
+}
+
+fn print_launch(Launched { run, launch_error, pane_error }: &Launched) {
+    println!("{}\t{}", run.id, run.name.escape_debug().to_string().escape_debug());
+    for error in [launch_error, pane_error].into_iter().flatten() {
+        eprintln!("{error}");
     }
 }
 
@@ -96,9 +108,10 @@ fn human(output: &Output) {
                 eprintln!("{message}");
             }
         }
-        Output::Launch { run, launch_error, pane_error } => {
-            println!("{}\t{}", run.id, run.name.escape_debug().to_string().escape_debug());
-            for error in [launch_error, pane_error].into_iter().flatten() {
+        Output::Launch(launched) => print_launch(launched),
+        Output::Launches { runs, error } => {
+            runs.iter().for_each(print_launch);
+            if let Some(error) = error {
                 eprintln!("{error}");
             }
         }

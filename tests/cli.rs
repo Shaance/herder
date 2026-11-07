@@ -106,6 +106,7 @@ esac"#,
 grep -q '"state": "starting"' "$3/run.json"
 printf '%s\n' "$@" > "$CREW_STATE_DIR/launch-args"
 cp "$2" "$3/brief.md"
+if test -f "$CREW_SKILLS_DIR/drop-brief"; then rm "$CREW_SKILLS_DIR/../brief.md"; fi
 echo 43210 > "$3/run.pid"
 if test -f "$CREW_SKILLS_DIR/gate"; then echo 'gate elapsed alive' >&2; exit 3; fi
 echo native-1 > "$3/{file}"
@@ -646,6 +647,54 @@ fn non_claude_profile_is_a_usage_error() {
     let f = Fixture::new();
     let result = f.dispatch("vibe", &["--profile", "/tmp/profile"], 2);
     assert_eq!(result["data"]["message"], "--profile applies only to Claude");
+    assert!(!f.state.join("runs").exists());
+}
+
+#[test]
+fn review_dispatch_launches_one_named_run_per_model() {
+    let f = Fixture::new();
+    let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev", "--goal", "g"];
+    let runs = f.dispatch("vibe", &args, 0)["data"]["runs"].as_array().unwrap().clone();
+    let recorded: Vec<_> = runs
+        .iter()
+        .map(|launch| {
+            let record = f.record(launch["run_id"].as_str().unwrap());
+            (record["name"].clone(), record["model"].clone(), record["goal"].clone())
+        })
+        .collect();
+    assert_eq!(
+        recorded,
+        [(json!("rev-model-a"), json!("model-a"), json!("g")), (json!("rev-model-b"), json!("model-b"), json!("g"))]
+    );
+    assert_eq!(f.call(&["ls", "--goal", "g"], 0)["data"]["runs"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_failed_later_launch_still_reports_the_runs_already_started() {
+    let f = Fixture::new();
+    // The first launch deletes the dispatched brief, so copying it for the second run fails.
+    fs::write(f.skills.join("drop-brief"), "").unwrap();
+    let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev"];
+    let data = f.dispatch("vibe", &args, 1)["data"].clone();
+    let runs = data["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{data}");
+    assert_eq!(f.record(runs[0]["run_id"].as_str().unwrap())["name"], "rev-model-a");
+    assert!(data["error"].as_str().unwrap().starts_with("model-b: "), "{data}");
+}
+
+#[test]
+fn several_models_are_refused_for_writers_handoffs_and_repeats() {
+    let f = Fixture::new();
+    let brief = f.root.join("brief.md");
+    for (command, mode, second, refusal) in [
+        ("dispatch", "direct", "model-b", "a writer runs one model"),
+        ("handoff", "review", "model-b", "a handoff continues one conversation"),
+        ("dispatch", "review", "model-a", "must name a different model"),
+    ] {
+        let args = [command, "--executor", "vibe", "--brief", brief.to_str().unwrap(), "--repo", ".", "--mode", mode];
+        let result = f.call(&[&args[..], &["--model", "model-a", "--model", second]].concat(), 2);
+        assert!(result["data"]["message"].as_str().unwrap().contains(refusal), "{result}");
+    }
     assert!(!f.state.join("runs").exists());
 }
 
