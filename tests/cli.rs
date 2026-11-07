@@ -669,13 +669,17 @@ fn review_dispatch_launches_one_named_run_per_model() {
 }
 
 #[test]
-fn several_models_are_refused_for_writers_and_handoffs() {
+fn several_models_are_refused_for_writers_handoffs_and_repeats() {
     let f = Fixture::new();
     let brief = f.root.join("brief.md");
-    for command in ["dispatch", "handoff"] {
-        let args = [command, "--executor", "vibe", "--brief", brief.to_str().unwrap(), "--repo", "."];
-        let result = f.call(&[&args[..], &["--model", "model-a", "--model", "model-b"]].concat(), 2);
-        assert!(result["data"]["message"].as_str().unwrap().contains("--mode review"), "{result}");
+    for (command, mode, second, refusal) in [
+        ("dispatch", "direct", "model-b", "a writer runs one model"),
+        ("handoff", "review", "model-b", "a handoff continues one conversation"),
+        ("dispatch", "review", "model-a", "must name a different model"),
+    ] {
+        let args = [command, "--executor", "vibe", "--brief", brief.to_str().unwrap(), "--repo", ".", "--mode", mode];
+        let result = f.call(&[&args[..], &["--model", "model-a", "--model", second]].concat(), 2);
+        assert!(result["data"]["message"].as_str().unwrap().contains(refusal), "{result}");
     }
     assert!(!f.state.join("runs").exists());
 }

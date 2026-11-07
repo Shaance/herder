@@ -33,8 +33,8 @@ agent or person can use the same CLI.
 6. The coordinator handles approval and publication outside crew.
 
 For paired read-only reviews, write one brief containing `task`, `action_safety`,
-`default_follow_through_policy` and `structured_output_contract`. Dispatch it twice
-with the same goal; select a Codex model, and repeat `--model` to review with several
+`default_follow_through_policy` and `structured_output_contract`. Dispatch it to each
+executor with the same goal; select a Codex model, and repeat `--model` to review with several
 Vibe models (use the review models your host instructions name):
 
 ```sh

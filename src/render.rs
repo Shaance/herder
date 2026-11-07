@@ -28,7 +28,9 @@ fn data(output: &Output) -> Value {
         Output::Ls { runs, summary } => json!({"runs":runs,"summary":summary}),
         Output::Wait { runs, message } => json!({"runs":runs,"message":message}),
         Output::Launch(launched) => launch_data(launched),
-        Output::Launches(launches) => json!({"runs":launches.iter().map(launch_data).collect::<Vec<_>>()}),
+        Output::Launches { runs, error } => {
+            json!({"runs":runs.iter().map(launch_data).collect::<Vec<_>>(),"error":error})
+        }
         Output::Run { run, observation, detail } => {
             let report = match detail {
                 RunDetail::Report { path, content: Some(content) } => json!({"path":path,"content":content}),
@@ -107,7 +109,12 @@ fn human(output: &Output) {
             }
         }
         Output::Launch(launched) => print_launch(launched),
-        Output::Launches(launches) => launches.iter().for_each(print_launch),
+        Output::Launches { runs, error } => {
+            runs.iter().for_each(print_launch);
+            if let Some(error) = error {
+                eprintln!("{error}");
+            }
+        }
         Output::Message(message) => println!("{message}"),
         Output::Rejection(message) => {
             println!(

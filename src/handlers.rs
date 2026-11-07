@@ -19,8 +19,11 @@ pub enum Output {
         message: Option<&'static str>,
     },
     Launch(Launched),
-    /// One review dispatch fanned out to several models.
-    Launches(Vec<Launched>),
+    /// One review dispatch fanned out to several models; `error` stopped the remaining launches.
+    Launches {
+        runs: Vec<Launched>,
+        error: Option<String>,
+    },
     Run {
         run: Box<Run>,
         observation: Observation,
@@ -193,9 +196,15 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
 fn misuse(args: &Dispatch, handoff: bool) -> Option<&'static str> {
     if args.executor != Executor::Claude && args.profile.is_some() {
         Some("--profile applies only to Claude")
-    } else if args.model.len() > 1 && (handoff || args.mode != "review") {
+    } else if args.model.len() < 2 {
+        None
+    } else if handoff {
+        Some("a handoff continues one conversation; pass --model at most once")
+    } else if args.mode != "review" {
         // Several writers in one worktree would edit the same files concurrently.
-        Some("repeat --model only on a --mode review dispatch; writers and handoffs run one model")
+        Some("repeat --model only with --mode review; a writer runs one model")
+    } else if args.model.iter().enumerate().any(|(i, model)| args.model[..i].contains(model)) {
+        Some("each repeated --model must name a different model")
     } else {
         None
     }
@@ -211,16 +220,25 @@ fn dispatch(mut args: Dispatch, store: &Store) -> Result<(Output, i32)> {
         let (launched, code) = launch_run(store, args, repo, Input::Brief(brief))?;
         return Ok((Output::Launch(launched), code));
     }
-    let (mut launches, mut code) = (vec![], 0);
+    let (mut runs, mut code, mut error) = (vec![], 0, None);
     for model in std::mem::take(&mut args.model) {
         let mut one = args.clone();
         one.name = args.name.as_ref().map(|name| format!("{name}-{model}"));
         one.model = vec![model];
-        let (launched, one_code) = launch_run(store, one, repo.clone(), Input::Brief(brief.clone()))?;
-        launches.push(launched);
-        code = code.max(one_code);
+        match launch_run(store, one, repo.clone(), Input::Brief(brief.clone())) {
+            Ok((launched, one_code)) => {
+                runs.push(launched);
+                code = code.max(one_code);
+            }
+            // Earlier runs may already be working, so their ids must still be reported.
+            Err(e) => {
+                error = Some(format!("{e:#}"));
+                code = 1;
+                break;
+            }
+        }
     }
-    Ok((Output::Launches(launches), code))
+    Ok((Output::Launches { runs, error }, code))
 }
 fn handoff(args: Dispatch, store: &Store) -> Result<(Output, i32)> {
     if let Some(message) = misuse(&args, true) {
