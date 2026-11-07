@@ -106,6 +106,7 @@ esac"#,
 grep -q '"state": "starting"' "$3/run.json"
 printf '%s\n' "$@" > "$CREW_STATE_DIR/launch-args"
 cp "$2" "$3/brief.md"
+if test -f "$CREW_SKILLS_DIR/drop-brief"; then rm "$CREW_SKILLS_DIR/../brief.md"; fi
 echo 43210 > "$3/run.pid"
 if test -f "$CREW_SKILLS_DIR/gate"; then echo 'gate elapsed alive' >&2; exit 3; fi
 echo native-1 > "$3/{file}"
@@ -666,6 +667,19 @@ fn review_dispatch_launches_one_named_run_per_model() {
         [(json!("rev-model-a"), json!("model-a"), json!("g")), (json!("rev-model-b"), json!("model-b"), json!("g"))]
     );
     assert_eq!(f.call(&["ls", "--goal", "g"], 0)["data"]["runs"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn a_failed_later_launch_still_reports_the_runs_already_started() {
+    let f = Fixture::new();
+    // The first launch deletes the dispatched brief, so copying it for the second run fails.
+    fs::write(f.skills.join("drop-brief"), "").unwrap();
+    let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev"];
+    let data = f.dispatch("vibe", &args, 1)["data"].clone();
+    let runs = data["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "{data}");
+    assert_eq!(f.record(runs[0]["run_id"].as_str().unwrap())["name"], "rev-model-a");
+    assert!(data["error"].as_str().unwrap().starts_with("model-b: "), "{data}");
 }
 
 #[test]

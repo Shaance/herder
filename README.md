@@ -120,8 +120,10 @@ crew wait <id1> <id2> <id3> --all
 ```
 
 A repeated `--model` launches one recorded run per model, named `<name>-<model>`, and
-prints every run ID; it is refused outside `--mode review` and for handoffs, because
-one worktree has one writer. Wait on all printed run IDs, then read every report.
+prints every run ID. It is refused outside `--mode review` and for handoffs, because
+one worktree has one writer, and when a model repeats, because both runs would share
+one name. If a later launch fails, the runs already started stay listed beside the
+error. Wait on all printed run IDs, then read every report.
 `--mode` selects brief linting only; the brief must enforce read-only behavior.
 
 ## Handing a conversation to another agent

@@ -224,7 +224,7 @@ fn dispatch(mut args: Dispatch, store: &Store) -> Result<(Output, i32)> {
     for model in std::mem::take(&mut args.model) {
         let mut one = args.clone();
         one.name = args.name.as_ref().map(|name| format!("{name}-{model}"));
-        one.model = vec![model];
+        one.model = vec![model.clone()];
         match launch_run(store, one, repo.clone(), Input::Brief(brief.clone())) {
             Ok((launched, one_code)) => {
                 runs.push(launched);
@@ -232,7 +232,7 @@ fn dispatch(mut args: Dispatch, store: &Store) -> Result<(Output, i32)> {
             }
             // Earlier runs may already be working, so their ids must still be reported.
             Err(e) => {
-                error = Some(format!("{e:#}"));
+                error = Some(format!("{model}: {e:#}"));
                 code = 1;
                 break;
             }
