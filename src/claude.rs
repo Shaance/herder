@@ -44,39 +44,109 @@ fn agents(profile: Option<&Path>, repo: &Path) -> Result<Vec<Agent>> {
         serde_json::from_str(&process::query(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?;
     Ok(listed.into_iter().filter_map(|l| if let Listed::Background(a) = l { Some(a) } else { None }).collect())
 }
-pub fn launch(run: &mut Run, dir: &Path, store: &LockedRun) -> Result<Native> {
+pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun) -> Result<Native> {
     let Target::Claude { profile } = run.launch.target() else { bail!("Claude target required") };
+    let previous = match &run.launch {
+        Launch::PendingResume { previous, .. } => Some(previous.clone()),
+        _ => None,
+    };
+    let report =
+        if previous.is_some() { dir.join(format!("final{}.md", run.launch_attempt())) } else { dir.join("final.md") };
     let prompt = format!(
         "{}\n\nWrite your final report to {}.\n",
-        fs::read_to_string(&run.brief)?,
-        dir.join("final.md").display()
+        fs::read_to_string(delta.unwrap_or(&run.brief))?,
+        report.display()
     );
     let mut cmd = command(profile.as_deref());
-    cmd.current_dir(&run.repo).arg("--bg").arg(prompt).arg("-n").arg(&run.name).arg("--add-dir").arg(dir);
-    // Edit --repo in place like Vibe/Codex; --bg otherwise moves into .claude/worktrees/, which verify never sees.
-    cmd.args(["--settings", r#"{"worktree":{"bgIsolation":"none"}}"#]);
-    if let Some(m) = &run.model {
-        cmd.arg("--model").arg(m);
+    cmd.current_dir(&run.repo).arg("--bg");
+    if let Some(Native::Claude { id, session_id, .. }) = &previous {
+        let a = identity(run)?;
+        ensure!(
+            matches!(a.state.as_str(), "done" | "failed" | "stopped" | "exited"),
+            "cannot resume active Claude session"
+        );
+        if a.status.is_some() {
+            process::checked(command(profile.as_deref()).current_dir(&run.repo).args(["stop", id]))?;
+            ensure!(identity(run)?.status.is_none(), "Claude session {id} is still live after stop");
+        }
+        // Saved options must be used: passing any launch flags makes Claude fork the session.
+        cmd.arg("--resume").arg(session_id).arg(prompt);
+    } else {
+        cmd.arg(prompt).arg("-n").arg(&run.name).arg("--add-dir").arg(dir);
+        // Edit --repo in place; --bg otherwise moves into .claude/worktrees/.
+        cmd.args(["--settings", r#"{"worktree":{"bgIsolation":"none"}}"#]);
+        if let Some(m) = &run.model {
+            cmd.arg("--model").arg(m);
+        }
+        cmd.args(&run.extra);
     }
-    let (code, text) = output(cmd.args(&run.extra))?;
-    ensure!(
-        code == Some(0) && !text.contains("idle — send a prompt") && !text.contains("Workspace not trusted"),
-        "{text}"
-    );
-    let id = text
+    let report_before = fs::metadata(&report).and_then(|m| m.modified()).ok();
+    let (code, text) = output(&mut cmd)?;
+    let backgrounded = text
         .lines()
         .find(|l| l.contains("backgrounded"))
         .and_then(|l| l.split('·').nth(1))
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("missing background id: {text}"))?;
-    run.launch = Launch::Accepted { id: id.into(), profile, error: None };
-    store.save(run)?;
+        .filter(|s| !s.is_empty());
+    if let Some(Native::Claude { id, .. }) = &previous {
+        let notices: Vec<_> = text
+            .lines()
+            .filter(|l| l.starts_with("note:"))
+            .filter_map(|l| l.split_once("started a copy as").map(|(_, token)| token.trim_start()))
+            .collect();
+        let mut unparsed = false;
+        let parsed = notices.iter().map(|token| {
+            let end = token.find(|c: char| !matches!(c, '0'..='9' | 'a'..='f')).unwrap_or(token.len());
+            unparsed |= end == 0;
+            &token[..end]
+        });
+        let mut copies = Vec::new();
+        for candidate in parsed.chain(backgrounded).filter(|s| !s.is_empty()) {
+            if candidate != id && !copies.contains(&candidate) {
+                copies.push(candidate);
+            }
+        }
+        let mut failures = Vec::new();
+        for copy_id in &copies {
+            if let Err(e) = process::checked(command(profile.as_deref()).current_dir(&run.repo).args(["stop", copy_id]))
+            {
+                failures.push(format!("{copy_id}: {e}"));
+            }
+        }
+        ensure!(
+            !unparsed,
+            "Claude resume created a copy; no copy id could be parsed; the copy must be stopped manually{}; {text}",
+            if failures.is_empty() { String::new() } else { format!("; cleanup failures: {}", failures.join("; ")) }
+        );
+        ensure!(
+            notices.is_empty() && copies.is_empty(),
+            "Claude resume created a copy; refused identity change; cleanup failures: {}; {text}",
+            failures.join("; ")
+        );
+    }
+    ensure!(
+        code == Some(0) && !text.contains("idle — send a prompt") && !text.contains("Workspace not trusted"),
+        "{text}"
+    );
+    let id = backgrounded.ok_or_else(|| anyhow::anyhow!("missing background id: {text}"))?;
+    if previous.is_none() {
+        run.launch = Launch::Accepted { id: id.into(), profile, error: None };
+        store.save(run)?;
+    }
     // A new background session reports idle for a moment before it starts working; give it the launch window.
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let a = identity(run)?;
-        let started = a.status.as_deref() == Some("busy") || a.state == "done" || dir.join("final.md").exists();
+        let started = if previous.is_some() {
+            a.status.as_deref() == Some("busy")
+                || a.state == "working"
+                || fs::metadata(&report)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .is_some_and(|now| report_before.is_none_or(|before| now > before))
+        } else {
+            a.status.as_deref() == Some("busy") || a.state == "done" || report.exists()
+        };
         ensure!(
             started || Instant::now() < deadline,
             "background session {id} stayed idle for 30s with no report: {text}"
@@ -86,13 +156,16 @@ pub fn launch(run: &mut Run, dir: &Path, store: &LockedRun) -> Result<Native> {
         }
         thread::sleep(Duration::from_secs(1));
     }
-    Ok(run.launch.native().expect("identity validated before launch gate").clone())
+    Ok(previous.unwrap_or_else(|| run.launch.native().expect("identity validated before launch gate").clone()))
 }
 // Resolve acceptance once; all later observations must match the full recorded identity.
 fn identity(run: &mut Run) -> Result<Agent> {
     let (id, profile, session) = match &run.launch {
         Launch::Accepted { id, profile, .. } => (id, profile, None),
-        Launch::Launched { native: Native::Claude { id, session_id, profile }, .. } => (id, profile, Some(session_id)),
+        Launch::Launched { native: Native::Claude { id, session_id, profile }, .. }
+        | Launch::PendingResume { previous: Native::Claude { id, session_id, profile }, .. } => {
+            (id, profile, Some(session_id))
+        }
         _ => bail!("Claude identity required"),
     };
     let a = agents(profile.as_deref(), &run.repo)?
