@@ -89,17 +89,17 @@ fn a3_verify_reloads_after_concurrent_resume_without_lost_updates() {
         .spawn()
         .unwrap();
     wait_file(&f.state.join("entered"));
+    let lock = fs::OpenOptions::new().write(true).open(f.dir(&id).join("run.lock")).unwrap();
+    let lock_probe = lock.try_lock();
+    drop(lock);
     let mut resume =
         f.cmd().args(["resume", &id, "--brief"]).arg(f.root.join("brief.md")).stdout(Stdio::null()).spawn().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(1);
-    while resume.try_wait().unwrap().is_none() && Instant::now() < deadline {
-        thread::sleep(Duration::from_millis(10));
-    }
-    let completed = resume.try_wait().unwrap().is_some();
+    let resumed = resume.wait().unwrap();
     fs::write(f.state.join("release"), "").unwrap();
-    assert!(verify.wait().unwrap().success());
-    assert!(resume.wait().unwrap().success());
-    assert!(completed, "verification held the lock while executing checks");
+    let verified = verify.wait().unwrap();
+    assert!(lock_probe.is_ok(), "verification held the lock while executing checks: {lock_probe:?}");
+    assert!(resumed.success());
+    assert!(verified.success());
     let record = f.record(&id);
     assert_eq!(record["attempt"], 2);
     assert_eq!(record["verifications"][0]["attempt"], 1);
