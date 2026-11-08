@@ -1,11 +1,10 @@
 use anyhow::{Context, Result, ensure};
 use std::{
-    env, fs,
+    env,
     io::{Read, Seek},
-    os::unix::{fs::OpenOptionsExt, process::CommandExt},
+    os::unix::process::CommandExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
 
@@ -21,12 +20,8 @@ pub fn checked(cmd: &mut Command) -> Result<String> {
     Ok(stdout.into_owned())
 }
 pub fn query(cmd: &mut Command) -> Result<String> {
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let path =
-        env::temp_dir().join(format!("crew-query-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-    let mut capture = fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path)?;
     // Unlinked capture avoids pipe-reader hangs when a query leaves descendants behind.
-    fs::remove_file(path)?;
+    let mut capture = tempfile::tempfile()?;
     let mut child =
         cmd.stdin(Stdio::null()).stdout(capture.try_clone()?).stderr(capture.try_clone()?).process_group(0).spawn()?;
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -74,4 +69,17 @@ pub fn profile(value: Option<PathBuf>) -> Result<Option<PathBuf>> {
 pub fn lint(brief: &Path, mode: &str) -> Result<()> {
     checked(Command::new(script("implementer-core", "check_brief")).arg(brief).arg(mode))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_returns_when_descendant_inherits_output() {
+        let started = Instant::now();
+        let result = query(Command::new("/bin/sh").args(["-c", "sleep 6 & printf stdout; printf stderr >&2"]));
+        assert_eq!(result.unwrap(), "stdoutstderr");
+        assert!(started.elapsed() < Duration::from_secs(4), "query waited for its descendant");
+    }
 }
