@@ -13,6 +13,49 @@ const CONTEXT: &str =
     "# Continuation\n\nRemaining work: finish the handoff tests. Decision: keep dispatch strict. Marker ZQX-917.\n";
 
 #[test]
+fn handoff_preserves_the_full_prompt_and_utc_run_metadata() {
+    let document = "Unicode Ω\r\n{read_only}\n{document}\0  \n\n";
+    let snapshot = include_str!("../fixtures/handoff-prompt.txt");
+    let date = || {
+        let output = Command::new("/bin/date").args(["-u", "+%Y-%m-%dT%H:%M:%SZ"]).output().unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    for mode in ["direct", "review"] {
+        let before = date();
+        let f = Fixture::new();
+        let brief = doc(&f, document);
+        let result = handoff(&f, "codex", &brief, &["--mode", mode]);
+        let id = result["data"]["run_id"].as_str().unwrap();
+        let mut expected = if mode == "review" {
+            snapshot.replacen(
+                "the document names) before acting.\n",
+                "the document names) before acting.\nThis is a review-mode handoff: stay strictly read-only and report findings; change nothing.\n",
+                1,
+            )
+        } else {
+            snapshot.to_owned()
+        };
+        expected.push_str(document);
+        assert_eq!(fs::read(f.dir(id).join("input.md")).unwrap(), expected.as_bytes());
+        assert_eq!(fs::read(f.dir(id).join("brief.md")).unwrap(), expected.as_bytes());
+
+        let bytes = id.as_bytes();
+        assert_eq!(bytes.len(), 20, "{id}");
+        assert_eq!((bytes[8], bytes[15]), (b'-', b'-'));
+        assert!(bytes[..8].iter().chain(&bytes[9..15]).all(u8::is_ascii_digit));
+        assert!(bytes[16..].iter().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b)));
+        let run_time =
+            format!("{}-{}-{}T{}:{}:{}Z", &id[..4], &id[4..6], &id[6..8], &id[9..11], &id[11..13], &id[13..15]);
+        let after = date();
+        let record = f.record(id);
+        let created = record["created_at"].as_str().unwrap();
+        assert!(before.as_str() <= run_time.as_str() && run_time <= after, "{before} {id} {after}");
+        assert!(before.as_str() <= created && created <= after.as_str(), "{before} {created} {after}");
+    }
+}
+
+#[test]
 fn handoff_launches_a_plain_continuation_and_reuses_dispatch_options() {
     let f = Fixture::new();
     let brief = doc(&f, CONTEXT);

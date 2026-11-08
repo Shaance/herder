@@ -74,7 +74,7 @@ impl Store {
     pub fn create(&self) -> Result<(String, LockedRun)> {
         let mut bytes = [0; 2];
         fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-        let (y, mo, d, h, mi, s) = utc_now();
+        let (y, mo, d, h, mi, s) = utc(SystemTime::now());
         let id = format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{:02x}{:02x}", bytes[0], bytes[1]);
         fs::create_dir_all(self.root.join("runs"))?;
         let dir = self.root.join("runs").join(format!(".{id}.pending"));
@@ -134,21 +134,14 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 pub fn timestamp() -> String {
-    let (y, mo, d, h, mi, s) = utc_now();
+    let (y, mo, d, h, mi, s) = utc(SystemTime::now());
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
-/// Current UTC civil time; days-to-date conversion follows Howard Hinnant's `civil_from_days`.
-fn utc_now() -> (i64, u64, u64, u64, u64, u64) {
-    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).expect("clock after 1970").as_secs();
-    let (days, rem) = ((secs / 86_400) as i64, secs % 86_400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097) as u64;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let (d, m) = (doy - (153 * mp + 2) / 5 + 1, if mp < 10 { mp + 3 } else { mp - 9 });
-    (yoe as i64 + era * 400 + i64::from(m <= 2), m, d, rem / 3_600, rem % 3_600 / 60, rem % 60)
+fn utc(clock: SystemTime) -> (i32, u8, u8, u8, u8, u8) {
+    let secs = clock.duration_since(SystemTime::UNIX_EPOCH).expect("clock after 1970").as_secs();
+    let date = time::OffsetDateTime::from_unix_timestamp(secs.try_into().expect("clock outside supported range"))
+        .expect("clock outside supported range");
+    (date.year(), u8::from(date.month()), date.day(), date.hour(), date.minute(), date.second())
 }
 pub fn copy(source: &Path, dest: &Path) -> Result<PathBuf> {
     atomic(dest, &fs::read(source)?)?;
@@ -172,5 +165,34 @@ pub fn report(path: &Path) -> Result<Option<String>> {
         Ok(content) => Ok(Some(content)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn utc_preserves_calendar_boundaries_and_discards_subseconds() {
+        for (secs, expected) in [
+            (0, (1970, 1, 1, 0, 0, 0)),
+            (86_399, (1970, 1, 1, 23, 59, 59)),
+            (86_400, (1970, 1, 2, 0, 0, 0)),
+            (68_169_600, (1972, 2, 29, 0, 0, 0)),
+            (951_782_400, (2000, 2, 29, 0, 0, 0)),
+            (951_868_800, (2000, 3, 1, 0, 0, 0)),
+            (4_107_542_399, (2100, 2, 28, 23, 59, 59)),
+            (4_107_542_400, (2100, 3, 1, 0, 0, 0)),
+            (13_574_563_200, (2400, 2, 29, 0, 0, 0)),
+            (253_402_300_799, (9999, 12, 31, 23, 59, 59)),
+        ] {
+            assert_eq!(utc(SystemTime::UNIX_EPOCH + Duration::new(secs, 999_999_999)), expected, "{secs}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "clock after 1970")]
+    fn utc_rejects_pre_epoch_clocks() {
+        utc(SystemTime::UNIX_EPOCH - Duration::from_nanos(1));
     }
 }
