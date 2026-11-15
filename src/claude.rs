@@ -1,5 +1,5 @@
 use crate::{
-    domain::{Intent, Launch, Native, Observation, Run, State, Target},
+    domain::{Intent, Launch, Native, Observation, Run, State, Target, UnknownCause, UnknownError},
     process::{self, output},
     store::LockedRun,
 };
@@ -168,17 +168,21 @@ fn identity(run: &mut Run) -> Result<Agent> {
         }
         _ => bail!("Claude identity required"),
     };
-    let a = agents(profile.as_deref(), &run.repo)?
-        .into_iter()
-        .find(|a| &a.id == id)
-        .ok_or_else(|| anyhow::anyhow!("recorded Claude id {id} absent from agents"))?;
+    let a = agents(profile.as_deref(), &run.repo)?.into_iter().find(|a| &a.id == id).ok_or_else(|| {
+        UnknownError(UnknownCause::IdentityMismatch, format!("recorded Claude id {id} absent from agents"))
+    })?;
     ensure!(
         !a.session_id.is_empty() && Path::new(&a.cwd) == run.repo && session.is_none_or(|s| s == &a.session_id),
-        "Claude identity mismatch: recorded={id}/{session:?}/{} observed={}/{}/{}",
-        run.repo.display(),
-        a.id,
-        a.session_id,
-        a.cwd
+        UnknownError(
+            UnknownCause::IdentityMismatch,
+            format!(
+                "Claude identity mismatch: recorded={id}/{session:?}/{} observed={}/{}/{}",
+                run.repo.display(),
+                a.id,
+                a.session_id,
+                a.cwd
+            )
+        )
     );
     if let Launch::Accepted { error, .. } = &run.launch {
         run.launch = Launch::Launched {
@@ -203,12 +207,9 @@ pub fn query(run: &mut Run) -> Result<Observation> {
         ("idle", _) => State::Blocked,
         _ => State::Unknown,
     };
-    Ok(Observation {
+    Ok(Observation::new(
         state,
-        evidence: format!(
-            "id={id} session={session_id} status={} state={}",
-            a.status.as_deref().unwrap_or("none"),
-            a.state
-        ),
-    })
+        format!("id={id} session={session_id} status={} state={}", a.status.as_deref().unwrap_or("none"), a.state),
+        UnknownCause::UnrecognizedStatus,
+    ))
 }

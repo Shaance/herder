@@ -47,6 +47,19 @@ fn c1_busy_reads_return_recorded_state_and_mutations_time_out() {
         }
     }
     assert_eq!(f.record(&id), before);
+    let lock = fs::OpenOptions::new().write(true).open(f.dir(&id).join("run.lock")).unwrap();
+    lock.try_lock().unwrap();
+    for launch in [
+        json!({"state":"accepted", "id":"abc123", "profile":null, "error":null}),
+        json!({"state":"pending_resume", "previous":before["launch"]["native"], "attempt":2, "error":null}),
+    ] {
+        let mut record = before.clone();
+        record["launch"] = launch;
+        fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
+        let status = f.call(&["status", &id], 0);
+        assert_eq!(status["data"]["observation"]["state"], "unknown");
+        assert_eq!(status["data"]["observation"]["cause"], "unconfirmed");
+    }
 }
 
 #[test]

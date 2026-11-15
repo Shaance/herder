@@ -33,7 +33,9 @@ fn a1_resume_validation_and_pending_identity() {
         assert_eq!(pending["attempt"], 1);
         assert_eq!(pending["launch"]["state"], "pending_resume");
         assert!(pending["launch"].get("native").is_none());
-        assert_eq!(f.call(&["status", &id], 0)["data"]["observation"]["state"], "unknown");
+        let unknown = f.call(&["status", &id], 0);
+        assert_eq!(unknown["data"]["observation"]["state"], "unknown");
+        assert_eq!(unknown["data"]["observation"]["cause"], "unconfirmed");
         // A late identity after an interrupted/failed gate belongs to attempt 2.
         fs::write(f.dir(&id).join("run.pid"), "43211").unwrap();
         fs::write(f.skills.join("status"), "state=alive pid=43211\nverdict: RUNNING\n").unwrap();

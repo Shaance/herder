@@ -101,6 +101,41 @@ print('"turn.failed","error":{"message":"failed after report"}}')
 }
 
 #[test]
+fn real_status_scripts_report_stream_age_and_running_command() {
+    for executor in ["codex", "vibe"] {
+        let (f, skills) = setup();
+        let body = if executor == "codex" {
+            r#"import sys,time
+print('{"type":"thread.started","thread_id":"stub-thread"}')
+print('{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"stub-long-command"}}', flush=True)
+time.sleep(6)"#
+        } else {
+            r#"import time
+print('{"sessionId":"stub-session"}', flush=True)
+time.sleep(6)"#
+        };
+        fs::write(f.bin.join(executor), format!("#!/usr/bin/python3\n{body}\n")).unwrap();
+        let (code, dispatch) = call(
+            &f,
+            &skills,
+            &["dispatch", "--executor", executor, "--repo", ".", "--brief", f.root.join("brief.md").to_str().unwrap()],
+        );
+        assert_eq!(code, 0, "{dispatch}");
+        let id = dispatch["data"]["run_id"].as_str().unwrap();
+        let (code, status) = call(&f, &skills, &["status", id]);
+        assert_eq!(code, 0, "{status}");
+        assert_eq!(status["data"]["observation"]["state"], "running", "{status}");
+        let evidence = status["data"]["observation"]["evidence"].as_str().unwrap();
+        let age = evidence.split_whitespace().find_map(|t| t.strip_prefix("stream_age_s=")).unwrap_or("");
+        assert!(age.parse::<u64>().is_ok(), "{evidence}");
+        if executor == "codex" {
+            assert!(evidence.contains("running_command: stub-long-command"), "{evidence}");
+        }
+        thread::sleep(Duration::from_secs(6));
+    }
+}
+
+#[test]
 fn real_codex_status_recovers_late_identity() {
     let (f, skills) = setup();
     fs::write(f.skills.join("gate"), "").unwrap();

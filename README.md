@@ -31,6 +31,8 @@ All commands accept `--json`: `{ "ok": boolean, "data": object|null,
 missing reports, doctor gaps) remain in `data`; invocation errors use `error`.
 Exit codes: 0 success, 1 operational failure, 2 usage error. A successful status
 query can report `unknown`; inspect its evidence before taking action.
+Unknown observations include a `cause` in JSON and a `cause: <value>` line in `crew status`:
+`query_failed`, `identity_mismatch`, `record_disagrees`, `unrecognized_status`, or `unconfirmed`; other states omit it.
 Use `crew <command> --help` for examples and flags; no command prompts.
 
 State defaults to `~/.local/state/ai-skills/crew`, overridden by `CREW_STATE_DIR`.
@@ -52,6 +54,7 @@ none (Claude's default). Dispatch detects trust failures without editing trust.
 Status, report, stop, resume, verify and wait accept a run ID or a unique dispatch
 `--name`. Existing IDs take precedence; ambiguous names list their matches, unknown names list similar ones.
 Human dispatch output includes both ID and name.
+`crew status <run> --tail <N>` (1–1000) shows the current launch attempt's last N event-stream lines capped at 500 characters each, adds `data.tail` in JSON, and explains missing streams or Claude's lack of a crew-recorded stream without changing status or exit codes.
 
 `crew wait <run>...` polls every 5 seconds, returning when any run settles;
 `--all` waits for every listed run. Finished, failed, stopped and blocked count as
@@ -101,6 +104,8 @@ Executor queries time out after two seconds with `unknown` evidence; existing re
 remain readable. Stop waits briefly for exit and otherwise reports `stop sent` with exit 0.
 Claude completion requires a terminal executor state. Codex/Vibe outcomes follow their
 status script verdicts, so correctness also depends on the installed scripts.
+Their evidence includes `stream_age_s`, the seconds since the event stream last changed,
+and for a live Codex run `running_command:` naming a started command that has not completed.
 A report is never proof. Verification is separate from lifecycle and approval.
 Dispatch records the Git baseline commit. After rebasing a worker branch, use
 `crew verify <run> --baseline <new-upstream-rev>` to verify against and persist

@@ -23,6 +23,9 @@ agent or person can use the same CLI.
 Claude resume stops a settled live session, then wakes the same identity with its
 saved options under the recorded profile; copies are stopped and rejected.
 4. Follow progress with `crew ls` (models and executor state tallies) and `crew status`.
+   Use `crew status <run> --tail <N>` (1–1000) for the current launch attempt's last N stream lines capped at 500 characters each (`data.tail` in JSON), with a message for missing streams or Claude runs.
+   Vibe/Codex status evidence carries `stream_age_s` (seconds since the stream last
+   changed) and, for a live Codex run, `running_command:`.
    Use `crew wait <run>...` for any settled run, or `--all` for all runs;
    `--timeout <secs>` defaults to 3600. It polls every 5 seconds, exits 0 for
    finished/failed/stopped/blocked, and exits 1 for unknown or timeout. Final output
@@ -75,6 +78,8 @@ authorized it.
 - A worker report is never proof. Verify the actual output independently.
 - Publish only after approval; crew does not publish or grant approval.
 - Treat `unknown` as unresolved evidence, not completion or permission to retry.
+  Its JSON `cause` and `crew status` cause line distinguish `query_failed`, `identity_mismatch`,
+  `record_disagrees`, `unrecognized_status`, and `unconfirmed`; other states omit the cause.
 - Preserve recorded identities and profiles. Consult command help for stop,
   resume, dispatch's `--pane` flag and executor limitations.
 - When something surprises you, file it with `gh issue create -R Shaance/crew` and continue with work that
