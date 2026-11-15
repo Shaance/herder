@@ -1,5 +1,5 @@
 use crate::{
-    domain::{Launch, Native, Observation, Run, State},
+    domain::{Launch, Native, Observation, Run, State, UnknownCause, UnknownError},
     process::{checked, output, query, script},
 };
 use anyhow::{Result, ensure};
@@ -91,7 +91,7 @@ impl ScriptExecutor {
             confirm(native, dir)?;
             ensure!(
                 field(&text, "pid")? == native.process().unwrap().0.to_string(),
-                "status pid disagrees with record: {text}"
+                UnknownError(UnknownCause::IdentityMismatch, format!("status pid disagrees with record: {text}"))
             );
         }
         let state = match field(&text, "state")? {
@@ -101,7 +101,7 @@ impl ScriptExecutor {
             "exited" if text.contains("verdict: DIED") || text.contains("verdict: FAILED") => State::Failed,
             _ => State::Unknown,
         };
-        Ok(Observation { state, evidence: text })
+        Ok(Observation::new(state, text, UnknownCause::UnrecognizedStatus))
     }
 }
 fn field<'a>(text: &'a str, key: &str) -> Result<&'a str> {
@@ -115,7 +115,7 @@ pub fn confirm(native: &Native, dir: &Path) -> Result<()> {
     ensure!(
         fs::read_to_string(dir.join("run.pid"))?.trim() == pid.to_string()
             && fs::read_to_string(dir.join(file))?.trim() == id,
-        "executor files disagree with recorded identity"
+        UnknownError(UnknownCause::IdentityMismatch, "executor files disagree with recorded identity".into())
     );
     Ok(())
 }

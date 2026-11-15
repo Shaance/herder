@@ -210,10 +210,52 @@ impl Run {
         format!("final{}.md", self.suffix())
     }
 }
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnknownCause {
+    QueryFailed,
+    IdentityMismatch,
+    RecordDisagrees,
+    UnrecognizedStatus,
+    Unconfirmed,
+}
+impl UnknownCause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::QueryFailed => "query_failed",
+            Self::IdentityMismatch => "identity_mismatch",
+            Self::RecordDisagrees => "record_disagrees",
+            Self::UnrecognizedStatus => "unrecognized_status",
+            Self::Unconfirmed => "unconfirmed",
+        }
+    }
+}
+#[derive(Debug)]
+pub struct UnknownError(pub UnknownCause, pub String);
+impl std::fmt::Display for UnknownError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.1)
+    }
+}
+impl std::error::Error for UnknownError {}
+
 #[derive(Debug, Serialize)]
 pub struct Observation {
-    pub state: State,
+    state: State,
     pub evidence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cause: Option<UnknownCause>,
+}
+impl Observation {
+    pub fn new(state: State, evidence: String, unknown_cause: UnknownCause) -> Self {
+        Self { state, evidence, cause: (state == State::Unknown).then_some(unknown_cause) }
+    }
+    pub fn state(&self) -> State {
+        self.state
+    }
+    pub fn cause(&self) -> Option<UnknownCause> {
+        self.cause
+    }
 }
 impl std::fmt::Display for Observation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -230,9 +272,10 @@ pub fn reconcile(recorded: State, observed: Observation) -> Observation {
     if agrees {
         Observation { state: if recorded == State::Stopped { State::Stopped } else { observed.state }, ..observed }
     } else {
-        Observation {
-            state: State::Unknown,
-            evidence: format!("recorded={recorded:?}; executor={:?}: {}", observed.state, observed.evidence),
-        }
+        Observation::new(
+            State::Unknown,
+            format!("recorded={recorded:?}; executor={:?}: {}", observed.state, observed.evidence),
+            if recorded == State::Starting { UnknownCause::Unconfirmed } else { UnknownCause::RecordDisagrees },
+        )
     }
 }

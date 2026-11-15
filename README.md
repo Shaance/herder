@@ -31,6 +31,8 @@ All commands accept `--json`: `{ "ok": boolean, "data": object|null,
 missing reports, doctor gaps) remain in `data`; invocation errors use `error`.
 Exit codes: 0 success, 1 operational failure, 2 usage error. A successful status
 query can report `unknown`; inspect its evidence before taking action.
+Unknown observations include a `cause` in JSON and a `cause: <value>` line in `crew status`:
+`query_failed`, `identity_mismatch`, `record_disagrees`, `unrecognized_status`, or `unconfirmed`; other states omit it.
 Use `crew <command> --help` for examples and flags; no command prompts.
 
 State defaults to `~/.local/state/ai-skills/crew`, overridden by `CREW_STATE_DIR`.

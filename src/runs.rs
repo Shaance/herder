@@ -51,13 +51,18 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun
 }
 pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
     let Some(store) = store else {
-        return Observation {
-            state: run.launch.state(),
-            evidence: "run busy: another crew command holds the lock".into(),
-        };
+        return Observation::new(
+            run.launch.state(),
+            "run busy: another crew command holds the lock".into(),
+            UnknownCause::Unconfirmed,
+        );
     };
     if let Launch::Failed { error, .. } = &run.launch {
-        return Observation { state: State::Failed, evidence: format!("{}; {}", error.message, error.remediation) };
+        return Observation::new(
+            State::Failed,
+            format!("{}; {}", error.message, error.remediation),
+            UnknownCause::Unconfirmed,
+        );
     }
     let result = (|| -> Result<Observation> {
         let dir = &store.dir;
@@ -82,7 +87,10 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
                     process::query(
                         claude::command(profile.as_deref()).current_dir(&run.repo).args(["agents", "--json", "--all"]),
                     )?;
-                    bail!("no recorded Claude identity; inspect launch facts before attaching");
+                    bail!(UnknownError(
+                        UnknownCause::IdentityMismatch,
+                        "no recorded Claude identity; inspect launch facts before attaching".into()
+                    ));
                 }
             }
             target @ (Target::Vibe | Target::Codex) => {
@@ -97,11 +105,11 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
                     if let Launch::PendingResume { previous, .. } = &run.launch {
                         ensure!(
                             previous.process().map(|p| p.2) == native.process().map(|p| p.2),
-                            "resume identity changed"
+                            UnknownError(UnknownCause::IdentityMismatch, "resume identity changed".into())
                         );
                         ensure!(
                             previous.process().map(|p| p.0) != native.process().map(|p| p.0),
-                            "resume pending; no new pid recorded"
+                            UnknownError(UnknownCause::Unconfirmed, "resume pending; no new pid recorded".into())
                         );
                     }
                     run.attempt = run.launch_attempt();
@@ -112,16 +120,14 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
             }
         };
         if matches!(run.launch, Launch::Launched { intent: Intent::StopSent, .. }) {
-            if matches!(observed.state, State::Stopped | State::Finished | State::Failed) {
+            if matches!(observed.state(), State::Stopped | State::Finished | State::Failed) {
                 if let Launch::Launched { intent, .. } = &mut run.launch {
                     *intent = Intent::Stopped;
                 }
                 store.save(run)?;
             } else {
-                return Ok(Observation {
-                    state: observed.state,
-                    evidence: format!("stop sent; {}", observed.evidence),
-                });
+                observed.evidence = format!("stop sent; {}", observed.evidence);
+                return Ok(observed);
             }
         }
         if matches!(run.launch, Launch::Launched { intent: Intent::Stopped, .. }) {
@@ -129,14 +135,17 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
         }
         Ok(reconcile(run.launch.state(), observed))
     })();
-    result.unwrap_or_else(|e| Observation {
-        state: State::Unknown,
-        evidence: format!("recorded={:?}; executor query failed: {e:#}", run.launch.state()),
+    result.unwrap_or_else(|e| {
+        Observation::new(
+            State::Unknown,
+            format!("recorded={:?}; executor query failed: {e:#}", run.launch.state()),
+            e.downcast_ref::<UnknownError>().map_or(UnknownCause::QueryFailed, |error| error.0),
+        )
     })
 }
 pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     let observed = observe(run, Some(store));
-    ensure!(matches!(observed.state, State::Running | State::Blocked), "cannot stop: {observed}");
+    ensure!(matches!(observed.state(), State::Running | State::Blocked), "cannot stop: {observed}");
     let dir = &store.dir;
     let native = match &run.launch {
         Launch::PendingResume { previous: native @ Native::Claude { .. }, .. } => native,
@@ -154,15 +163,13 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     store.save(run)?;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        let observed = observe(run, Some(store));
-        if observed.state == State::Stopped {
+        let mut observed = observe(run, Some(store));
+        if observed.state() == State::Stopped {
             return Ok(observed);
         }
         if std::time::Instant::now() >= deadline {
-            return Ok(Observation {
-                state: observed.state,
-                evidence: format!("stop sent; exit not confirmed: {}", observed.evidence),
-            });
+            observed.evidence = format!("stop sent; exit not confirmed: {}", observed.evidence);
+            return Ok(observed);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
@@ -205,18 +212,21 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
             None => claude::query(run)?,
         };
         ensure!(
-            matches!(observed.state, State::Finished | State::Failed | State::Stopped),
+            matches!(observed.state(), State::Finished | State::Failed | State::Stopped),
             "cannot retry pending resume: {observed}"
         );
         if let Some(executor) = executor {
             let recorded = executor.identity(dir)?;
-            ensure!(recorded.process().map(|p| p.2) == previous.process().map(|p| p.2), "resume identity changed");
+            ensure!(
+                recorded.process().map(|p| p.2) == previous.process().map(|p| p.2),
+                UnknownError(UnknownCause::IdentityMismatch, "resume identity changed".into())
+            );
         }
         (previous, attempt)
     } else {
         let observed = observe(run, Some(store));
         ensure!(
-            matches!(observed.state, State::Finished | State::Failed | State::Stopped),
+            matches!(observed.state(), State::Finished | State::Failed | State::Stopped),
             "cannot resume: {observed}"
         );
         let native = run.launch.native().ok_or_else(|| anyhow::anyhow!("no recorded identity to resume"))?;

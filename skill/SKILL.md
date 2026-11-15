@@ -77,6 +77,8 @@ authorized it.
 - A worker report is never proof. Verify the actual output independently.
 - Publish only after approval; crew does not publish or grant approval.
 - Treat `unknown` as unresolved evidence, not completion or permission to retry.
+  Its JSON `cause` and `crew status` cause line distinguish `query_failed`, `identity_mismatch`,
+  `record_disagrees`, `unrecognized_status`, and `unconfirmed`; other states omit the cause.
 - Preserve recorded identities and profiles. Consult command help for stop,
   resume, dispatch's `--pane` flag and executor limitations.
 - When something surprises you, file it with `gh issue create -R Shaance/crew` and continue with work that

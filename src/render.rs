@@ -81,7 +81,7 @@ fn human(output: &Output) {
                         if run.name == run.id { "-" } else { &run.name }.escape_debug(),
                         run.goal.as_deref().unwrap_or("-").escape_debug(),
                         run.launch.target().executor().as_str(),
-                        observation.state.as_str(),
+                        observation.state().as_str(),
                         run.attempt,
                         run.model.as_deref().unwrap_or("-").escape_debug()
                     ),
@@ -125,7 +125,11 @@ fn human(output: &Output) {
         Output::Run { run, observation, detail } => match detail {
             RunDetail::Status => {
                 let dir = run.brief.parent().expect("brief is stored in the run directory");
-                println!("state: {}\nevidence:", observation.state.as_str());
+                println!("state: {}", observation.state().as_str());
+                if let Some(cause) = observation.cause() {
+                    println!("cause: {}", cause.as_str());
+                }
+                println!("evidence:");
                 for line in observation.evidence.lines() {
                     println!("  {line}");
                 }
@@ -148,11 +152,11 @@ fn human(output: &Output) {
                 if let Some(content) = content {
                     print!("{content}");
                 } else {
-                    eprintln!("no report yet; state=\"{}\"", observation.state.as_str());
+                    eprintln!("no report yet; state=\"{}\"", observation.state().as_str());
                 }
             }
             RunDetail::Resume => {
-                println!("{} attempt {}: {}", run.id.escape_debug(), run.attempt, observation.state.as_str());
+                println!("{} attempt {}: {}", run.id.escape_debug(), run.attempt, observation.state().as_str());
             }
             RunDetail::Verify => {
                 let verification = run.verifications.last().expect("verify records a verification");
@@ -164,8 +168,8 @@ fn human(output: &Output) {
                 }
             }
             RunDetail::Stop => {
-                println!("{}: {}", run.id.escape_debug(), observation.state.as_str());
-                if observation.state != State::Stopped {
+                println!("{}: {}", run.id.escape_debug(), observation.state().as_str());
+                if observation.state() != State::Stopped {
                     println!("{}", observation.evidence);
                 }
             }

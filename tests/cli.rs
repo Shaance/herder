@@ -630,14 +630,19 @@ fn stop_signals_only_confirmed_recorded_identity() {
 
 #[test]
 fn mismatched_identity_or_reused_pid_is_never_stopped_or_resumed() {
-    for mode in ["pid", "native", "ps", "claude"] {
+    for mode in ["pid", "native", "ps", "claude", "absent", "status-pid"] {
         let f = Fixture::new();
-        let id = f.launch(if mode == "claude" { "claude" } else { "vibe" });
+        let id = f.launch(if matches!(mode, "claude" | "absent") { "claude" } else { "vibe" });
         match mode {
             "pid" => fs::write(f.dir(&id).join("run.pid"), "43212").unwrap(),
             "native" => fs::write(f.dir(&id).join("session-id"), "different-session").unwrap(),
             "ps" => fs::write(f.skills.join("ps"), "unrelated process").unwrap(),
+            "absent" => fs::write(f.skills.join("agents.json"), "[]").unwrap(),
+            "status-pid" => fs::write(f.skills.join("status"), "state=alive pid=43212\n").unwrap(),
             _ => f.agents("busy", "working", "different-session"),
+        }
+        if mode != "ps" {
+            assert_eq!(f.call(&["status", &id], 0)["data"]["observation"]["cause"], "identity_mismatch");
         }
         f.call(&["stop", &id], 1);
         assert!(!f.state.join("kill-args").exists());
@@ -661,11 +666,32 @@ fn unavailable_executor_is_unknown_on_every_read() {
         fs::write(f.skills.join("query-fail"), "").unwrap();
         let status = f.call(&["status", &id], 0);
         assert_eq!(status["data"]["observation"]["state"], "unknown");
+        assert_eq!(status["data"]["observation"]["cause"], "query_failed");
+        let human = f.cmd().args(["status", &id]).output().unwrap();
+        assert!(String::from_utf8_lossy(&human.stdout).starts_with("state: unknown\ncause: query_failed\nevidence:\n"));
         assert!(status["data"]["observation"]["evidence"].as_str().unwrap().contains("recorded=Running"));
         let list = f.call(&["ls"], 0);
         assert_eq!(list["data"]["runs"][0]["observation"]["state"], "unknown");
+        assert_eq!(list["data"]["runs"][0]["observation"]["cause"], "query_failed");
         fs::remove_file(f.skills.join("query-fail")).unwrap();
-        assert_eq!(f.call(&["status", &id], 0)["data"]["observation"]["state"], "running");
+        let running = f.call(&["status", &id], 0);
+        assert_eq!(running["data"]["observation"]["state"], "running");
+        assert!(running["data"]["observation"].get("cause").is_none());
+        let human = f.cmd().args(["status", &id]).output().unwrap();
+        assert!(String::from_utf8_lossy(&human.stdout).starts_with("state: running\nevidence:\n"));
+    }
+}
+
+#[test]
+fn unrecognized_executor_status_has_a_cause() {
+    for executor in ["claude", "vibe", "codex"] {
+        let f = Fixture::new();
+        let id = f.launch(executor);
+        f.agents("unexpected", "unexpected", "native-session");
+        f.status("exited", "UNRECOGNIZED");
+        let result = f.call(&["status", &id], 0);
+        assert_eq!(result["data"]["observation"]["state"], "unknown");
+        assert_eq!(result["data"]["observation"]["cause"], "unrecognized_status");
     }
 }
 
@@ -696,7 +722,9 @@ fn gate_elapsed_preserves_intent_and_recovers_late_identity() {
         fs::write(f.skills.join("gate"), "").unwrap();
         let id = f.launch(executor);
         assert_eq!(f.record(&id)["launch"]["state"], "starting");
-        assert_eq!(f.call(&["status", &id], 0)["data"]["observation"]["state"], "unknown");
+        let unknown = f.call(&["status", &id], 0);
+        assert_eq!(unknown["data"]["observation"]["state"], "unknown");
+        assert_eq!(unknown["data"]["observation"]["cause"], "unconfirmed");
         let file = if executor == "vibe" { "session-id" } else { "thread-id" };
         fs::write(f.dir(&id).join(file), "native-1").unwrap();
         assert_eq!(f.call(&["status", &id], 0)["data"]["observation"]["state"], "running");
