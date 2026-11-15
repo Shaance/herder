@@ -683,6 +683,81 @@ fn unavailable_executor_is_unknown_on_every_read() {
 }
 
 #[test]
+fn status_tail_reads_current_attempt_without_changing_status() {
+    for executor in ["codex", "vibe"] {
+        let f = Fixture::new();
+        let id = f.launch(executor);
+        let path = f.dir(&id).join("events.jsonl");
+        let missing = f.call(&["status", &id, "--tail", "2"], 0);
+        assert_eq!(missing["data"]["tail"]["path"], json!(path));
+        assert_eq!(missing["data"]["tail"]["lines"], json!([]));
+        assert!(missing["data"]["tail"]["message"].as_str().unwrap().contains("stream does not exist yet"));
+        let human = f.cmd().args(["status", &id, "--tail", "2"]).output().unwrap();
+        assert!(
+            String::from_utf8_lossy(&human.stdout)
+                .contains(&format!("tail: stream does not exist yet: {}", path.display()))
+        );
+        fs::write(&path, "first\nsecond\nthird\n").unwrap();
+        let plain = f.call(&["status", &id], 0);
+        assert!(plain["data"].get("tail").is_none());
+        let tailed = f.call(&["status", &id, "--tail", "2"], 0);
+        assert_eq!(tailed["data"]["observation"], plain["data"]["observation"]);
+        assert_eq!(tailed["data"]["tail"], json!({"path":path,"lines":["second","third"],"message":null}));
+        let plain = f.cmd().args(["status", &id]).output().unwrap();
+        let human = f.cmd().args(["status", &id, "--tail", "2"]).output().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&human.stdout),
+            format!("{}tail: {}\n  second\n  third\n", String::from_utf8_lossy(&plain.stdout), path.display())
+        );
+        let prefix = format!("{}🙂", "é".repeat(499));
+        fs::write(&path, format!("{prefix}\n{prefix}🙂\n")).unwrap();
+        let long = f.call(&["status", &id, "--tail", "2"], 0);
+        assert_eq!(long["data"]["tail"]["lines"], json!([prefix, format!("{prefix} ...[+4 bytes]")]));
+        f.status("exited", "COMPLETED");
+        f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+        let path = f.dir(&id).join("events2.jsonl");
+        fs::write(&path, "attempt two\n").unwrap();
+        let resumed = f.call(&["status", &id, "--tail", "1000"], 0);
+        assert_eq!(resumed["data"]["tail"], json!({"path":path,"lines":["attempt two"],"message":null}));
+        let mut record = f.record(&id);
+        record["launch"] =
+            json!({"state":"pending_resume", "previous":record["launch"]["native"], "attempt":3,"error":null});
+        fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
+        let path = f.dir(&id).join("events3.jsonl");
+        fs::write(&path, "pending three").unwrap();
+        let pending = f.call(&["status", &id, "--tail", "1"], 0);
+        assert_eq!(pending["data"]["observation"]["cause"], "unconfirmed");
+        assert_eq!(pending["data"]["tail"], json!({"path":path,"lines":["pending three"],"message":null}));
+    }
+}
+
+#[test]
+fn status_tail_explains_claude_stream_absence() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    let message = "tail: none (Claude runs have no crew-recorded event stream)";
+    let result = f.call(&["status", &id, "--tail", "1"], 0);
+    assert_eq!(result["data"]["tail"], json!({"path":null,"lines":[],"message":message}));
+    let human = f.cmd().args(["status", &id, "--tail", "1"]).output().unwrap();
+    assert!(String::from_utf8_lossy(&human.stdout).ends_with(&format!("{message}\n")));
+}
+
+#[test]
+fn status_tail_validates_range_and_is_status_only() {
+    let f = Fixture::new();
+    for count in ["0", "1001"] {
+        let result = f.call(&["status", "unused", "--tail", count], 2);
+        assert!(result["error"].as_str().unwrap().contains(&format!("{count} is not in 1..=1000")));
+    }
+    let invalid = f.call(&["status", "unused", "--tail", "abc"], 2);
+    assert!(invalid["error"].as_str().unwrap().contains("invalid digit"));
+    for command in ["report", "ls", "wait", "stop"] {
+        let result = f.call(&[command, "--tail", "2"], 2);
+        assert!(result["error"].as_str().unwrap().contains("unexpected argument '--tail'"));
+    }
+}
+
+#[test]
 fn unrecognized_executor_status_has_a_cause() {
     for executor in ["claude", "vibe", "codex"] {
         let f = Fixture::new();

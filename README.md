@@ -54,6 +54,7 @@ none (Claude's default). Dispatch detects trust failures without editing trust.
 Status, report, stop, resume, verify and wait accept a run ID or a unique dispatch
 `--name`. Existing IDs take precedence; ambiguous names list their matches, unknown names list similar ones.
 Human dispatch output includes both ID and name.
+`crew status <run> --tail <N>` (1–1000) shows the current launch attempt's last N event-stream lines capped at 500 characters each, adds `data.tail` in JSON, and explains missing streams or Claude's lack of a crew-recorded stream without changing status or exit codes.
 
 `crew wait <run>...` polls every 5 seconds, returning when any run settles;
 `--all` waits for every listed run. Finished, failed, stopped and blocked count as

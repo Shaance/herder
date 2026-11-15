@@ -77,6 +77,9 @@ enum Action {
     Status {
         /// Run id or unique dispatch name
         run: String,
+        /// Show the last N event-stream lines (1-1000), capped at 500 characters each
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=1000))]
+        tail: Option<u16>,
     },
     #[command(
         about = "Read the current attempt's report",

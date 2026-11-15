@@ -40,11 +40,18 @@ pub struct Launched {
 }
 
 pub enum RunDetail {
-    Status,
+    Status { tail: Option<Tail> },
     Report { path: PathBuf, content: Option<String> },
     Stop,
     Resume,
     Verify,
+}
+
+#[derive(Serialize)]
+pub struct Tail {
+    pub path: Option<PathBuf>,
+    pub lines: Vec<String>,
+    pub message: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -65,7 +72,7 @@ pub struct WaitEntry {
 pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
     let store = Store::new()?;
     match &mut action {
-        Action::Status { run }
+        Action::Status { run, .. }
         | Action::Report { run }
         | Action::Stop { run }
         | Action::Resume { run, .. }
@@ -108,7 +115,7 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
         }
         action => {
             let id = match &action {
-                Action::Status { run }
+                Action::Status { run, .. }
                 | Action::Report { run }
                 | Action::Stop { run }
                 | Action::Resume { run, .. }
@@ -186,7 +193,45 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
                     observation = runs::observe(&mut run, locked.as_ref());
                     RunDetail::Verify
                 }
-                Action::Status { .. } => RunDetail::Status,
+                Action::Status { tail, .. } => RunDetail::Status {
+                    tail: tail.map(|count| {
+                        if run.launch.target().executor() == Executor::Claude {
+                            return Tail {
+                                path: None,
+                                lines: vec![],
+                                message: Some("tail: none (Claude runs have no crew-recorded event stream)".into()),
+                            };
+                        }
+                        let attempt = run.launch_attempt().get();
+                        let suffix = if attempt == 1 { String::new() } else { attempt.to_string() };
+                        let path = run
+                            .brief
+                            .parent()
+                            .expect("brief is stored in the run directory")
+                            .join(format!("events{suffix}.jsonl"));
+                        let mut lines = vec![];
+                        let message = match std::fs::read_to_string(&path) {
+                            Ok(content) => {
+                                lines = content
+                                    .lines()
+                                    .rev()
+                                    .take(usize::from(count))
+                                    .map(|line| match line.char_indices().nth(500) {
+                                        Some((cut, _)) => format!("{} ...[+{} bytes]", &line[..cut], line.len() - cut),
+                                        None => line.to_owned(),
+                                    })
+                                    .collect();
+                                lines.reverse();
+                                None
+                            }
+                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                                Some(format!("tail: stream does not exist yet: {}", path.display()))
+                            }
+                            Err(error) => Some(format!("tail: cannot read {}: {error}", path.display())),
+                        };
+                        Tail { path: Some(path), lines, message }
+                    }),
+                },
                 _ => unreachable!(),
             };
             Ok((Output::Run { run: Box::new(run), observation, detail }, code))

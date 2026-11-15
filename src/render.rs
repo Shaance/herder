@@ -37,7 +37,11 @@ fn data(output: &Output) -> Value {
                 RunDetail::Report { path, content: None } => json!({"path":path,"message":"no report yet"}),
                 _ => Value::Null,
             };
-            json!({"run":run,"observation":observation,"report":report})
+            let mut data = json!({"run":run,"observation":observation,"report":report});
+            if let RunDetail::Status { tail: Some(tail) } = detail {
+                data["tail"] = json!(tail);
+            }
+            data
         }
         Output::Message(message) | Output::Rejection(message) => json!({"message":message}),
     }
@@ -123,7 +127,7 @@ fn human(output: &Output) {
             );
         }
         Output::Run { run, observation, detail } => match detail {
-            RunDetail::Status => {
+            RunDetail::Status { tail } => {
                 let dir = run.brief.parent().expect("brief is stored in the run directory");
                 println!("state: {}", observation.state().as_str());
                 if let Some(cause) = observation.cause() {
@@ -146,6 +150,16 @@ fn human(output: &Output) {
                         .map(|v| v.verdict.as_str())
                         .unwrap_or("none")
                 );
+                if let Some(tail) = tail {
+                    if let Some(message) = &tail.message {
+                        println!("{message}");
+                    } else if let Some(path) = &tail.path {
+                        println!("tail: {}", path.display());
+                        for line in &tail.lines {
+                            println!("  {line}");
+                        }
+                    }
+                }
             }
             RunDetail::Report { path, content } => {
                 println!("{}", path_text(path));
