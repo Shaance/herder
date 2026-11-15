@@ -23,6 +23,8 @@ agent or person can use the same CLI.
 Claude resume stops a settled live session, then wakes the same identity with its
 saved options under the recorded profile; copies are stopped and rejected.
 4. Follow progress with `crew ls` (models and executor state tallies) and `crew status`.
+   Vibe/Codex status evidence carries `stream_age_s` (seconds since the stream last
+   changed) and, for a live Codex run, `running_command:`.
    Use `crew wait <run>...` for any settled run, or `--all` for all runs;
    `--timeout <secs>` defaults to 3600. It polls every 5 seconds, exits 0 for
    finished/failed/stopped/blocked, and exits 1 for unknown or timeout. Final output

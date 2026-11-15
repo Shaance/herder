@@ -101,6 +101,8 @@ Executor queries time out after two seconds with `unknown` evidence; existing re
 remain readable. Stop waits briefly for exit and otherwise reports `stop sent` with exit 0.
 Claude completion requires a terminal executor state. Codex/Vibe outcomes follow their
 status script verdicts, so correctness also depends on the installed scripts.
+Their evidence includes `stream_age_s`, the seconds since the event stream last changed,
+and for a live Codex run `running_command:` naming a started command that has not completed.
 A report is never proof. Verification is separate from lifecycle and approval.
 Dispatch records the Git baseline commit. After rebasing a worker branch, use
 `crew verify <run> --baseline <new-upstream-rev>` to verify against and persist
