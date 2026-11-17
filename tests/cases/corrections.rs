@@ -97,7 +97,7 @@ fn c4_failed_pending_resume_retries_same_attempt() {
         let f = Fixture::new();
         let id = f.launch(executor);
         f.status("exited", "COMPLETED");
-        let path = f.skills.join(format!("{executor}-implementer/scripts/resume_{suffix}.sh"));
+        let path = stub_body(&f.skills.join(format!("{executor}-implementer/scripts/resume_{suffix}.sh")));
         let success = fs::read_to_string(&path).unwrap();
         f.script(&format!("{executor}-implementer"), &format!("resume_{suffix}"), "exit 1");
         let delta = f.root.join("brief.md");
@@ -129,7 +129,7 @@ fn c5_delta_format_does_not_require_dispatch_contract() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/ai-skills"))
         .join("implementer-core/scripts/check_brief.sh");
-    fs::copy(actual, f.skills.join("implementer-core/scripts/check_brief.sh")).unwrap();
+    fs::copy(actual, stub_body(&f.skills.join("implementer-core/scripts/check_brief.sh"))).unwrap();
     let delta = f.root.join("delta.md");
     let result = f.call(&["resume", &id, "--brief", delta.to_str().unwrap()], 0);
     assert_eq!(result["data"]["run"]["attempt"], 2);

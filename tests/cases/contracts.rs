@@ -99,7 +99,7 @@ args=sys.argv; out=pathlib.Path(args[args.index('--output-dir')+1]); out.mkdir()
 print('{"sessionId":"stub-session"}')
 print('{"type":"message","role":"assistant","content":[{"type":"text","text":"stub report"}]}')"#
         };
-        fs::write(f.bin.join(executor), format!("#!/usr/bin/python3\n{body}\n")).unwrap();
+        fs::write(stub_body(&f.bin.join(executor)), format!("#!/usr/bin/python3\n{body}\n")).unwrap();
         let (code, dispatch) = call(
             &f,
             &skills,
@@ -118,7 +118,7 @@ print('{"type":"message","role":"assistant","content":[{"type":"text","text":"st
 fn real_codex_partial_stream_and_failed_report_preserve_truth() {
     let (f, skills) = setup();
     fs::write(
-        f.bin.join("codex"),
+        stub_body(&f.bin.join("codex")),
         r#"#!/usr/bin/python3
 import sys,time,pathlib
 pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text('partial report')
@@ -158,7 +158,7 @@ time.sleep(6)"#
 print('{"sessionId":"stub-session"}', flush=True)
 time.sleep(6)"#
         };
-        fs::write(f.bin.join(executor), format!("#!/usr/bin/python3\n{body}\n")).unwrap();
+        fs::write(stub_body(&f.bin.join(executor)), format!("#!/usr/bin/python3\n{body}\n")).unwrap();
         let (code, dispatch) = call(
             &f,
             &skills,
@@ -221,7 +221,7 @@ fn real_status_scripts_reject_recycled_pids() {
 fn real_linter_accepts_generated_handoff_prompt_and_rejects_plain_dispatch() {
     let (f, skills) = setup();
     fs::write(
-        f.bin.join("codex"),
+        stub_body(&f.bin.join("codex")),
         r#"#!/usr/bin/python3
 import sys,pathlib
 args=sys.argv

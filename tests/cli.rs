@@ -1,7 +1,6 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -27,6 +26,13 @@ struct Fixture {
     state: PathBuf,
     bin: PathBuf,
 }
+
+fn stub_body(path: &Path) -> PathBuf {
+    let mut body = path.as_os_str().to_os_string();
+    body.push(".body");
+    body.into()
+}
+
 impl Fixture {
     fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
@@ -178,8 +184,10 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
         f
     }
     fn executable(&self, path: &Path, body: &str) {
-        fs::write(path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(stub_body(path), format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+        if !path.exists() {
+            std::os::unix::fs::symlink(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/stub.sh"), path).unwrap();
+        }
     }
     fn script(&self, owner: &str, name: &str, body: &str) {
         let dir = self.skills.join(owner).join("scripts");
@@ -1143,13 +1151,13 @@ fn human_actions_and_multiline_evidence() {
     }
     f.status("alive", "RUNNING");
     fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(&id).join("final.md").display())).unwrap();
-    let kill = fs::read(f.bin.join("kill")).unwrap();
+    let kill = fs::read(stub_body(&f.bin.join("kill"))).unwrap();
     f.executable(&f.bin.join("kill"), "exit 0");
     let out = f.cmd().args(["stop", &id]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.starts_with(&format!("{id}: running\nstop sent; exit not confirmed:")), "{text}");
-    fs::write(f.bin.join("kill"), kill).unwrap();
+    fs::write(stub_body(&f.bin.join("kill")), kill).unwrap();
     let out = f.cmd().args(["stop", &id]).output().unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}: stopped\n"));
@@ -1252,7 +1260,8 @@ fn request_id_replays_return_the_recorded_run_without_relaunching() {
         f.status("exited", "COMPLETED");
         let suffix = if executor == "vibe" { "vibe" } else { "classic" };
         let original =
-            fs::read_to_string(f.skills.join(format!("{executor}-implementer/scripts/resume_{suffix}.sh"))).unwrap();
+            fs::read_to_string(stub_body(&f.skills.join(format!("{executor}-implementer/scripts/resume_{suffix}.sh"))))
+                .unwrap();
         f.script(
             &format!("{executor}-implementer"),
             &format!("resume_{suffix}_impl"),
@@ -1262,7 +1271,7 @@ fn request_id_replays_return_the_recorded_run_without_relaunching() {
             &format!("{executor}-implementer"),
             &format!("resume_{suffix}"),
             &format!(
-                "echo call >> \"$CREW_STATE_DIR/resume-count\"\npid=$((43210 + $(wc -l < \"$CREW_STATE_DIR/resume-count\")))\nsed \"s/RESUME_PID/$pid/g\" \"$(dirname \"$0\")/resume_{suffix}_impl.sh\" | sh -s -- \"$@\""
+                "echo call >> \"$CREW_STATE_DIR/resume-count\"\npid=$((43210 + $(wc -l < \"$CREW_STATE_DIR/resume-count\")))\nsed \"s/RESUME_PID/$pid/g\" \"$(dirname \"$0\")/resume_{suffix}_impl.sh.body\" | sh -s -- \"$@\""
             ),
         );
         f.write("delta.md", "sync payload one");

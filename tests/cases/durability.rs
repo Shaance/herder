@@ -49,7 +49,7 @@ fn a1_resume_validation_and_pending_identity() {
 #[test]
 fn a2_claude_acceptance_survives_coordinator_death() {
     let f = Fixture::new();
-    let cli = f.bin.join("claude");
+    let cli = stub_body(&f.bin.join("claude"));
     let stub = fs::read_to_string(&cli).unwrap().replace(
         "agents)",
         "agents)\nif test -f \"$CREW_STATE_DIR/pause\"; then touch \"$CREW_STATE_DIR/entered\"; sleep 1; fi",

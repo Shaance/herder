@@ -116,9 +116,10 @@ fn wait_unknown_and_timeout_are_operational_failures() {
     f.agents("idle", "done", "native-session");
     fs::write(f.skills.join("query-fail"), "").unwrap();
     // Fail only script queries, leaving a settled Claude run alongside unknown.
-    let agents_script =
-        fs::read_to_string(f.bin.join("claude")).unwrap().replace("  test ! -f \"$CREW_SKILLS_DIR/query-fail\"", "  :");
-    fs::write(f.bin.join("claude"), agents_script).unwrap();
+    let agents_script = fs::read_to_string(stub_body(&f.bin.join("claude")))
+        .unwrap()
+        .replace("  test ! -f \"$CREW_SKILLS_DIR/query-fail\"", "  :");
+    fs::write(stub_body(&f.bin.join("claude")), agents_script).unwrap();
     // An unknown run neither settles nor aborts the wait; the settled run satisfies it.
     let started = Instant::now();
     let unknown = f.call(&["wait", &settled, &id, "--timeout", "10"], 0);
@@ -137,7 +138,7 @@ fn script_launch_and_resume_do_not_inherit_rex_environment() {
     for (executor, owner, suffix) in [("vibe", "vibe-implementer", "vibe"), ("codex", "codex-implementer", "classic")] {
         let f = Fixture::new();
         for action in ["launch", "resume"] {
-            let path = f.skills.join(owner).join("scripts").join(format!("{action}_{suffix}.sh"));
+            let path = stub_body(&f.skills.join(owner).join("scripts").join(format!("{action}_{suffix}.sh")));
             let original = fs::read_to_string(&path).unwrap();
             fs::write(path, original.replace("set -eu\n", &format!("set -eu\nprintf '%s\\n' \"${{REX_SESSION-unset}}\" \"${{REX_BLOCK-unset}}\" \"${{REX_SERVER-unset}}\" > \"$CREW_STATE_DIR/{action}-env\"\n"))).unwrap();
         }
