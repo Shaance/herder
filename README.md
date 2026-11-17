@@ -3,6 +3,8 @@
 A Rust CLI for coordinating Claude, Vibe and Codex workers from any agent or
 person. Installing from source requires Rust.
 
+macOS is supported and tested in CI; Linux is untested.
+
 Prerequisites: bash, jq, perl, git, and the executor CLIs you use: codex, vibe,
 and/or claude.
 
