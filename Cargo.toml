@@ -5,6 +5,11 @@ edition = "2024"
 description = "Dispatch, track and verify agent workers (Claude, Vibe, Codex) from any coordinating agent"
 repository = "https://github.com/Shaance/crew"
 readme = "README.md"
+license = "MIT OR Apache-2.0"
+authors = ["Christophe Ha"]
+rust-version = "1.89"
+keywords = ["agents", "cli", "codex", "orchestration", "llm"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 anyhow = "1.0.104"

@@ -888,6 +888,23 @@ fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
 }
 
 #[test]
+fn doctor_reports_embedded_scripts_and_missing_bash() {
+    let f = Fixture::new();
+    let out = f
+        .cmd()
+        .env_remove("CREW_SKILLS_DIR")
+        .env("PATH", &f.bin)
+        .args(["doctor", "--executor", "claude", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let data: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let checks = data["data"]["executors"][0]["checks"].as_array().unwrap();
+    assert!(checks.iter().any(|c| c["item"] == "bash" && c["ok"] == false));
+    assert!(checks.iter().any(|c| c["item"] == "scripts (embedded)" && c["ok"] == true));
+}
+
+#[test]
 fn doctor_preserves_paths_in_json_and_escapes_them_in_human_output() {
     use std::os::unix::ffi::OsStringExt;
 

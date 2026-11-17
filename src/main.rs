@@ -17,7 +17,7 @@ use std::path::PathBuf;
 #[command(
     version,
     about = "Dispatch, track and verify agent workers",
-    after_help = "Example: crew doctor --json\nEnvironment: CREW_STATE_DIR (default ~/.local/state/ai-skills/crew), CREW_SKILLS_DIR (default ~/.ai-skills/skills), CLAUDE_CONFIG_DIR (Claude profile).\nExit codes: 0 success, 1 operational failure, 2 usage error."
+    after_help = "Example: crew doctor --json\nEnvironment: CREW_STATE_DIR (default ~/.local/state/ai-skills/crew), CREW_SKILLS_DIR (optional ai-skills-shaped script directory; default embedded), CLAUDE_CONFIG_DIR (Claude profile).\nExit codes: 0 success, 1 operational failure, 2 usage error."
 )]
 struct Cli {
     #[arg(long, global = true, help = "Emit a stable {ok,data,error} JSON envelope")]

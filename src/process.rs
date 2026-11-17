@@ -44,14 +44,43 @@ pub fn query(cmd: &mut Command) -> Result<String> {
     ensure!(status.success(), "exit {:?}: {text}", status.code());
     Ok(text)
 }
-pub fn skills() -> PathBuf {
-    env::var_os("CREW_SKILLS_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".ai-skills/skills"))
-}
 pub fn home() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
-pub fn script(owner: &str, name: &str) -> PathBuf {
-    skills().join(owner).join("scripts").join(format!("{name}.sh"))
+pub fn script(owner: &str, name: &str) -> Command {
+    if let Some(dir) = env::var_os("CREW_SKILLS_DIR") {
+        return Command::new(PathBuf::from(dir).join(owner).join("scripts").join(format!("{name}.sh")));
+    }
+    let text = match (owner, name) {
+        ("implementer-core", "check_brief") => {
+            include_str!("../vendor/ai-skills/implementer-core/scripts/check_brief.sh")
+        }
+        ("implementer-core", "collect_evidence") => {
+            include_str!("../vendor/ai-skills/implementer-core/scripts/collect_evidence.sh")
+        }
+        ("vibe-implementer", "launch_vibe") => {
+            include_str!("../vendor/ai-skills/vibe-implementer/scripts/launch_vibe.sh")
+        }
+        ("vibe-implementer", "status_vibe") => {
+            include_str!("../vendor/ai-skills/vibe-implementer/scripts/status_vibe.sh")
+        }
+        ("vibe-implementer", "resume_vibe") => {
+            include_str!("../vendor/ai-skills/vibe-implementer/scripts/resume_vibe.sh")
+        }
+        ("codex-implementer", "launch_classic") => {
+            include_str!("../vendor/ai-skills/codex-implementer/scripts/launch_classic.sh")
+        }
+        ("codex-implementer", "status_classic") => {
+            include_str!("../vendor/ai-skills/codex-implementer/scripts/status_classic.sh")
+        }
+        ("codex-implementer", "resume_classic") => {
+            include_str!("../vendor/ai-skills/codex-implementer/scripts/resume_classic.sh")
+        }
+        _ => unreachable!("unknown embedded script: {owner}/{name}"),
+    };
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c").arg(text).arg(format!("{name}.sh"));
+    cmd
 }
 pub fn executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
@@ -67,7 +96,7 @@ pub fn profile(value: Option<PathBuf>) -> Result<Option<PathBuf>> {
         .transpose()
 }
 pub fn lint(brief: &Path, mode: &str) -> Result<()> {
-    checked(Command::new(script("implementer-core", "check_brief")).arg(brief).arg(mode))?;
+    checked(script("implementer-core", "check_brief").arg(brief).arg(mode))?;
     Ok(())
 }
 

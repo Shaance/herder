@@ -3,12 +3,7 @@ use crate::{
     process::{checked, output, query, script},
 };
 use anyhow::{Result, ensure};
-use std::{
-    fs,
-    num::NonZeroU32,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{fs, num::NonZeroU32, path::Path, process::Command};
 
 pub struct ScriptExecutor {
     script: (&'static str, &'static str),
@@ -32,7 +27,7 @@ impl ScriptExecutor {
         numbered_status: false,
         native: |thread_id, pid| Native::Codex { thread_id, pid },
     };
-    pub fn path(&self, action: &str) -> PathBuf {
+    pub fn command(&self, action: &str) -> Command {
         script(self.script.0, &format!("{action}_{}", self.script.1))
     }
     pub fn status_args(&self, run: &Run) -> Option<String> {
@@ -50,7 +45,7 @@ impl ScriptExecutor {
         )
     }
     pub fn launch(&self, run: &Run, dir: &Path, delta: Option<&Path>) -> Result<Option<Native>> {
-        let mut cmd = Command::new(self.path(if delta.is_some() { "resume" } else { "launch" }));
+        let mut cmd = self.command(if delta.is_some() { "resume" } else { "launch" });
         cmd.env_remove("REX_SESSION").env_remove("REX_BLOCK").env_remove("REX_SERVER");
         if let Some(delta) = delta {
             cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.launch_attempt().to_string()).arg("--");
@@ -85,7 +80,7 @@ impl ScriptExecutor {
         Ok(Some(native))
     }
     pub fn query(&self, run: &Run, dir: &Path) -> Result<Observation> {
-        let text = query(Command::new(self.path("status")).arg(dir).args(self.status_args(run)))?;
+        let text = query(self.command("status").arg(dir).args(self.status_args(run)))?;
         let recovered = self.identity(dir).ok();
         if let Some(native) = run.launch.native().or(recovered.as_ref()) {
             confirm(native, dir)?;

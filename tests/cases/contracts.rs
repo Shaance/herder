@@ -6,10 +6,11 @@ fn setup() -> (Fixture, PathBuf) {
     fs::remove_file(f.bin.join("ps")).unwrap();
     let skills = std::env::var_os("CREW_SKILLS_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap()).join(".ai-skills/skills"));
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/ai-skills"));
+    let skills = std::path::absolute(skills).unwrap();
     assert!(
         skills.join("codex-implementer/scripts/launch_classic.sh").is_file(),
-        "contract tests require ai-skills; set CREW_SKILLS_DIR to its skills directory"
+        "contract tests require the vendored scripts or CREW_SKILLS_DIR pointing to a skills directory"
     );
     let jq = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|p| p.join("jq"))
@@ -36,6 +37,49 @@ fn setup() -> (Fixture, PathBuf) {
 fn call(f: &Fixture, skills: &Path, args: &[&str]) -> (i32, Value) {
     let out = f.cmd().env("CREW_SKILLS_DIR", skills).args(args).arg("--json").output().unwrap();
     (out.status.code().unwrap(), serde_json::from_slice(&out.stdout).unwrap())
+}
+
+#[test]
+fn embedded_scripts_run_dispatch_lint_launch_status_and_verify() {
+    let (f, _) = setup();
+    let home = f.root.join("empty-home");
+    fs::create_dir(&home).unwrap();
+    f.executable(
+        &f.bin.join("codex"),
+        r#"while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then shift; echo 'stub report' > "$1"; break; fi
+    shift
+done
+echo '{"type":"thread.started","thread_id":"stub-thread"}'
+echo '{"type":"turn.completed"}'"#,
+    );
+    let call = |args: &[&str]| {
+        let out = f.cmd().env_remove("CREW_SKILLS_DIR").env("HOME", &home).args(args).arg("--json").output().unwrap();
+        (out.status.code().unwrap(), serde_json::from_slice::<Value>(&out.stdout).unwrap())
+    };
+    f.write("invalid.md", "A plain brief.\n");
+    let invalid = f.root.join("invalid.md");
+    let (code, rejected) =
+        call(&["dispatch", "--executor", "codex", "--repo", ".", "--brief", invalid.to_str().unwrap()]);
+    assert_eq!(code, 1, "{rejected}");
+    assert!(rejected["error"].as_str().unwrap().contains("missing required blocks"), "{rejected}");
+
+    let brief = f.root.join("brief.md");
+    let (code, dispatch) =
+        call(&["dispatch", "--executor", "codex", "--repo", ".", "--brief", brief.to_str().unwrap(), "--path", "."]);
+    assert_eq!(code, 0, "{dispatch}");
+    assert_eq!(dispatch["data"]["launch_error"], Value::Null, "{dispatch}");
+    let id = dispatch["data"]["run_id"].as_str().unwrap();
+    let (code, report) = call(&["report", id]);
+    assert_eq!(code, 0, "{report}");
+    assert_eq!(report["data"]["observation"]["state"], "finished", "{report}");
+    assert!(report["data"]["report"]["content"].as_str().unwrap().contains("stub report"));
+    let (code, verified) = call(&["verify", id]);
+    assert_eq!(code, 0, "{verified}");
+    let check = &verified["data"]["run"]["verifications"][0]["checks"][1];
+    assert_eq!(check["command"], "collect_evidence.sh");
+    assert_eq!(check["exit_code"], 0);
+    assert!(check["output"].as_str().unwrap().contains("worktree status"));
 }
 
 #[test]

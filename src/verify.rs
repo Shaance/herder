@@ -19,7 +19,7 @@ pub fn run(
         .unwrap_or_default();
     let paths = if paths.is_empty() { &run.authorized_paths } else { &paths };
     let mut jobs = vec![("collect_evidence.sh".into(), {
-        let mut cmd = Command::new(process::script("implementer-core", "collect_evidence"));
+        let mut cmd = process::script("implementer-core", "collect_evidence");
         cmd.arg(store.dir(&run.id)?).arg(&run.repo);
         cmd
     })];

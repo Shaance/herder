@@ -125,8 +125,10 @@ fn c5_delta_format_does_not_require_dispatch_contract() {
         "delta.md",
         "<task>Fix it.</task>\n<verification_loop>Test it.</verification_loop>\n<constraints>No publish.</constraints>",
     );
-    let actual = PathBuf::from(std::env::var_os("HOME").unwrap())
-        .join(".ai-skills/skills/implementer-core/scripts/check_brief.sh");
+    let actual = std::env::var_os("CREW_SKILLS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/ai-skills"))
+        .join("implementer-core/scripts/check_brief.sh");
     fs::copy(actual, f.skills.join("implementer-core/scripts/check_brief.sh")).unwrap();
     let delta = f.root.join("delta.md");
     let result = f.call(&["resume", &id, "--brief", delta.to_str().unwrap()], 0);

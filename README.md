@@ -1,19 +1,20 @@
 # crew
 
 A Rust CLI for coordinating Claude, Vibe and Codex workers from any agent or
-person in a Rex terminal. Requires Rust 1.88+, the executor CLIs, and the shared
-ai-skills scripts. Vibe/Codex scripts also require Bash and jq.
+person in a Rex terminal. Installing from source requires Rust.
+
+Prerequisites: bash, jq, perl, git, and the executor CLIs you use: codex, vibe,
+and/or claude.
 
 ```sh
-cargo install --path . --locked
-ln -s "$PWD/skill" ~/.ai-skills/skills/crew && bash ~/.ai-skills/setup.sh   # install the skill
+cargo install --git https://github.com/Shaance/crew
 crew doctor --json
 ```
 
-Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. Write `/tmp/task.md` with implementer-core's direct-mode contract blocks: `task`,
-`workstream_contract`, `implementation_authority`, `action_safety`,
-`default_follow_through_policy`, `verification_loop`, `economy_contract`, and
-`structured_output_contract`. Name authorized paths and rejected alternatives.
+Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. A direct-mode brief such as `/tmp/task.md` requires the blocks `<task>`,
+`<workstream_contract>`, `<implementation_authority>`, `<action_safety>`,
+`<default_follow_through_policy>`, `<verification_loop>`, `<economy_contract>`, and
+`<structured_output_contract>`. Name authorized paths and rejected alternatives.
 
 ```sh
 crew dispatch --executor codex --brief /tmp/task.md --repo . --goal feature-1 --path src/
@@ -47,7 +48,8 @@ verdict. Unrelated runs remain independent. Issue-log writes are not serialized.
 Dispatch prepares `.ID.pending/` and publishes the directory only with `run.json`.
 Interrupted preparation can leave a hidden staging directory; `ls` ignores it.
 Broken published directories appear as individual errors in `ls`, alongside healthy runs.
-`CREW_SKILLS_DIR` defaults to `~/.ai-skills/skills`.
+Scripts are embedded in the binary. To override them, set `CREW_SKILLS_DIR` to an
+ai-skills-shaped directory containing `<owner>/scripts/<name>.sh`.
 Claude profile precedence is `--profile`, `CLAUDE_CONFIG_DIR`, then explicitly
 none (Claude's default). Dispatch detects trust failures without editing trust.
 
@@ -103,7 +105,7 @@ passes no attempt suffix and checks the reported pid against the resumed worker.
 Executor queries time out after two seconds with `unknown` evidence; existing reports
 remain readable. Stop waits briefly for exit and otherwise reports `stop sent` with exit 0.
 Claude completion requires a terminal executor state. Codex/Vibe outcomes follow their
-status script verdicts, so correctness also depends on the installed scripts.
+status script verdicts, so correctness also depends on those scripts.
 Their evidence includes `stream_age_s`, the seconds since the event stream last changed,
 and for a live Codex run `running_command:` naming a started command that has not completed.
 A report is never proof. Verification is separate from lifecycle and approval.
@@ -115,8 +117,8 @@ and requested commands. Records without a baseline load, but scope verification 
 explicitly. A verdict belongs to its attempt; a resumed attempt starts unverified.
 Legacy `starting` intents load as running, and untagged legacy verdicts belong to attempt 1.
 
-For paired read-only reviews, write one brief containing `task`, `action_safety`,
-`default_follow_through_policy` and `structured_output_contract`. Dispatch it to each
+For paired read-only reviews, write one brief containing `<task>`, `<action_safety>`,
+`<default_follow_through_policy>` and `<structured_output_contract>`. Dispatch it to each
 executor with the same goal; select a Codex model, and repeat `--model` to review with several
 Vibe models (use the review models your host instructions name):
 
@@ -175,6 +177,5 @@ The skill (`skill/SKILL.md`) is the same for every host; install it as a skill i
 Development checks: `cargo build --offline --locked`, `cargo test --offline --locked`,
 and `cargo clippy --offline --locked --all-targets -- -D warnings`.
 Tests invoke the binary with temporary state and stub executors, never real workers.
-Contract tests also run the installed ai-skills launch/status scripts and require `jq`.
-CI must supply that script checkout, using `CREW_SKILLS_DIR` to select its `skills/`
-directory; missing scripts fail the contract tests rather than silently skipping them.
+Contract tests run the vendored launch/status scripts and require `jq`. Set
+`CREW_SKILLS_DIR` to test another ai-skills-shaped directory instead.

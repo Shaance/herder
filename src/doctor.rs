@@ -44,7 +44,13 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doct
             Executor::Codex => ("codex", Some(ScriptExecutor::CODEX)),
         };
         let mut checks = vec![];
-        for exe in if e == Executor::Claude { vec![name] } else { vec![name, "bash", "jq"] } {
+        let override_set = std::env::var_os("CREW_SKILLS_DIR").is_some();
+        let binaries = match (e == Executor::Claude, override_set) {
+            (true, true) => vec![name],
+            (true, false) => vec![name, "bash"],
+            (false, _) => vec![name, "bash", "jq"],
+        };
+        for exe in binaries {
             let present = process::on_path(exe);
             healthy &= present;
             checks.push(DoctorCheck {
@@ -53,20 +59,25 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doct
                 fix: (!present).then(|| format!("install {exe} and put its executable on PATH")),
             });
         }
-        let mut paths = vec![
-            process::script("implementer-core", "check_brief"),
-            process::script("implementer-core", "collect_evidence"),
-        ];
-        if let Some(adapter) = adapter {
-            paths.extend(["launch", "status", "resume"].map(|a| adapter.path(a)));
-        }
-        for path in paths {
-            let present = process::executable(&path);
-            healthy &= present;
-            let fix = (!present).then(|| {
-                format!("restore executable {} or set CREW_SKILLS_DIR to the skills directory", path.display())
-            });
-            checks.push(DoctorCheck { item: path, ok: present, fix });
+        if override_set {
+            let mut commands = vec![
+                process::script("implementer-core", "check_brief"),
+                process::script("implementer-core", "collect_evidence"),
+            ];
+            if let Some(adapter) = adapter {
+                commands.extend(["launch", "status", "resume"].map(|a| adapter.command(a)));
+            }
+            for command in commands {
+                let path = PathBuf::from(command.get_program());
+                let present = process::executable(&path);
+                healthy &= present;
+                let fix = (!present).then(|| {
+                    format!("restore executable {} or set CREW_SKILLS_DIR to the skills directory", path.display())
+                });
+                checks.push(DoctorCheck { item: path, ok: present, fix });
+            }
+        } else {
+            checks.push(DoctorCheck { item: "scripts (embedded)".into(), ok: true, fix: None });
         }
         executors.push(ExecutorChecks { executor: e, checks });
     }

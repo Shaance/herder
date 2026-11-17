@@ -74,11 +74,11 @@ These commands were run with the scratch `repo` directory as the working
 directory. The Python commands make real model calls using existing Vibe auth:
 
 ```sh
-rtk proxy vibe --version
-rtk proxy vibe-acp --version
-rtk proxy vibe-acp --help
-rtk proxy python3 /private/tmp/crew-acp-experiment.ROfmPC/probe.py
-rtk proxy python3 /private/tmp/crew-acp-experiment.ROfmPC/disconnect.py
+vibe --version
+vibe-acp --version
+vibe-acp --help
+python3 /private/tmp/crew-acp-experiment.ROfmPC/probe.py
+python3 /private/tmp/crew-acp-experiment.ROfmPC/disconnect.py
 ```
 
 The probe was adjusted after the recorded runs to report whether its cancel
@@ -160,9 +160,9 @@ The following commands were run after creating a fresh scratch directory; the
 last command ran from its empty Git repository outside the sandbox:
 
 ```sh
-rtk proxy git init --quiet /private/tmp/crew-acp-worker-experiment.LzXfOp/repo
-rtk proxy python3 -m py_compile /private/tmp/crew-acp-worker-experiment.LzXfOp/worker.py /private/tmp/crew-acp-worker-experiment.LzXfOp/exercise.py
-rtk proxy python3 /private/tmp/crew-acp-worker-experiment.LzXfOp/exercise.py
+git init --quiet /private/tmp/crew-acp-worker-experiment.LzXfOp/repo
+python3 -m py_compile /private/tmp/crew-acp-worker-experiment.LzXfOp/worker.py /private/tmp/crew-acp-worker-experiment.LzXfOp/exercise.py
+python3 /private/tmp/crew-acp-worker-experiment.LzXfOp/exercise.py
 ```
 
 `exercise.py` invokes `worker.py dispatch job-a complete`, then independent
