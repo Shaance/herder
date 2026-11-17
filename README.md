@@ -1,7 +1,7 @@
 # crew
 
 A Rust CLI for coordinating Claude, Vibe and Codex workers from any agent or
-person in a Rex terminal. Installing from source requires Rust.
+person. Installing from source requires Rust.
 
 Prerequisites: bash, jq, perl, git, and the executor CLIs you use: codex, vibe,
 and/or claude.
@@ -10,6 +10,10 @@ and/or claude.
 cargo install --git https://github.com/Shaance/crew
 crew doctor --json
 ```
+
+**Optional: Rex.** [Rex](https://superlogical.com) is a macOS terminal in
+invite-only public beta. In Rex, `--pane` opens a pane to attach to a Claude
+worker or wait for a Vibe or Codex worker.
 
 Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. A direct-mode brief such as `/tmp/task.md` requires the blocks `<task>`,
 `<workstream_contract>`, `<implementation_authority>`, `<action_safety>`,
@@ -36,7 +40,8 @@ Unknown observations include a `cause` in JSON and a `cause: <value>` line in `c
 `query_failed`, `identity_mismatch`, `record_disagrees`, `unrecognized_status`, or `unconfirmed`; other states omit it.
 Use `crew <command> --help` for examples and flags; no command prompts.
 
-State defaults to `~/.local/state/ai-skills/crew`, overridden by `CREW_STATE_DIR`.
+State defaults to `~/.local/state/crew`, overridden by `CREW_STATE_DIR`.
+Existing state is not moved automatically.
 `runs/<id>/run.json` owns recorded run facts; scripts place evidence beside it.
 `input.md` is crew's brief copy; `final.md`, `final2.md`, etc. are attempt reports.
 Run writes use temporary files and rename under a per-run `run.lock` advisory lock,
@@ -155,7 +160,7 @@ deletion of the original file cannot change what the worker receives, and the
 document is never printed to stdout.
 
 This launches a continuation only: it does not transfer hidden conversation, stop
-another writer, change Board task owners, or prove the context was understood, and
+another writer, or prove the context was understood, and
 the launch result is launch evidence only. Use `--pane` for the existing Claude
 attach functionality when in Rex. `--mode review` instructs the receiver to stay read-only; it does not add an OS sandbox. No delegation or
 publication happens unless the document or you expressly authorized it.
@@ -173,6 +178,8 @@ their own config directories.
 - Vibe: approve crew commands when asked, or run the session with the `auto-approve` agent.
 
 The skill (`skill/SKILL.md`) is the same for every host; install it as a skill in each one.
+
+See [architecture](docs/architecture.md) for the run lifecycle and implementation.
 
 Development checks: `cargo build --offline --locked`, `cargo test --offline --locked`,
 and `cargo clippy --offline --locked --all-targets -- -D warnings`.

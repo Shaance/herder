@@ -34,9 +34,7 @@ impl Store {
     pub fn new() -> Result<Self> {
         Ok(Self {
             root: std::path::absolute(
-                env::var_os("CREW_STATE_DIR")
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| home().join(".local/state/ai-skills/crew")),
+                env::var_os("CREW_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".local/state/crew")),
             )?,
         })
     }

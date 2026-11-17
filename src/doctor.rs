@@ -82,14 +82,13 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doct
         executors.push(ExecutorChecks { executor: e, checks });
     }
     let rex = process::checked(Command::new("rex").args(["--autostart=false", "whoami", "--json"]));
-    healthy &= rex.is_ok();
     let data = Doctor {
         executors,
         claude_profile: profile,
         profile_resolution: "--profile > CLAUDE_CONFIG_DIR > none",
         rex: RexCheck {
             ok: rex.is_ok(),
-            fix: rex.is_err().then_some("start Rex and set REX_SERVER to its reachable control socket"),
+            fix: rex.is_err().then_some("Rex is optional; install and start it to use --pane"),
         },
     };
     Ok((data, if healthy { 0 } else { 1 }))

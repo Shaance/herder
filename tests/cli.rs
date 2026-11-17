@@ -891,8 +891,51 @@ fn doctor_resolves_profile_precedence_and_reports_exact_gaps() {
     assert_eq!(out.status.code(), Some(1));
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(text.contains("missing vibe: vibe; fix: install vibe and put its executable on PATH"));
-    assert!(text.contains("missing rex; fix:"));
+    assert!(text.contains("missing rex; fix: Rex is optional; install and start it to use --pane"));
     assert!(!text.contains("watch"));
+}
+
+#[test]
+fn doctor_succeeds_without_rex_when_executors_are_healthy() {
+    let f = Fixture::new();
+    fs::remove_file(f.bin.join("rex")).unwrap();
+    std::os::unix::fs::symlink("/bin/bash", f.bin.join("bash")).unwrap();
+
+    let out = f.cmd().env("PATH", &f.bin).args(["doctor", "--json"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stdout));
+    let data: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(data["ok"], true);
+    for executor in data["data"]["executors"].as_array().unwrap() {
+        assert!(executor["checks"].as_array().unwrap().iter().all(|check| check["ok"] == true));
+    }
+    assert_eq!(data["data"]["rex"]["ok"], false);
+    assert_eq!(data["data"]["rex"]["fix"], "Rex is optional; install and start it to use --pane");
+
+    let out = f.cmd().env("PATH", &f.bin).arg("doctor").output().unwrap();
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("missing rex; fix: Rex is optional; install and start it to use --pane")
+    );
+}
+
+#[test]
+fn ls_uses_default_state_dir_and_honors_override() {
+    let f = Fixture::new();
+    let home = f.root.join("home");
+    fs::create_dir_all(home.join(".local/state/crew/runs/default-marker")).unwrap();
+    fs::create_dir_all(f.state.join("runs/override-marker")).unwrap();
+
+    let out = f.cmd().env("HOME", &home).env_remove("CREW_STATE_DIR").args(["ls", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let data: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(data["data"]["runs"][0]["run_id"], "default-marker");
+
+    let out = f.cmd().env("HOME", &home).args(["ls", "--json"]).output().unwrap();
+    assert!(out.status.success());
+    let data: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(data["data"]["runs"][0]["run_id"], "override-marker");
 }
 
 #[test]

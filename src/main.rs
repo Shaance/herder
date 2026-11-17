@@ -17,7 +17,7 @@ use std::path::PathBuf;
 #[command(
     version,
     about = "Dispatch, track and verify agent workers",
-    after_help = "Example: crew doctor --json\nEnvironment: CREW_STATE_DIR (default ~/.local/state/ai-skills/crew), CREW_SKILLS_DIR (optional ai-skills-shaped script directory; default embedded), CLAUDE_CONFIG_DIR (Claude profile).\nExit codes: 0 success, 1 operational failure, 2 usage error."
+    after_help = "Example: crew doctor --json\nEnvironment: CREW_STATE_DIR (default ~/.local/state/crew), CREW_SKILLS_DIR (optional ai-skills-shaped script directory; default embedded), CLAUDE_CONFIG_DIR (Claude profile).\nExit codes: 0 success, 1 operational failure, 2 usage error."
 )]
 struct Cli {
     #[arg(long, global = true, help = "Emit a stable {ok,data,error} JSON envelope")]
@@ -46,7 +46,7 @@ enum Action {
     Dispatch(Dispatch),
     #[command(
         about = "Hand a plain continuation document to a worker and launch it",
-        after_help = "Example: crew handoff --executor claude --brief /tmp/HANDOFF.md --repo . --path src/\nAccepts a plain UTF-8 continuation document instead of a structured brief: its full bytes are snapshotted into the run's input.md behind the standard continuation contract, linted like any brief, and sent to the worker. Missing, empty, whitespace-only or non-UTF-8 documents fail before launch and leave no run record; later edits to the original file cannot change the stored input.\nThis launches a continuation only: it does not transfer hidden conversation, stop another writer, change Board task owners, or prove the context was understood. The launch result is launch evidence only. Use --pane for the existing Claude attach functionality when in Rex."
+        after_help = "Example: crew handoff --executor claude --brief /tmp/HANDOFF.md --repo . --path src/\nAccepts a plain UTF-8 continuation document instead of a structured brief: its full bytes are snapshotted into the run's input.md behind the standard continuation contract, linted like any brief, and sent to the worker. Missing, empty, whitespace-only or non-UTF-8 documents fail before launch and leave no run record; later edits to the original file cannot change the stored input.\nThis launches a continuation only: it does not transfer hidden conversation, stop another writer, or prove the context was understood. The launch result is launch evidence only. Use --pane for the existing Claude attach functionality when in Rex."
     )]
     Handoff(Dispatch),
     #[command(about = "List runs with fresh executor status", after_help = "Example: crew ls --goal feature-1 --json")]

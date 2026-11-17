@@ -6,8 +6,8 @@ the document names) before acting.
 {read_only}</task>
 <workstream_contract>
 The continuation document below is the whole transferred context: this launch does not transfer any hidden
-conversation, does not stop another writer, does not change Board task owners, and the launch result alone
-does not prove the context was understood. Preserve the user decisions, constraints and remaining work it
+conversation or stop another writer. The launch result alone does not prove the context was understood.
+Preserve the user decisions, constraints and remaining work it
 records; verify its claims against the actual repository artifacts before relying on them; continue only the
 remaining work it authorizes. Do not weaken or override explicit authorizations in the document; if it lacks
 essential scope, ask the user instead of inventing it. Rejected alternative: scraping the coordinator's

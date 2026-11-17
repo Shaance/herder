@@ -1,6 +1,6 @@
 ---
 name: crew
-description: Use when coordinating other agents in Rex or asked to dispatch, track, read reports from, or verify agent runs across executors.
+description: Use when coordinating other agents or asked to dispatch, track, read reports from, or verify agent runs across executors.
 ---
 
 ## When to use
@@ -12,9 +12,12 @@ agent or person can use the same CLI.
 ## The loop
 
 1. Run `crew doctor` for the intended executor and profile.
-2. Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. Use
-   implementer-core's direct-mode contract blocks, scope and checks. Name every skill the worker
-   must load (for example `$write-rust`); workers do not reliably load them unasked.
+2. Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. Direct-mode briefs require
+   `<task>`, `<workstream_contract>`, `<implementation_authority>`, `<action_safety>`,
+   `<default_follow_through_policy>`, `<verification_loop>`, `<economy_contract>` and
+   `<structured_output_contract>`. Review-mode briefs require `<task>`, `<action_safety>`,
+   `<default_follow_through_policy>` and `<structured_output_contract>`. Include scope and checks.
+   Name every skill the worker must load (for example `$write-rust`); workers do not reliably load them unasked.
 3. Use `crew dispatch`; retain the printed run ID, name and optional goal label.
    Status, report, stop, resume, verify and wait also accept a unique dispatch
    `--name`; existing IDs take precedence; ambiguous or unknown names list matches or similar names.
@@ -30,7 +33,8 @@ saved options under the recorded profile; copies are stopped and rejected.
    `--timeout <secs>` defaults to 3600. It polls every 5 seconds, exits 0 for
    finished/failed/stopped/blocked, and exits 1 for unknown or timeout. Final output
    lists every run and report path. Example: `crew wait run-id --timeout 60`.
-   Vibe/Codex `--pane` uses wait and closes on exit. Read `crew report`.
+   When Rex is available, `--pane` opens a pane; Vibe/Codex panes use `crew wait`
+   and close on exit. Read `crew report`.
 5. Inspect the actual changes and run `crew verify` with scope paths and checks.
    After rebasing, use `crew verify <run> --baseline <new-upstream-rev>` to replace
    the recorded scope baseline. Invalid commit revisions leave the run unchanged.
@@ -61,12 +65,12 @@ When the coordinating conversation moves to another agent, write the continuatio
 context (decisions, constraints, remaining work, explicit authorizations) into a
 plain UTF-8 file, stop editing the task and repository, then run
 `crew handoff --executor claude --brief /tmp/HANDOFF.md --repo . [dispatch options]`.
-Handoff reuses dispatch's launch, store and `--pane` (Claude attach in Rex), but
+Handoff reuses dispatch's launch, store and optional `--pane` (Claude attach in Rex), but
 accepts a plain continuation document: its full bytes are snapshotted into the
 run's `input.md` behind the standard continuation contract and linted like any
 brief, so later edits to the file cannot change what the worker receives. It
 launches a continuation only: it does not transfer hidden conversation, stop
-another writer, change Board task owners, or prove the context was understood, and
+another writer, or prove the context was understood, and
 the launch result is launch evidence only. Invalid documents fail before launch
 with no run record. `--mode review` instructs the receiver to stay read-only; it does not add an OS
 sandbox. No delegation or publication unless the document or the user expressly
@@ -74,7 +78,7 @@ authorized it.
 
 ## Rules
 
-- Route work per AGENT_DEFAULTS; crew never selects an executor. Vibe runs are auto-approve only.
+- Choosing the executor and model is the coordinator's job; crew never selects one. Vibe runs are auto-approve only.
 - A worker report is never proof. Verify the actual output independently.
 - Publish only after approval; crew does not publish or grant approval.
 - Treat `unknown` as unresolved evidence, not completion or permission to retry.
