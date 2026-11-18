@@ -1,0 +1,153 @@
+name: macOS release
+
+# Secrets (Settings → Secrets and variables → Actions):
+#   MACOS_CERTIFICATE_P12       base64 of the Developer ID certificate and key (.p12)
+#   MACOS_CERTIFICATE_PASSWORD  the .p12's export password
+#   MACOS_SIGNING_IDENTITY      Developer ID Application signing identity
+#   APPLE_API_KEY_P8            base64 of an App Store Connect API key (.p8)
+#   APPLE_API_KEY_ID            that key's ID
+#   APPLE_API_ISSUER_ID         its issuer ID
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    name: macOS universal binary
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required secrets
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          missing=0
+          for secret in MACOS_CERTIFICATE_P12 MACOS_CERTIFICATE_PASSWORD \
+            MACOS_SIGNING_IDENTITY APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER_ID; do
+            if [ -z "${!secret}" ]; then
+              echo "::error::Missing required secret: $secret"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Check the tag matches Cargo.toml
+        if: github.ref_type == 'tag'
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version."
+            exit 1
+          fi
+
+      - name: Add Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build universal binary
+        run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/herder \
+            target/aarch64-apple-darwin/release/herder \
+            target/x86_64-apple-darwin/release/herder
+          lipo -archs dist/herder
+          lipo -verify_arch arm64 x86_64 dist/herder
+
+      - name: Sign
+        env:
+          P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(uuidgen)
+          trap 'rm -f "$RUNNER_TEMP/cert.p12"' EXIT
+          echo "$P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/cert.p12" -P "$P12_PASSWORD" -A -t cert -f pkcs12 -k "$keychain"
+          security set-key-partition-list -S apple-tool:,apple: -k "$keychain_password" "$keychain" >/dev/null
+          # shellcheck disable=SC2046 # Preserve the existing keychain list as separate arguments.
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          rm "$RUNNER_TEMP/cert.p12"
+          codesign --force --options runtime --timestamp --sign "$IDENTITY" dist/herder
+          codesign --verify --strict --verbose=2 dist/herder
+
+      - name: Notarize
+        env:
+          P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_API_ISSUER_ID }}
+        run: |
+          trap 'rm -f "$RUNNER_TEMP/notary.p8"' EXIT
+          echo "$P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          ditto -c -k --keepParent dist/herder "$RUNNER_TEMP/herder-notarize.zip"
+          submit_exit=0
+          xcrun notarytool submit "$RUNNER_TEMP/herder-notarize.zip" \
+            --key "$RUNNER_TEMP/notary.p8" --key-id "$KEY_ID" --issuer "$ISSUER" \
+            --wait --output-format json > "$RUNNER_TEMP/notary-result.json" || submit_exit=$?
+          cat "$RUNNER_TEMP/notary-result.json"
+          printf '\n'
+          status=$(jq -r '.status // empty' "$RUNNER_TEMP/notary-result.json" || true)
+          submission_id=$(jq -r '.id // empty' "$RUNNER_TEMP/notary-result.json" || true)
+          if [ "$submit_exit" -ne 0 ] || [ "$status" != "Accepted" ]; then
+            echo "::error::Notarization failed (status: ${status:-unknown}; submit exit: $submit_exit)."
+            if [ -n "$submission_id" ]; then
+              xcrun notarytool log "$submission_id" \
+                --key "$RUNNER_TEMP/notary.p8" --key-id "$KEY_ID" --issuer "$ISSUER" || true
+            fi
+            exit 1
+          fi
+          # Apple cannot staple a bare Mach-O binary.
+
+      - name: Delete temporary keychain
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/signing.keychain-db" ]; then
+            security delete-keychain "$RUNNER_TEMP/signing.keychain-db"
+          fi
+
+      - name: Package
+        run: |
+          tar -czf dist/herder-macos-universal.tar.gz -C dist herder \
+            -C .. README.md LICENSE-MIT LICENSE-APACHE
+          (cd dist && shasum -a 256 herder-macos-universal.tar.gz > herder-macos-universal.tar.gz.sha256)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herder-macos-universal
+          path: |
+            dist/herder-macos-universal.tar.gz
+            dist/herder-macos-universal.tar.gz.sha256
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            dist/herder-macos-universal.tar.gz dist/herder-macos-universal.tar.gz.sha256 \
+            --title "herder ${GITHUB_REF_NAME#v}" --generate-notes

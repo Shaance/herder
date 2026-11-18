@@ -33,12 +33,22 @@ codex: 2 runs (failed 1, finished 1)
 
 ## Use it from your agent
 
-With Rust, bash, jq, perl, git and your executor CLIs installed, clone the repository and install herder from its root. Then run the line for your host to link the [herder skill](skill/SKILL.md). Keep the clone in place; if a host already has a `herder` skill, inspect that entry before replacing it.
+The universal macOS binary is signed with a Developer ID and notarized by Apple. You also need bash, jq, perl, git and your executor CLIs installed.
+
+```sh
+release=https://github.com/Shaance/herder/releases/latest/download
+curl -fsSL "$release/herder-macos-universal.tar.gz" | tar -xz herder
+sudo mv herder /usr/local/bin/   # or any directory on PATH
+
+# Or build from source with Rust:
+cargo install herder
+```
+
+Clone the repository and run the line for your host to link the [herder skill](skill/SKILL.md). Keep the clone in place; if a host already has a `herder` skill, inspect that entry before replacing it.
 
 ```sh
 git clone https://github.com/Shaance/herder.git
 cd herder
-cargo install --path .
 # Claude Code
 mkdir -p ~/.claude/skills && ln -s "$PWD/skill" ~/.claude/skills/herder
 # Codex
@@ -61,10 +71,12 @@ The skill teaches your agent the brief format and the dispatch, wait, report and
 
 ## Quick start
 
-Install Rust to build from source. You also need bash, jq, perl, git and the executor CLIs you use (`codex`, `vibe` and/or `claude`). This example checks Codex; change the executor if needed.
+You also need bash, jq, perl, git and the executor CLIs you use (`codex`, `vibe` and/or `claude`). This example checks Codex; change the executor if needed. To build from source instead, install Rust and run `cargo install herder`.
 
 ```sh
-cargo install --git https://github.com/Shaance/herder
+release=https://github.com/Shaance/herder/releases/latest/download
+curl -fsSL "$release/herder-macos-universal.tar.gz" | tar -xz herder
+sudo mv herder /usr/local/bin/
 herder doctor --executor codex
 ```
 

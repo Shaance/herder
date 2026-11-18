@@ -5,6 +5,7 @@ edition = "2024"
 description = "Dispatch, track and verify agent workers (Claude, Vibe, Codex) from any coordinating agent"
 repository = "https://github.com/Shaance/herder"
 readme = "README.md"
+exclude = ["/.github", "/docs/assets"]
 license = "MIT OR Apache-2.0"
 authors = ["Christophe Ha"]
 rust-version = "1.89"
