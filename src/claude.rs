@@ -3,7 +3,7 @@ use crate::{
     process::{self, output},
     store::LockedRun,
 };
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::{
     fs,
@@ -97,6 +97,11 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
         cmd.args(&run.extra);
     }
     let report_before = fs::metadata(&report).and_then(|m| m.modified()).ok();
+    // Concurrent `claude --bg` launches can SIGKILL a session (seen on 2.1.327, 2026-11-18).
+    // Remove this lock once two simultaneous `claude --bg` launches both survive.
+    let path = store.root.join("claude-launch.lock");
+    let launch_lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(&path)?;
+    launch_lock.lock().with_context(|| format!("lock {}", path.display()))?;
     let (code, text) = output(&mut cmd)?;
     let backgrounded = text
         .lines()

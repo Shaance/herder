@@ -60,6 +60,11 @@ Codex `status_classic.sh` inspects the newest resumed attempt itself. Herder pas
 
 Claude profile precedence is `--profile`, `CLAUDE_CONFIG_DIR`, then explicitly none, which uses Claude's default. Dispatch detects trust failures without editing trust.
 
+Herder starts Claude background sessions one at a time across processes that share a state directory.
+Parallel Claude dispatches wait for each other's launch gate to finish.
+Herder coordinates launches using `claude-launch.lock` in the state directory.
+This works around a Claude Code 2.1.327 bug where simultaneous `claude --bg` launches can kill one of the sessions during startup.
+
 Initial Claude dispatch failures before acceptance remain terminal. Once Claude prints an accepted short ID, a later launch gate failure returns exit 1 but retains that ID and its diagnosis in `run.json`. Use status to observe that worker; do not relaunch it. Status validates the working directory and a nonempty full session identity before recording it, then requires the same identity on every query and before stop. Gate errors remain historical facts even when the worker later runs or finishes. Existing failed records are unchanged and are not automatically attached to workers.
 
 Claude resume stops a settled session if it is still live, then wakes the same session with its saved options and recorded profile. No launch flags are replayed. Herder rejects unexpected copies and attempts to stop copies whose IDs it can parse. It reports unparseable IDs and stop failures; a copy can require manual cleanup. Failed pending resumes can retry the same attempt.

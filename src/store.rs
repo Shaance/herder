@@ -27,13 +27,14 @@ pub struct Store {
 }
 pub struct LockedRun {
     pub dir: PathBuf,
+    pub root: PathBuf,
     _lock: fs::File,
 }
 impl LockedRun {
-    fn try_acquire(dir: PathBuf) -> Result<Option<Self>> {
+    fn try_acquire(dir: PathBuf, root: &Path) -> Result<Option<Self>> {
         let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("run.lock"))?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(Self { dir, _lock: file })),
+            Ok(()) => Ok(Some(Self { dir, root: root.to_owned(), _lock: file })),
             Err(fs::TryLockError::WouldBlock) => Ok(None),
             Err(fs::TryLockError::Error(error)) => Err(error.into()),
         }
@@ -96,7 +97,7 @@ impl Store {
         fs::create_dir_all(self.root.join("runs"))?;
         let dir = self.root.join("runs").join(format!(".{id}.pending"));
         fs::create_dir(&dir)?;
-        Ok((id, LockedRun::try_acquire(dir)?.context("new run is already locked")?))
+        Ok((id, LockedRun::try_acquire(dir, &self.root)?.context("new run is already locked")?))
     }
     pub fn publish(&self, locked: &mut LockedRun, run: &Run, dir: &Path) -> Result<()> {
         locked.save(run)?;
@@ -115,7 +116,7 @@ impl Store {
         }
     }
     pub fn try_lock(&self, id: &RunId) -> Result<Option<LockedRun>> {
-        LockedRun::try_acquire(self.dir(id)).with_context(|| format!("run {id}"))
+        LockedRun::try_acquire(self.dir(id), &self.root).with_context(|| format!("run {id}"))
     }
     pub fn load(&self, id: &RunId) -> Result<Run> {
         load(&self.dir(id))

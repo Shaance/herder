@@ -300,6 +300,62 @@ fn claude_dispatch_records_identity_profile_and_prompt_first() {
 }
 
 #[test]
+fn concurrent_claude_dispatches_wait_for_the_launch_gate() {
+    let f = Fixture::new();
+    f.executable(
+        &f.bin.join("claude"),
+        r#"starting=$HERDER_STATE_DIR/starting
+case "$1" in
+--bg)
+  if ! mkdir "$starting"; then
+    echo 'Claude crashed: another session is still starting' >&2
+    exit 137
+  fi
+  printf 'backgrounded · %s · worker\n' "$TEST_CLAUDE_ID";;
+agents)
+  listing=$HERDER_SKILLS_DIR/agents.json
+  if test ! -f "$starting/polled"; then
+    # Wait for both dispatches to publish their run before reporting idle.
+    set -- "$HERDER_STATE_DIR"/runs/*/run.json
+    while test "$#" -lt 2; do
+      sleep 0.01
+      set -- "$HERDER_STATE_DIR"/runs/*/run.json
+    done
+    touch "$starting/polled"
+    sed "s/abc123/$TEST_CLAUDE_ID/g; s/\"busy\"/\"idle\"/g" "$listing"
+  else
+    rm "$starting/polled"
+    rmdir "$starting"
+    sed "s/abc123/$TEST_CLAUDE_ID/g" "$listing"
+  fi;;
+*) exit 90;;
+esac"#,
+    );
+    let workers = ["abc123", "def456"].map(|id| {
+        f.cmd()
+            .env("TEST_CLAUDE_ID", id)
+            .args(["--json", "dispatch", "--executor", "claude", "--repo", ".", "--name", id, "--brief"])
+            .arg(f.root.join("brief.md"))
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    });
+    let outputs = workers.map(|worker| worker.wait_with_output().unwrap());
+    for (id, out) in ["abc123", "def456"].into_iter().zip(outputs) {
+        assert!(
+            out.status.success(),
+            "{id}: {} {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let run_id = result["data"]["run_id"].as_str().unwrap();
+        assert_eq!(f.record(run_id)["launch"]["native"]["id"], id);
+    }
+}
+
+#[test]
 fn claude_launch_failures_and_lint_never_claim_success() {
     for mode in ["trust", "idle", "lint-fail"] {
         let f = Fixture::new();
