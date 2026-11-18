@@ -1192,8 +1192,18 @@ fn human_actions_and_multiline_evidence() {
     let check = "echo first; echo second; exit 1";
     for (args, code, expected) in [
         (vec!["verify", &id], 2, "verify requires --path when none were recorded at dispatch\n".to_owned()),
-        (vec!["verify", &id, "--path", "src/"], 0, "pass attempt 1\n".into()),
-        (vec!["verify", &id, "--path", "src/", "--check", check], 1, format!("fail attempt 1\n{check}: first\n")),
+        (
+            vec!["verify", &id, "--path", "src/"],
+            0,
+            "PASS  worker\\nname  attempt 1\n  scope  baseline scope  ok\n  check  collect_evidence.sh  ok\n".into(),
+        ),
+        (
+            vec!["verify", &id, "--path", "src/", "--check", check],
+            1,
+            format!(
+                "FAIL  worker\\nname  attempt 1\n  scope  baseline scope  ok\n  check  collect_evidence.sh  ok\n  check  {check}  failed (exit 1)\n    first\n    second\n"
+            ),
+        ),
     ] {
         let out = f.cmd().args(args).output().unwrap();
         assert_eq!(out.status.code(), Some(code));
@@ -1219,6 +1229,58 @@ fn human_actions_and_multiline_evidence() {
         "{text}"
     );
     assert!(!text.contains("\\n"), "{text}");
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn terminal_lists_and_verification_honor_no_color() {
+    let f = Fixture::new();
+    let id = f.dispatch("codex", &["--name", "terminal", "--path", "src/"], 0)["data"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    f.status("exited", "COMPLETED");
+    let broken = f.state.join("runs/broken");
+    fs::create_dir(&broken).unwrap();
+    fs::write(broken.join("run.json"), "{").unwrap();
+
+    let run = |args: &[&str], no_color: Option<&str>| {
+        let mut cmd = Command::new("/usr/bin/script");
+        cmd.args(["-q", "/dev/null", env!("CARGO_BIN_EXE_herder")])
+            .args(args)
+            .current_dir(&f.repo)
+            .env("HERDER_STATE_DIR", &f.state)
+            .env("HERDER_SKILLS_DIR", &f.skills)
+            .env("PATH", format!("{}:/usr/bin:/bin", f.bin.display()))
+            .env_remove("NO_COLOR");
+        if let Some(value) = no_color {
+            cmd.env("NO_COLOR", value);
+        }
+        let out = cmd.output().unwrap();
+        (out.status.code(), String::from_utf8(out.stdout).unwrap().replace('\r', ""))
+    };
+    let (code, colored) = run(&["ls"], None);
+    assert_eq!(code, Some(0));
+    let header = format!("{:<width$}  NAME      GOAL  EXECUTOR  STATE     ATTEMPT  MODEL\n", "ID", width = id.len());
+    assert!(colored.contains(&header), "{colored:?}");
+    assert!(colored.contains("\x1b[32mfinished\x1b[0m"), "{colored:?}");
+    assert!(colored.contains("\x1b[31mbroken\x1b[0m"), "{colored:?}");
+    assert!(colored.contains("\x1b[2m-\x1b[0m"), "{colored:?}");
+    assert!(colored.contains("\n\ncodex: 1 runs (finished 1)\n"), "{colored:?}");
+    let (_, uncolored) = run(&["ls"], Some("1"));
+    assert!(!uncolored.contains('\x1b'), "{uncolored:?}");
+    assert!(uncolored.contains(&format!("{id}  terminal  -     codex     finished  1        -\n")), "{uncolored:?}");
+    assert!(uncolored.contains("broken  ") && uncolored.contains("run.json"), "{uncolored:?}");
+    assert!(run(&["ls"], Some("")).1.contains("\x1b[32mfinished\x1b[0m"));
+
+    let (code, colored) = run(&["verify", &id, "--check", "echo problem; exit 7"], None);
+    assert_eq!(code, Some(1));
+    assert!(colored.contains("\x1b[31mFAIL\x1b[0m  terminal  attempt 1"), "{colored:?}");
+    assert!(colored.contains("echo problem; exit 7  \x1b[31mfailed (exit 7)\x1b[0m\n    problem"), "{colored:?}");
+    let (code, plain) = run(&["verify", &id, "--check", "true"], Some("1"));
+    assert_eq!(code, Some(0));
+    assert!(!plain.contains('\x1b'), "{plain:?}");
+    assert!(plain.contains("PASS  terminal  attempt 1\n  scope  baseline scope  ok"), "{plain:?}");
 }
 
 #[test]

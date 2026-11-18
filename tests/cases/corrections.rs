@@ -173,6 +173,29 @@ fn checked_output_keeps_stderr_out_of_baselines_and_scope() {
 }
 
 #[test]
+fn scope_text_records_paths_and_baseline_in_plain_language() {
+    let f = Fixture::new();
+    fs::write(f.repo.join("pre-existing"), "user edit").unwrap();
+    let id =
+        f.dispatch("codex", &["--path", "src/", "--path", "tests/"], 0)["data"]["run_id"].as_str().unwrap().to_owned();
+    let baseline = f.git(&["rev-parse", "HEAD"]);
+    fs::create_dir(f.repo.join("src")).unwrap();
+    fs::write(f.repo.join("src/new.rs"), "allowed").unwrap();
+    fs::write(f.repo.join("config.toml"), "outside").unwrap();
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id], 1);
+    let record = &result["data"]["run"];
+    assert_eq!(record["baseline_commit"], baseline);
+    assert_eq!(
+        record["verifications"][0]["checks"][0]["output"],
+        format!(
+            "config.toml changed outside allowed paths (src/, tests/) since {}.\nChanged files: config.toml, pre-existing, src/new.rs.\nPre-existing and unchanged: pre-existing.",
+            &baseline[..7]
+        )
+    );
+}
+
+#[test]
 fn scope_excludes_only_unchanged_dispatch_dirty_contents() {
     let f = Fixture::new();
     for path in ["unstaged", "staged", "deleted"] {
@@ -193,7 +216,7 @@ fn scope_excludes_only_unchanged_dispatch_dirty_contents() {
     let result = f.call(&["verify", &id, "--path", "src/"], 0);
     let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
     assert!(
-        scope.contains("pre-existing and unchanged=") && scope.contains("unstaged") && scope.contains("brief\\nfile")
+        scope.contains("Pre-existing and unchanged:") && scope.contains("unstaged") && scope.contains("brief\\nfile")
     );
     for path in ["unstaged", "staged", "deleted", "brief\nfile"] {
         fs::write(f.repo.join(path), "worker edit").unwrap();

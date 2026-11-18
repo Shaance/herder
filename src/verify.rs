@@ -62,11 +62,21 @@ pub fn run(
                     })
             })
             .collect();
+        let allowed = paths.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
+        let changed = files.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
+        let unchanged = pre_existing.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
+        let short_baseline: String = baseline.chars().take(7).collect();
+        let details = format!(
+            "Changed files: {}.\nPre-existing and unchanged: {}.",
+            if changed.is_empty() { "none" } else { &changed },
+            if unchanged.is_empty() { "none" } else { &unchanged }
+        );
         anyhow::ensure!(
             violations.is_empty(),
-            "outside authorized paths since {baseline}: {violations:?}; files={files:?}; pre-existing and unchanged={pre_existing:?}"
+            "{} changed outside allowed paths ({allowed}) since {short_baseline}.\n{details}",
+            violations.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ")
         );
-        Ok(format!("baseline={baseline}; files={files:?}; pre-existing and unchanged={pre_existing:?}"))
+        Ok(format!("Allowed paths: {allowed}. Baseline: {short_baseline}.\n{details}"))
     })();
     let mut checks = vec![match scope {
         Ok(output) => Check { command: "baseline scope".into(), exit_code: Some(0), output },
