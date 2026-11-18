@@ -16,7 +16,7 @@ jobs:
   check:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Check jq is installed
         run: command -v jq || { echo "jq is required but not installed" >&2; exit 1; }
@@ -27,6 +27,6 @@ jobs:
   msrv:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.89 --profile minimal
       - run: cargo +1.89 check --all-targets --locked
