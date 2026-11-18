@@ -44,7 +44,7 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doct
             Executor::Codex => ("codex", Some(ScriptExecutor::CODEX)),
         };
         let mut checks = vec![];
-        let override_set = std::env::var_os("CREW_SKILLS_DIR").is_some();
+        let override_set = std::env::var_os("HERDER_SKILLS_DIR").is_some();
         let binaries = match (e == Executor::Claude, override_set) {
             (true, true) => vec![name],
             (true, false) => vec![name, "bash"],
@@ -72,7 +72,7 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doct
                 let present = process::executable(&path);
                 healthy &= present;
                 let fix = (!present).then(|| {
-                    format!("restore executable {} or set CREW_SKILLS_DIR to the skills directory", path.display())
+                    format!("restore executable {} or set HERDER_SKILLS_DIR to the skills directory", path.display())
                 });
                 checks.push(DoctorCheck { item: path, ok: present, fix });
             }

@@ -74,9 +74,9 @@ fn a8_stop_waits_or_reports_stop_sent_without_failure() {
         let f = Fixture::new();
         let id = f.launch("codex");
         fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(&id).join("final.md").display())).unwrap();
-        f.executable(&f.bin.join("kill"), "touch \"$CREW_STATE_DIR/signalled\"");
+        f.executable(&f.bin.join("kill"), "touch \"$HERDER_STATE_DIR/signalled\"");
         if delayed {
-            f.executable(&f.bin.join("kill"), "(sleep 0.3; printf 'state=exited pid=43210\\nverdict: STOPPED\\n' > \"$CREW_SKILLS_DIR/status\") </dev/null >/dev/null 2>&1 &");
+            f.executable(&f.bin.join("kill"), "(sleep 0.3; printf 'state=exited pid=43210\\nverdict: STOPPED\\n' > \"$HERDER_SKILLS_DIR/status\") </dev/null >/dev/null 2>&1 &");
         }
         let stopped = f.call(&["stop", &id], 0);
         assert_eq!(stopped["data"]["observation"]["state"], if delayed { "stopped" } else { "running" });

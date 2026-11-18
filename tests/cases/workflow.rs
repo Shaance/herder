@@ -118,7 +118,7 @@ fn wait_unknown_and_timeout_are_operational_failures() {
     // Fail only script queries, leaving a settled Claude run alongside unknown.
     let agents_script = fs::read_to_string(stub_body(&f.bin.join("claude")))
         .unwrap()
-        .replace("  test ! -f \"$CREW_SKILLS_DIR/query-fail\"", "  :");
+        .replace("  test ! -f \"$HERDER_SKILLS_DIR/query-fail\"", "  :");
     fs::write(stub_body(&f.bin.join("claude")), agents_script).unwrap();
     // An unknown run neither settles nor aborts the wait; the settled run satisfies it.
     let started = Instant::now();
@@ -140,7 +140,7 @@ fn script_launch_and_resume_do_not_inherit_rex_environment() {
         for action in ["launch", "resume"] {
             let path = stub_body(&f.skills.join(owner).join("scripts").join(format!("{action}_{suffix}.sh")));
             let original = fs::read_to_string(&path).unwrap();
-            fs::write(path, original.replace("set -eu\n", &format!("set -eu\nprintf '%s\\n' \"${{REX_SESSION-unset}}\" \"${{REX_BLOCK-unset}}\" \"${{REX_SERVER-unset}}\" > \"$CREW_STATE_DIR/{action}-env\"\n"))).unwrap();
+            fs::write(path, original.replace("set -eu\n", &format!("set -eu\nprintf '%s\\n' \"${{REX_SESSION-unset}}\" \"${{REX_BLOCK-unset}}\" \"${{REX_SERVER-unset}}\" > \"$HERDER_STATE_DIR/{action}-env\"\n"))).unwrap();
         }
         let mut cmd = f.cmd();
         cmd.env("REX_SESSION", "parent-session").env("REX_SERVER", "parent-server");
@@ -230,7 +230,7 @@ fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
             let error = f.call(&args, 1);
             let error = error["error"].as_str().unwrap();
             if name == "unknown" {
-                assert!(error.contains("crew ls") && !error.contains(id), "{error}");
+                assert!(error.contains("herder ls") && !error.contains(id), "{error}");
             } else {
                 assert!(error.contains("candidates:") && error.contains(id) && error.contains(other), "{error}");
             }
@@ -288,7 +288,7 @@ fn baseline_override_after_rebase_narrows_scope_and_persists() {
 #[test]
 fn review_mode_is_explicit_and_direct_remains_default() {
     let f = Fixture::new();
-    f.script("implementer-core", "check_brief", r#"printf '%s\n' "$2" > "$CREW_STATE_DIR/lint-mode""#);
+    f.script("implementer-core", "check_brief", r#"printf '%s\n' "$2" > "$HERDER_STATE_DIR/lint-mode""#);
     f.dispatch("codex", &[], 0);
     assert_eq!(fs::read_to_string(f.state.join("lint-mode")).unwrap(), "direct\n");
     let result = f.dispatch("codex", &["--mode", "review"], 0);

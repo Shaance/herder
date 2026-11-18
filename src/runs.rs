@@ -23,7 +23,7 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun
                 run.launch,
                 Launch::Accepted { .. } | Launch::Launched { native: Native::Claude { .. }, .. }
             ) {
-                "worker accepted; use crew status to observe it; do not relaunch".into()
+                "worker accepted; use herder status to observe it; do not relaunch".into()
             } else if message.contains("Workspace not trusted") {
                 let profile = match &target {
                     Target::Claude { profile } => {
@@ -33,7 +33,7 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun
                 };
                 format!("open `claude` in {} under profile {profile} once and accept trust", run.repo.display())
             } else {
-                "inspect the executor message and run crew doctor; correct the cause before retrying".into()
+                "inspect the executor message and run herder doctor; correct the cause before retrying".into()
             };
             let error = LaunchError { message: message.clone(), remediation: remediation.clone() };
             match &mut run.launch {
@@ -53,7 +53,7 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
     let Some(store) = store else {
         return Observation::new(
             run.launch.state(),
-            "run busy: another crew command holds the lock".into(),
+            "run busy: another herder command holds the lock".into(),
             UnknownCause::Unconfirmed,
         );
     };
@@ -131,7 +131,7 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
             }
         }
         if matches!(run.launch, Launch::Launched { intent: Intent::Stopped, .. }) {
-            observed.evidence = format!("stopped by crew stop; {}", observed.evidence);
+            observed.evidence = format!("stopped by herder stop; {}", observed.evidence);
         }
         Ok(reconcile(run.launch.state(), observed))
     })();
@@ -270,12 +270,12 @@ pub fn pane(run: &Run) -> Result<()> {
         }
         Native::Vibe { .. } | Native::Codex { .. } => {
             cmd.arg("env");
-            if let Some(root) = std::env::var_os("CREW_STATE_DIR") {
-                let mut assignment = std::ffi::OsString::from("CREW_STATE_DIR=");
+            if let Some(root) = std::env::var_os("HERDER_STATE_DIR") {
+                let mut assignment = std::ffi::OsString::from("HERDER_STATE_DIR=");
                 assignment.push(std::path::absolute(Path::new(&root))?);
                 cmd.arg(assignment);
             } else {
-                cmd.args(["-u", "CREW_STATE_DIR"]);
+                cmd.args(["-u", "HERDER_STATE_DIR"]);
             }
             cmd.arg(std::env::current_exe()?).arg("wait").arg(&run.id);
         }

@@ -40,7 +40,7 @@ fn c1_busy_reads_return_recorded_state_and_mutations_time_out() {
             assert!(output.status.success());
             let data = if command == "ls" { &result["data"]["runs"][0] } else { &result["data"] };
             assert_eq!(data["observation"]["state"], "running");
-            assert_eq!(data["observation"]["evidence"], "run busy: another crew command holds the lock");
+            assert_eq!(data["observation"]["evidence"], "run busy: another herder command holds the lock");
             if command == "report" {
                 assert_eq!(data["report"]["content"], "existing report");
             }
@@ -125,7 +125,7 @@ fn c5_delta_format_does_not_require_dispatch_contract() {
         "delta.md",
         "<task>Fix it.</task>\n<verification_loop>Test it.</verification_loop>\n<constraints>No publish.</constraints>",
     );
-    let actual = std::env::var_os("CREW_SKILLS_DIR")
+    let actual = std::env::var_os("HERDER_SKILLS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/ai-skills"))
         .join("implementer-core/scripts/check_brief.sh");

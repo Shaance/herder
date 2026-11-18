@@ -199,7 +199,7 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
                             return Tail {
                                 path: None,
                                 lines: vec![],
-                                message: Some("tail: none (Claude runs have no crew-recorded event stream)".into()),
+                                message: Some("tail: none (Claude runs have no herder-recorded event stream)".into()),
                             };
                         }
                         let attempt = run.launch_attempt().get();

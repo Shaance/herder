@@ -4,7 +4,7 @@ Status: accepted, 2026-11-08
 
 ## Context
 
-crew needs detached Vibe workers whose status, reports and session identity can
+herder needs detached Vibe workers whose status, reports and session identity can
 be queried after the dispatch command exits. Resume and cancellation must keep
 uncertain outcomes visible. The current adapter uses Vibe's CLI through the
 vendored launch, status and resume scripts.
@@ -37,7 +37,7 @@ The tests did not establish safe replay of interrupted side effects, remote
 provider cancellation, host-crash durability, or exhaustive race behavior.
 A 170-line early worker preceded those requirements; the Vibe scripts totaled
 192 lines and the 136-line shared adapter also served Codex. The Rust ACP SDK
-was inspected but not integrated or exercised by crew.
+was inspected but not integrated or exercised by herder.
 
 ## Reconsider when
 
@@ -45,4 +45,4 @@ Revisit ACP for a concrete benefit, such as shared support across multiple ACP
 executors. A production proposal should demonstrate configuration and argument
 parity, limits, identity-safe cancellation, failure diagnostics, interruption
 recovery and version compatibility. Executor completion remains separate from
-crew's repository verification.
+herder's repository verification.

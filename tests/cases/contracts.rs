@@ -4,13 +4,13 @@ use std::{thread, time::Duration};
 fn setup() -> (Fixture, PathBuf) {
     let f = Fixture::new();
     fs::remove_file(f.bin.join("ps")).unwrap();
-    let skills = std::env::var_os("CREW_SKILLS_DIR")
+    let skills = std::env::var_os("HERDER_SKILLS_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/ai-skills"));
     let skills = std::path::absolute(skills).unwrap();
     assert!(
         skills.join("codex-implementer/scripts/launch_classic.sh").is_file(),
-        "contract tests require the vendored scripts or CREW_SKILLS_DIR pointing to a skills directory"
+        "contract tests require the vendored scripts or HERDER_SKILLS_DIR pointing to a skills directory"
     );
     let jq = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|p| p.join("jq"))
@@ -35,7 +35,7 @@ fn setup() -> (Fixture, PathBuf) {
 }
 
 fn call(f: &Fixture, skills: &Path, args: &[&str]) -> (i32, Value) {
-    let out = f.cmd().env("CREW_SKILLS_DIR", skills).args(args).arg("--json").output().unwrap();
+    let out = f.cmd().env("HERDER_SKILLS_DIR", skills).args(args).arg("--json").output().unwrap();
     (out.status.code().unwrap(), serde_json::from_slice(&out.stdout).unwrap())
 }
 
@@ -54,7 +54,7 @@ echo '{"type":"thread.started","thread_id":"stub-thread"}'
 echo '{"type":"turn.completed"}'"#,
     );
     let call = |args: &[&str]| {
-        let out = f.cmd().env_remove("CREW_SKILLS_DIR").env("HOME", &home).args(args).arg("--json").output().unwrap();
+        let out = f.cmd().env_remove("HERDER_SKILLS_DIR").env("HOME", &home).args(args).arg("--json").output().unwrap();
         (out.status.code().unwrap(), serde_json::from_slice::<Value>(&out.stdout).unwrap())
     };
     f.write("invalid.md", "A plain brief.\n");

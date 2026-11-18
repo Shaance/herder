@@ -48,7 +48,7 @@ pub fn home() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
 pub fn script(owner: &str, name: &str) -> Command {
-    if let Some(dir) = env::var_os("CREW_SKILLS_DIR") {
+    if let Some(dir) = env::var_os("HERDER_SKILLS_DIR") {
         return Command::new(PathBuf::from(dir).join(owner).join("scripts").join(format!("{name}.sh")));
     }
     let text = match (owner, name) {

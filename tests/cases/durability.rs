@@ -52,7 +52,7 @@ fn a2_claude_acceptance_survives_coordinator_death() {
     let cli = stub_body(&f.bin.join("claude"));
     let stub = fs::read_to_string(&cli).unwrap().replace(
         "agents)",
-        "agents)\nif test -f \"$CREW_STATE_DIR/pause\"; then touch \"$CREW_STATE_DIR/entered\"; sleep 1; fi",
+        "agents)\nif test -f \"$HERDER_STATE_DIR/pause\"; then touch \"$HERDER_STATE_DIR/entered\"; sleep 1; fi",
     );
     fs::write(&cli, stub).unwrap();
     fs::write(f.state.join("pause"), "").unwrap();
@@ -85,7 +85,7 @@ fn a3_verify_reloads_after_concurrent_resume_without_lost_updates() {
             "--path",
             "src/",
             "--check",
-            "touch \"$CREW_STATE_DIR/entered\"; while test ! -f \"$CREW_STATE_DIR/release\"; do sleep 0.02; done",
+            "touch \"$HERDER_STATE_DIR/entered\"; while test ! -f \"$HERDER_STATE_DIR/release\"; do sleep 0.02; done",
         ])
         .stdout(Stdio::null())
         .spawn()

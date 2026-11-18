@@ -34,7 +34,9 @@ impl Store {
     pub fn new() -> Result<Self> {
         Ok(Self {
             root: std::path::absolute(
-                env::var_os("CREW_STATE_DIR").map(PathBuf::from).unwrap_or_else(|| home().join(".local/state/crew")),
+                env::var_os("HERDER_STATE_DIR")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home().join(".local/state/herder")),
             )?,
         })
     }
@@ -60,7 +62,7 @@ impl Store {
             match (matches.is_empty(), similar.is_empty()) {
                 (false, _) => format!("candidates: {}", matches.join(", ")),
                 (true, false) => format!("similar names: {}", similar.join(", ")),
-                (true, true) => "list runs with `crew ls`".into(),
+                (true, true) => "list runs with `herder ls`".into(),
             }
         );
         Ok(matches.remove(0))

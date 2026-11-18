@@ -54,53 +54,53 @@ impl Fixture {
         for exe in ["vibe", "codex", "jq", "watch"] {
             f.executable(&f.bin.join(exe), "exit 0");
         }
-        f.executable(&f.bin.join("rex"), "printf '%s\\n' \"$@\" > \"$CREW_STATE_DIR/rex-args\"; echo '{}'");
-        f.executable(&f.bin.join("ps"), "cat \"$CREW_SKILLS_DIR/ps\"");
+        f.executable(&f.bin.join("rex"), "printf '%s\\n' \"$@\" > \"$HERDER_STATE_DIR/rex-args\"; echo '{}'");
+        f.executable(&f.bin.join("ps"), "cat \"$HERDER_SKILLS_DIR/ps\"");
         f.executable(
             &f.bin.join("kill"),
-            r#"printf '%s\n' "$@" > "$CREW_STATE_DIR/kill-args"
-echo 'state=exited pid=43210' > "$CREW_SKILLS_DIR/status"
-echo 'verdict: DIED' >> "$CREW_SKILLS_DIR/status""#,
+            r#"printf '%s\n' "$@" > "$HERDER_STATE_DIR/kill-args"
+echo 'state=exited pid=43210' > "$HERDER_SKILLS_DIR/status"
+echo 'verdict: DIED' >> "$HERDER_SKILLS_DIR/status""#,
         );
         f.script(
             "implementer-core",
             "check_brief",
             r#"case "$2" in direct|review) ;; *) exit 2 ;; esac
-if test -f "$CREW_SKILLS_DIR/lint-fail"; then echo 'invalid brief' >&2; exit 1; fi"#,
+if test -f "$HERDER_SKILLS_DIR/lint-fail"; then echo 'invalid brief' >&2; exit 1; fi"#,
         );
         f.script(
             "implementer-core",
             "collect_evidence",
-            r#"printf '%s\n' "$@" > "$CREW_STATE_DIR/evidence-args"
-if test -f "$CREW_SKILLS_DIR/scope-fail"; then echo 'outside authorized paths'; exit 2; fi"#,
+            r#"printf '%s\n' "$@" > "$HERDER_STATE_DIR/evidence-args"
+if test -f "$HERDER_SKILLS_DIR/scope-fail"; then echo 'outside authorized paths'; exit 2; fi"#,
         );
         f.executable(
             &f.bin.join("claude"),
-            r#"printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$CREW_STATE_DIR/profile"
+            r#"printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$HERDER_STATE_DIR/profile"
 case "$1" in
 --bg)
-  echo accepted >> "$CREW_STATE_DIR/launch-count"
-  printf '%s\n' "$@" > "$CREW_STATE_DIR/claude-args"
+  echo accepted >> "$HERDER_STATE_DIR/launch-count"
+  printf '%s\n' "$@" > "$HERDER_STATE_DIR/claude-args"
   if test "$2" = --resume; then
-    printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$CREW_STATE_DIR/resume-profile"
+    printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$HERDER_STATE_DIR/resume-profile"
     test "$#" = 4
     test "$3" = native-session
-    test "$(pwd)" = "$(cat "$CREW_STATE_DIR/resume-repo")"
-    printf '%s\n' "$@" > "$CREW_STATE_DIR/resume-args"
-    if test -f "$CREW_SKILLS_DIR/resume-output"; then cat "$CREW_SKILLS_DIR/resume-output"; exit 0; fi
-    if test -f "$CREW_SKILLS_DIR/delayed-wake"; then touch "$CREW_SKILLS_DIR/waking"; echo 'backgrounded · abc123 · worker'; exit 0; fi
-    if test -f "$CREW_SKILLS_DIR/resume-copy"; then
-      if ! grep -q '^id-only$' "$CREW_SKILLS_DIR/resume-copy"; then
+    test "$(pwd)" = "$(cat "$HERDER_STATE_DIR/resume-repo")"
+    printf '%s\n' "$@" > "$HERDER_STATE_DIR/resume-args"
+    if test -f "$HERDER_SKILLS_DIR/resume-output"; then cat "$HERDER_SKILLS_DIR/resume-output"; exit 0; fi
+    if test -f "$HERDER_SKILLS_DIR/delayed-wake"; then touch "$HERDER_SKILLS_DIR/waking"; echo 'backgrounded · abc123 · worker'; exit 0; fi
+    if test -f "$HERDER_SKILLS_DIR/resume-copy"; then
+      if ! grep -q '^id-only$' "$HERDER_SKILLS_DIR/resume-copy"; then
         echo 'note: background session abc123 keeps its own saved options, so the flags you passed started a copy as def456. Without flags, the same command continues abc123 itself.'
       fi
-      if ! grep -q '^note-only$' "$CREW_SKILLS_DIR/resume-copy"; then echo 'backgrounded · def456 · worker'; fi
+      if ! grep -q '^note-only$' "$HERDER_SKILLS_DIR/resume-copy"; then echo 'backgrounded · def456 · worker'; fi
       exit 0
     fi
-    grep -q '"status":null' "$CREW_SKILLS_DIR/agents.json"
+    grep -q '"status":null' "$HERDER_SKILLS_DIR/agents.json"
     report=$(printf '%s' "$4" | sed -n 's/^Write your final report to \(.*\)\.$/\1/p')
     printf 'attempt 2\n' > "$report"
-    sed 's/"stopped"/"done"/' "$CREW_SKILLS_DIR/agents.json" > "$CREW_SKILLS_DIR/resumed.json"
-    mv "$CREW_SKILLS_DIR/resumed.json" "$CREW_SKILLS_DIR/agents.json"
+    sed 's/"stopped"/"done"/' "$HERDER_SKILLS_DIR/agents.json" > "$HERDER_SKILLS_DIR/resumed.json"
+    mv "$HERDER_SKILLS_DIR/resumed.json" "$HERDER_SKILLS_DIR/agents.json"
     echo 'prompt: started a copy as deadbeef'
     echo 'backgrounded · abc123 · worker'
     exit 0
@@ -111,28 +111,28 @@ case "$1" in
   done
   test -f "$dir/run.json"
   grep -q '"state": "starting"' "$dir/run.json"
-  if test -f "$CREW_SKILLS_DIR/trust"; then echo 'Workspace not trusted. Accept trust.'; exit 1; fi
-  if test -f "$CREW_SKILLS_DIR/idle"; then echo '(idle — send a prompt to start)'; exit 0; fi
+  if test -f "$HERDER_SKILLS_DIR/trust"; then echo 'Workspace not trusted. Accept trust.'; exit 1; fi
+  if test -f "$HERDER_SKILLS_DIR/idle"; then echo '(idle — send a prompt to start)'; exit 0; fi
   echo 'backgrounded · abc123 · worker';;
 agents)
-  if test -f "$CREW_SKILLS_DIR/waking"; then
-    rm "$CREW_SKILLS_DIR/waking"
-    touch "$CREW_SKILLS_DIR/awake"
-    sed 's/"stopped"/"done"/' "$CREW_SKILLS_DIR/agents.json"
+  if test -f "$HERDER_SKILLS_DIR/waking"; then
+    rm "$HERDER_SKILLS_DIR/waking"
+    touch "$HERDER_SKILLS_DIR/awake"
+    sed 's/"stopped"/"done"/' "$HERDER_SKILLS_DIR/agents.json"
     exit 0
   fi
-  if test -f "$CREW_SKILLS_DIR/awake"; then sed 's/"status":null/"status":"busy"/' "$CREW_SKILLS_DIR/agents.json"; exit 0; fi
-  test ! -f "$CREW_SKILLS_DIR/query-fail"
-  if test -f "$CREW_SKILLS_DIR/idle-once"; then rm "$CREW_SKILLS_DIR/idle-once"; if test -f "$CREW_SKILLS_DIR/fail-after-identity"; then touch "$CREW_SKILLS_DIR/query-fail"; fi; sed 's/"busy"/"idle"/' "$CREW_SKILLS_DIR/agents.json"; exit 0; fi
-  cat "$CREW_SKILLS_DIR/agents.json";;
+  if test -f "$HERDER_SKILLS_DIR/awake"; then sed 's/"status":null/"status":"busy"/' "$HERDER_SKILLS_DIR/agents.json"; exit 0; fi
+  test ! -f "$HERDER_SKILLS_DIR/query-fail"
+  if test -f "$HERDER_SKILLS_DIR/idle-once"; then rm "$HERDER_SKILLS_DIR/idle-once"; if test -f "$HERDER_SKILLS_DIR/fail-after-identity"; then touch "$HERDER_SKILLS_DIR/query-fail"; fi; sed 's/"busy"/"idle"/' "$HERDER_SKILLS_DIR/agents.json"; exit 0; fi
+  cat "$HERDER_SKILLS_DIR/agents.json";;
 stop)
-  printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$CREW_STATE_DIR/stop-profile"
-  printf '%s\n' "$@" > "$CREW_STATE_DIR/stop-args"
-  echo "$2" >> "$CREW_STATE_DIR/stops"
-  if test -f "$CREW_SKILLS_DIR/stop-live"; then exit 0; fi
-  if test "$2" != abc123 && test -f "$CREW_SKILLS_DIR/stop-fail"; then exit 1; fi
+  printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$HERDER_STATE_DIR/stop-profile"
+  printf '%s\n' "$@" > "$HERDER_STATE_DIR/stop-args"
+  echo "$2" >> "$HERDER_STATE_DIR/stops"
+  if test -f "$HERDER_SKILLS_DIR/stop-live"; then exit 0; fi
+  if test "$2" != abc123 && test -f "$HERDER_SKILLS_DIR/stop-fail"; then exit 1; fi
   if test "$2" = def456; then exit 0; fi
-  cp "$CREW_SKILLS_DIR/stopped.json" "$CREW_SKILLS_DIR/agents.json";;
+  cp "$HERDER_SKILLS_DIR/stopped.json" "$HERDER_SKILLS_DIR/agents.json";;
 *) exit 90;;
 esac"#,
         );
@@ -146,11 +146,11 @@ esac"#,
                 &format!(
                     r#"test -f "$3/run.json"
 grep -q '"state": "starting"' "$3/run.json"
-printf '%s\n' "$@" > "$CREW_STATE_DIR/launch-args"
+printf '%s\n' "$@" > "$HERDER_STATE_DIR/launch-args"
 cp "$2" "$3/brief.md"
-if test -f "$CREW_SKILLS_DIR/drop-brief"; then rm "$CREW_SKILLS_DIR/../brief.md"; fi
+if test -f "$HERDER_SKILLS_DIR/drop-brief"; then rm "$HERDER_SKILLS_DIR/../brief.md"; fi
 echo 43210 > "$3/run.pid"
-if test -f "$CREW_SKILLS_DIR/gate"; then echo 'gate elapsed alive' >&2; exit 3; fi
+if test -f "$HERDER_SKILLS_DIR/gate"; then echo 'gate elapsed alive' >&2; exit 3; fi
 echo native-1 > "$3/{file}"
 echo "RUN_DIR=$3 PID=43210 {key}=native-1""#
                 ),
@@ -158,10 +158,10 @@ echo "RUN_DIR=$3 PID=43210 {key}=native-1""#
             f.script(
                 owner,
                 &format!("status_{suffix}"),
-                r#"test ! -f "$CREW_SKILLS_DIR/query-fail"
-printf '%s\n' "$@" > "$CREW_STATE_DIR/status-args"
+                r#"test ! -f "$HERDER_SKILLS_DIR/query-fail"
+printf '%s\n' "$@" > "$HERDER_STATE_DIR/status-args"
 if test -f "$1/export${2:-}.txt"; then cp "$1/export${2:-}.txt" "$1/final${2:-}.md"; fi
-cat "$CREW_SKILLS_DIR/status""#,
+cat "$HERDER_SKILLS_DIR/status""#,
             );
             f.script(
                 owner,
@@ -169,10 +169,10 @@ cat "$CREW_SKILLS_DIR/status""#,
                 &format!(
                     r#"test "$(cat "$1/{file}")" = native-1
 grep -Eq '"state": "(starting|pending_resume)"' "$1/run.json"
-printf '%s\n' "$@" > "$CREW_STATE_DIR/resume-args"
+printf '%s\n' "$@" > "$HERDER_STATE_DIR/resume-args"
 echo 43211 > "$1/run.pid"
 echo "attempt $4" > "$1/final$4.md"
-echo 'state=alive pid=43211' > "$CREW_SKILLS_DIR/status"
+echo 'state=alive pid=43211' > "$HERDER_SKILLS_DIR/status"
 echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
                 ),
             );
@@ -208,10 +208,10 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
         fs::write(self.skills.join("status"), format!("state={state} pid=43210\nverdict: {verdict}\n")).unwrap();
     }
     fn cmd(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_crew"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_herder"));
         cmd.current_dir(&self.repo)
-            .env("CREW_STATE_DIR", &self.state)
-            .env("CREW_SKILLS_DIR", &self.skills)
+            .env("HERDER_STATE_DIR", &self.state)
+            .env("HERDER_SKILLS_DIR", &self.skills)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
             .env_remove("CLAUDE_CONFIG_DIR")
             .env("REX_BLOCK", "test-block");
@@ -249,7 +249,14 @@ echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
     fn git(&self, args: &[&str]) -> String {
         let out = Command::new("git")
             .current_dir(&self.repo)
-            .args(["-c", "user.name=Crew test", "-c", "user.email=crew@example.invalid", "-c", "commit.gpgsign=false"])
+            .args([
+                "-c",
+                "user.name=Herder test",
+                "-c",
+                "user.email=herder@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
             .args(args)
             .output()
             .unwrap();
@@ -385,9 +392,9 @@ fn script_dispatch_status_and_report_use_executor_artifacts() {
         assert!(args.contains("--model\nmodel-x"));
         let pane = fs::read_to_string(f.state.join("rex-args")).unwrap();
         assert!(pane.contains(&format!(
-            "--shell=none\n--\nenv\nCREW_STATE_DIR={}\n{}\nwait\n{id}\n",
+            "--shell=none\n--\nenv\nHERDER_STATE_DIR={}\n{}\nwait\n{id}\n",
             f.state.display(),
-            env!("CARGO_BIN_EXE_crew")
+            env!("CARGO_BIN_EXE_herder")
         )));
         assert!(!pane.contains("watch"));
     }
@@ -743,7 +750,7 @@ fn status_tail_reads_current_attempt_without_changing_status() {
 fn status_tail_explains_claude_stream_absence() {
     let f = Fixture::new();
     let id = f.launch("claude");
-    let message = "tail: none (Claude runs have no crew-recorded event stream)";
+    let message = "tail: none (Claude runs have no herder-recorded event stream)";
     let result = f.call(&["status", &id, "--tail", "1"], 0);
     assert_eq!(result["data"]["tail"], json!({"path":null,"lines":[],"message":message}));
     let human = f.cmd().args(["status", &id, "--tail", "1"]).output().unwrap();
@@ -924,10 +931,10 @@ fn doctor_succeeds_without_rex_when_executors_are_healthy() {
 fn ls_uses_default_state_dir_and_honors_override() {
     let f = Fixture::new();
     let home = f.root.join("home");
-    fs::create_dir_all(home.join(".local/state/crew/runs/default-marker")).unwrap();
+    fs::create_dir_all(home.join(".local/state/herder/runs/default-marker")).unwrap();
     fs::create_dir_all(f.state.join("runs/override-marker")).unwrap();
 
-    let out = f.cmd().env("HOME", &home).env_remove("CREW_STATE_DIR").args(["ls", "--json"]).output().unwrap();
+    let out = f.cmd().env("HOME", &home).env_remove("HERDER_STATE_DIR").args(["ls", "--json"]).output().unwrap();
     assert!(out.status.success());
     let data: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(data["data"]["runs"][0]["run_id"], "default-marker");
@@ -943,7 +950,7 @@ fn doctor_reports_embedded_scripts_and_missing_bash() {
     let f = Fixture::new();
     let out = f
         .cmd()
-        .env_remove("CREW_SKILLS_DIR")
+        .env_remove("HERDER_SKILLS_DIR")
         .env("PATH", &f.bin)
         .args(["doctor", "--executor", "claude", "--json"])
         .output()
@@ -965,7 +972,7 @@ fn doctor_preserves_paths_in_json_and_escapes_them_in_human_output() {
     let profile = f.root.join("profile\nwith\\controls");
     let mut cmd = f.cmd();
     let out = cmd
-        .env("CREW_SKILLS_DIR", &skills)
+        .env("HERDER_SKILLS_DIR", &skills)
         .arg("doctor")
         .args(["--executor", "claude", "--profile"])
         .arg(&profile)
@@ -981,7 +988,7 @@ fn doctor_preserves_paths_in_json_and_escapes_them_in_human_output() {
     );
     let out = f
         .cmd()
-        .env("CREW_SKILLS_DIR", &skills)
+        .env("HERDER_SKILLS_DIR", &skills)
         .arg("doctor")
         .args(["--executor", "claude", "--profile"])
         .arg(&profile)
@@ -1109,7 +1116,7 @@ fn failed_launch_observation_keeps_error_without_querying() {
         let result = f.dispatch("claude", &["--profile", "/tmp/profile"], 1);
         let id = result["data"]["run_id"].as_str().unwrap();
         let record = f.record(id);
-        f.executable(&f.bin.join("claude"), "touch \"$CREW_STATE_DIR/queried\"; exit 99");
+        f.executable(&f.bin.join("claude"), "touch \"$HERDER_STATE_DIR/queried\"; exit 99");
         for args in [vec!["status", id], vec!["ls"], vec!["report", id]] {
             let result = f.call(&args, if args[0] == "report" { 1 } else { 0 });
             let data = if args[0] == "ls" { &result["data"]["runs"][0] } else { &result["data"] };
@@ -1208,7 +1215,7 @@ fn human_actions_and_multiline_evidence() {
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(
-        text.contains("state: stopped\nevidence:\n  stopped by crew stop; state=exited pid=43210\n  verdict: DIED\n"),
+        text.contains("state: stopped\nevidence:\n  stopped by herder stop; state=exited pid=43210\n  verdict: DIED\n"),
         "{text}"
     );
     assert!(!text.contains("\\n"), "{text}");
@@ -1314,7 +1321,7 @@ fn request_id_replays_return_the_recorded_run_without_relaunching() {
             &format!("{executor}-implementer"),
             &format!("resume_{suffix}"),
             &format!(
-                "echo call >> \"$CREW_STATE_DIR/resume-count\"\npid=$((43210 + $(wc -l < \"$CREW_STATE_DIR/resume-count\")))\nsed \"s/RESUME_PID/$pid/g\" \"$(dirname \"$0\")/resume_{suffix}_impl.sh.body\" | sh -s -- \"$@\""
+                "echo call >> \"$HERDER_STATE_DIR/resume-count\"\npid=$((43210 + $(wc -l < \"$HERDER_STATE_DIR/resume-count\")))\nsed \"s/RESUME_PID/$pid/g\" \"$(dirname \"$0\")/resume_{suffix}_impl.sh.body\" | sh -s -- \"$@\""
             ),
         );
         f.write("delta.md", "sync payload one");
@@ -1356,7 +1363,7 @@ fn request_id_reservation_is_saved_before_launch_and_protects_its_input() {
     let f = Fixture::new();
     let id = f.launch("codex");
     f.status("exited", "COMPLETED");
-    f.script("codex-implementer", "resume_classic", "echo call >> \"$CREW_STATE_DIR/resume-count\"\nexit 1");
+    f.script("codex-implementer", "resume_classic", "echo call >> \"$HERDER_STATE_DIR/resume-count\"\nexit 1");
     f.write("delta.md", "reserved payload");
     let brief = f.root.join("delta.md");
     let brief = brief.to_str().unwrap();

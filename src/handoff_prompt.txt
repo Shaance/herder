@@ -1,6 +1,6 @@
 <task>
 You are the receiving worker of a continuation handoff. The outgoing coordinator must stop editing the
-task before launching you; Crew cannot verify that external prerequisite. Read the complete continuation
+task before launching you; Herder cannot verify that external prerequisite. Read the complete continuation
 document at the end of this input first, then inspect the current repository state and the applicable instructions (AGENTS.md and any skills
 the document names) before acting.
 {read_only}</task>

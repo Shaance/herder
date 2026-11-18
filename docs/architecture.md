@@ -1,6 +1,6 @@
 # Architecture
 
-crew is a Rust CLI for a coordinator running Claude, Vibe or Codex workers.
+herder is a Rust CLI for a coordinator running Claude, Vibe or Codex workers.
 It launches and tracks workers, reads their reports, and records verification.
 The coordinator chooses the executor and model, reviews results, and handles
 approval and publication. See [`src/main.rs`](../src/main.rs) and
@@ -8,8 +8,8 @@ approval and publication. See [`src/main.rs`](../src/main.rs) and
 
 ## Run record
 
-Each run has a crew-generated ID and a directory under
-`~/.local/state/crew/runs/<id>/`. `CREW_STATE_DIR` replaces the default root.
+Each run has a herder-generated ID and a directory under
+`~/.local/state/herder/runs/<id>/`. `HERDER_STATE_DIR` replaces the default root.
 [`src/store.rs`](../src/store.rs) owns directory creation and record IO.
 
 `run.json` holds durable run facts: repository, baseline commit, paths dirty at
@@ -46,7 +46,7 @@ recover identity from evidence. Claude acceptance is saved before its gate.
 | `blocked` | The executor reports a wait, such as a Claude permission prompt. |
 | `finished` | The executor reports completion. |
 | `failed` | Launch or executor work failed. |
-| `stopped` | Work stopped or crew confirmed a stop. |
+| `stopped` | Work stopped or herder confirmed a stop. |
 | `unknown` | Evidence is insufficient or conflicts; inspect it before acting. |
 
 Status reconciles the record with a fresh executor query. Unknown observations
@@ -55,10 +55,10 @@ include a cause ([`src/domain.rs`](../src/domain.rs)):
 - `query_failed`: a query failed, timed out or could not be interpreted.
 - `identity_mismatch`: recorded and observed process or session identity differs.
 - `record_disagrees`: executor state conflicts with the recorded state.
-- `unrecognized_status`: the executor returned a state crew does not recognize.
+- `unrecognized_status`: the executor returned a state herder does not recognize.
 - `unconfirmed`: launch or resume evidence has not confirmed the expected state.
 
-Queries have a two-second timeout. `crew wait` polls until any run settles, or
+Queries have a two-second timeout. `herder wait` polls until any run settles, or
 all runs with `--all`; unknown at timeout is an error. Stop checks identity
 before signaling and may report that the stop was sent without confirming exit.
 Resume records a pending attempt before launch and advances the accepted attempt
@@ -79,9 +79,9 @@ Claude uses its CLI directly through [`src/claude.rs`](../src/claude.rs):
 and `claude stop` stops it. The chosen profile is recorded and reused. Claude
 resume uses the saved session options and rejects an unexpected copied session.
 
-Set `CREW_SKILLS_DIR` to an ai-skills-shaped directory to replace the embedded
+Set `HERDER_SKILLS_DIR` to an ai-skills-shaped directory to replace the embedded
 scripts with executable `<owner>/scripts/<name>.sh` files. The override applies
-to both shared and executor scripts. `crew doctor` checks the required files
+to both shared and executor scripts. `herder doctor` checks the required files
 and tools; Rex is optional. In a Rex session, `--pane` adds a Claude attach
 pane or a Vibe/Codex wait pane.
 
@@ -105,7 +105,7 @@ unknown evidence. It neither freezes the worktree nor approves the result.
 
 ## Handoff
 
-`crew handoff` accepts a nonempty UTF-8 continuation document. It adds a standard
+`herder handoff` accepts a nonempty UTF-8 continuation document. It adds a standard
 contract, stores the document's bytes in `input.md`, lints the result and uses
 the dispatch launch path. Review mode instructs the receiver to stay read-only;
 mode selects brief linting and does not add an OS sandbox. Invalid input fails
