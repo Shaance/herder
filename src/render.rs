@@ -1,7 +1,7 @@
 use crate::{
     doctor::CheckStatus,
     domain::{Executor, FreshVerification, Run, State, Verdict},
-    handlers::{Launched, ListEntry, Output, RunDetail, Tail},
+    handlers::{LaunchOutcome, Launched, ListEntry, Output, RunDetail, Tail},
 };
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -53,13 +53,18 @@ fn data(output: &Output) -> Value {
     }
 }
 
-fn launch_data(Launched { run, launch_error, pane_error }: &Launched) -> Value {
+fn launch_data(Launched { run, outcome }: &Launched) -> Value {
+    let (launch_error, pane_error) = match outcome {
+        LaunchOutcome::Started => (None, None),
+        LaunchOutcome::LaunchFailed(error) => (Some(error), None),
+        LaunchOutcome::PaneFailed(error) => (None, Some(error)),
+    };
     json!({"run_id":run.id,"run":run,"launch_error":launch_error,"pane_error":pane_error})
 }
 
-fn print_launch(Launched { run, launch_error, pane_error }: &Launched) {
+fn print_launch(Launched { run, outcome }: &Launched) {
     println!("{}\t{}", run.id, run.name.escape_debug().to_string().escape_debug());
-    for error in [launch_error, pane_error].into_iter().flatten() {
+    if let LaunchOutcome::LaunchFailed(error) | LaunchOutcome::PaneFailed(error) = outcome {
         eprintln!("{error}");
     }
 }

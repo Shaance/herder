@@ -1,11 +1,26 @@
 use crate::{domain::Run, process::home};
 use anyhow::{Context, Result, ensure};
 use std::{
-    env, fs,
+    env, fmt, fs,
     io::Read,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
+
+pub struct RunId(String);
+
+impl RunId {
+    fn parse(value: &str) -> Option<Self> {
+        (!value.is_empty() && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+            .then(|| Self(value.to_owned()))
+    }
+}
+
+impl fmt::Display for RunId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
 
 pub struct Store {
     pub root: PathBuf,
@@ -40,13 +55,15 @@ impl Store {
             )?,
         })
     }
-    pub fn resolve(&self, value: &str) -> Result<String> {
-        if self.dir(value).is_ok_and(|dir| dir.is_dir()) {
-            return Ok(value.to_owned());
+    pub fn resolve(&self, value: &str) -> Result<RunId> {
+        if let Some(id) = RunId::parse(value)
+            && self.dir(&id).is_dir()
+        {
+            return Ok(id);
         }
         let mut matches = vec![];
         let mut similar = vec![];
-        for id in self.runs()? {
+        for id in self.runs()?.into_iter().flatten() {
             if let Ok(run) = self.load(&id) {
                 if run.name == value {
                     matches.push(id);
@@ -60,35 +77,34 @@ impl Store {
             "run {value:?}: {} matches; {}",
             matches.len(),
             match (matches.is_empty(), similar.is_empty()) {
-                (false, _) => format!("candidates: {}", matches.join(", ")),
+                (false, _) =>
+                    format!("candidates: {}", matches.iter().map(|id| id.0.as_str()).collect::<Vec<_>>().join(", ")),
                 (true, false) => format!("similar names: {}", similar.join(", ")),
                 (true, true) => "list runs with `herder ls`".into(),
             }
         );
         Ok(matches.remove(0))
     }
-    pub fn dir(&self, id: &str) -> Result<PathBuf> {
-        ensure!(!id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'), "invalid run id");
-        Ok(self.root.join("runs").join(id))
+    pub fn dir(&self, id: &RunId) -> PathBuf {
+        self.root.join("runs").join(&id.0)
     }
-    pub fn create(&self) -> Result<(String, LockedRun)> {
+    pub fn create(&self) -> Result<(RunId, LockedRun)> {
         let mut bytes = [0; 2];
         fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
         let (y, mo, d, h, mi, s) = utc(SystemTime::now());
-        let id = format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{:02x}{:02x}", bytes[0], bytes[1]);
+        let id = RunId(format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{:02x}{:02x}", bytes[0], bytes[1]));
         fs::create_dir_all(self.root.join("runs"))?;
         let dir = self.root.join("runs").join(format!(".{id}.pending"));
         fs::create_dir(&dir)?;
         Ok((id, LockedRun::try_acquire(dir)?.context("new run is already locked")?))
     }
-    pub fn publish(&self, locked: &mut LockedRun, run: &Run) -> Result<()> {
+    pub fn publish(&self, locked: &mut LockedRun, run: &Run, dir: &Path) -> Result<()> {
         locked.save(run)?;
-        let dir = self.dir(&run.id)?;
-        fs::rename(&locked.dir, &dir)?;
-        locked.dir = dir;
+        fs::rename(&locked.dir, dir)?;
+        locked.dir = dir.to_owned();
         Ok(())
     }
-    pub fn lock(&self, id: &str) -> Result<LockedRun> {
+    pub fn lock(&self, id: &RunId) -> Result<LockedRun> {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if let Some(locked) = self.try_lock(id)? {
@@ -98,13 +114,13 @@ impl Store {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    pub fn try_lock(&self, id: &str) -> Result<Option<LockedRun>> {
-        LockedRun::try_acquire(self.dir(id)?).with_context(|| format!("run {id}"))
+    pub fn try_lock(&self, id: &RunId) -> Result<Option<LockedRun>> {
+        LockedRun::try_acquire(self.dir(id)).with_context(|| format!("run {id}"))
     }
-    pub fn load(&self, id: &str) -> Result<Run> {
-        load(&self.dir(id)?)
+    pub fn load(&self, id: &RunId) -> Result<Run> {
+        load(&self.dir(id))
     }
-    pub fn runs(&self) -> Result<Vec<String>> {
+    pub fn runs(&self) -> Result<Vec<Result<RunId, String>>> {
         let path = self.root.join("runs");
         if !path.exists() {
             return Ok(vec![]);
@@ -117,10 +133,10 @@ impl Store {
             }
         }
         runs.sort();
-        Ok(runs)
+        Ok(runs.into_iter().map(|name| RunId::parse(&name).ok_or(name)).collect())
     }
 }
-pub(super) fn load(dir: &Path) -> Result<Run> {
+fn load(dir: &Path) -> Result<Run> {
     let path = dir.join("run.json");
     let run: Run = serde_json::from_slice(&fs::read(&path).with_context(|| path.display().to_string())?)
         .with_context(|| path.display().to_string())?;

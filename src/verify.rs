@@ -1,7 +1,7 @@
 use crate::{
     domain::{Check, FreshVerification, Run, Verdict, Verification},
     process::{self, Script},
-    store::{Store, timestamp},
+    store::{RunId, Store, timestamp},
 };
 use anyhow::Result;
 use std::{path::Path, process::Command};
@@ -12,6 +12,7 @@ pub fn run(
     commands: Vec<String>,
     baseline: Option<String>,
     store: &Store,
+    id: &RunId,
 ) -> Result<FreshVerification> {
     let transition = baseline
         .as_ref()
@@ -19,7 +20,7 @@ pub fn run(
         .unwrap_or_default();
     let paths = if paths.is_empty() { &run.authorized_paths } else { &paths };
     let mut evidence = process::script(Script::CollectEvidence);
-    evidence.arg(store.dir(&run.id)?).arg(&run.repo);
+    evidence.arg(store.dir(id)).arg(&run.repo);
     let jobs = std::iter::once(("collect_evidence.sh".into(), evidence)).chain(commands.into_iter().map(|text| {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", &text]);
@@ -90,7 +91,7 @@ pub fn run(
     let verdict = if checks.clone().all(|c| c.exit_code == Some(0)) { Verdict::Pass } else { Verdict::Fail };
     let attempt = run.attempt;
     let verification = Verification { verdict, checks: checks.cloned().collect(), timestamp: timestamp(), attempt };
-    let locked = store.lock(&run.id)?;
+    let locked = store.lock(id)?;
     *run = locked.load()?;
     if baseline.is_some() {
         run.baseline_commit = baseline;

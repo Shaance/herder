@@ -2,7 +2,7 @@ use crate::{
     Action, Dispatch,
     domain::*,
     process, runs,
-    store::{self, Store},
+    store::{self, RunId, Store},
 };
 use anyhow::Result;
 use serde::Serialize;
@@ -35,8 +35,13 @@ pub enum Output {
 
 pub struct Launched {
     pub run: Box<Run>,
-    pub launch_error: Option<String>,
-    pub pane_error: Option<String>,
+    pub outcome: LaunchOutcome,
+}
+
+pub enum LaunchOutcome {
+    Started,
+    LaunchFailed(String),
+    PaneFailed(String),
 }
 
 pub enum RunDetail {
@@ -68,30 +73,35 @@ pub struct WaitEntry {
     pub report_path: PathBuf,
 }
 
-pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
+pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
     let store = Store::new()?;
-    match &mut action {
-        Action::Status { run, .. }
-        | Action::Report { run }
-        | Action::Stop { run }
-        | Action::Resume { run, .. }
-        | Action::Verify { run, .. } => *run = store.resolve(run)?,
-        Action::Wait { runs, .. } => {
-            *runs = runs.iter().map(|id| store.resolve(id)).collect::<Result<_>>()?;
-        }
-        _ => {}
-    }
-    match action {
+    let read = |selector: &str| -> Result<_> {
+        let id = store.resolve(selector)?;
+        let locked = store.try_lock(&id)?;
+        let run = store.load(&id)?;
+        Ok((id, locked, run))
+    };
+    let (run, observation, detail, code) = match action {
         Action::Doctor { executor, profile } => {
-            crate::doctor::run(executor, profile).map(|(doctor, code)| (Output::Doctor(doctor), code))
+            return crate::doctor::run(executor, profile).map(|(doctor, code)| (Output::Doctor(doctor), code));
         }
-        Action::Dispatch(args) => dispatch(args, &store),
-        Action::Handoff(args) => handoff(args, &store),
-        Action::Wait { runs, all, timeout } => wait(&store, &runs, all, timeout, json_output),
+        Action::Dispatch(args) => return dispatch(args, &store, false),
+        Action::Handoff(args) => return dispatch(args, &store, true),
+        Action::Wait { runs, all, timeout } => {
+            let ids = runs.iter().map(|id| store.resolve(id)).collect::<Result<Vec<_>>>()?;
+            return wait(&store, &ids, all, timeout, json_output);
+        }
         Action::Ls { goal } => {
             let mut summary = BTreeMap::<&str, BTreeMap<&str, usize>>::new();
             let mut data = vec![];
             for id in store.runs()? {
+                let id = match id {
+                    Ok(id) => id,
+                    Err(run_id) => {
+                        data.push(ListEntry::Broken { run_id, error: "invalid run id".into() });
+                        continue;
+                    }
+                };
                 let entry = (|| -> Result<_> {
                     let locked = store.try_lock(&id)?;
                     let mut run = store.load(&id)?;
@@ -105,169 +115,210 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
                     Ok(Some(ListEntry::Run { run: Box::new(run), observation }))
                 })();
                 match entry {
-                    Ok(Some(entry)) => data.push(entry),
-                    Ok(None) => {}
-                    Err(error) => data.push(ListEntry::Broken { run_id: id, error: format!("{error:#}") }),
+                    Ok(entry) => data.extend(entry),
+                    Err(error) => data.push(ListEntry::Broken { run_id: id.to_string(), error: format!("{error:#}") }),
                 }
             }
-            Ok((Output::Ls { runs: data, summary }, 0))
+            return Ok((Output::Ls { runs: data, summary }, 0));
         }
-        action => {
-            let id = match &action {
-                Action::Status { run, .. }
-                | Action::Report { run }
-                | Action::Stop { run }
-                | Action::Resume { run, .. }
-                | Action::Verify { run, .. } => run,
-                _ => unreachable!(),
-            };
-            let mut locked = match action {
-                Action::Stop { .. } | Action::Resume { .. } => Some(store.lock(id)?),
-                _ => store.try_lock(id)?,
-            };
-            let dir = store.dir(id)?;
-            let mut run = store::load(&dir)?;
+        Action::Status { run, tail } => {
+            let (id, locked, mut run) = read(&run)?;
+            let dir = store.dir(&id);
+            let observation = runs::observe(&mut run, locked.as_ref());
+            let tail = tail.map(|count| {
+                if run.launch.target().executor() == Executor::Claude {
+                    return Tail::NoStream("tail: none (Claude runs have no herder-recorded event stream)".into());
+                }
+                let attempt = run.launch_attempt().get();
+                let suffix = if attempt == 1 { String::new() } else { attempt.to_string() };
+                let path = dir.join(format!("events{suffix}.jsonl"));
+                match std::fs::read_to_string(&path) {
+                    Ok(content) => {
+                        let mut lines: Vec<_> = content
+                            .lines()
+                            .rev()
+                            .take(usize::from(count))
+                            .map(|line| match line.char_indices().nth(500) {
+                                Some((cut, _)) => format!("{} ...[+{} bytes]", &line[..cut], line.len() - cut),
+                                None => line.to_owned(),
+                            })
+                            .collect();
+                        lines.reverse();
+                        Tail::Lines(path, lines)
+                    }
+                    Err(error) => {
+                        let message = if error.kind() == std::io::ErrorKind::NotFound {
+                            format!("tail: stream does not exist yet: {}", path.display())
+                        } else {
+                            format!("tail: cannot read {}: {error}", path.display())
+                        };
+                        Tail::Unavailable(path, message)
+                    }
+                }
+            });
+            (run, observation, RunDetail::Status { dir, tail }, 0)
+        }
+        Action::Report { run } => {
+            let (id, locked, mut run) = read(&run)?;
+            let observation = runs::observe(&mut run, locked.as_ref());
+            let path = store.dir(&id).join(run.report_name());
+            let content = store::report(&path)?;
+            let code = i32::from(content.is_none());
+            (run, observation, RunDetail::Report { path, content }, code)
+        }
+        Action::Stop { run } => {
+            let locked = store.lock(&store.resolve(&run)?)?;
+            let mut run = locked.load()?;
+            // Preserve identity recovery before stop checks the current executor state.
+            runs::observe(&mut run, Some(&locked));
+            let observation = runs::stop(&mut run, &locked)?;
+            (run, observation, RunDetail::Stop, 0)
+        }
+        Action::Resume { run, brief, request_id } => {
+            let locked = store.lock(&store.resolve(&run)?)?;
+            let mut run = locked.load()?;
+            runs::resume(&mut run, &brief, request_id.as_deref(), &locked)?;
+            let observation = runs::observe(&mut run, Some(&locked));
+            (run, observation, RunDetail::Resume, 0)
+        }
+        Action::Verify { run, paths, checks, baseline } => {
+            let (id, locked, mut run) = read(&run)?;
             // Validate before observation, which can recover and save executor identity.
-            let baseline = if let Action::Verify { baseline: Some(rev), .. } = &action {
-                Some(
-                    process::checked(std::process::Command::new("git").current_dir(&run.repo).args([
-                        "rev-parse",
-                        "--verify",
-                        &format!("{rev}^{{commit}}"),
-                    ]))?
-                    .trim()
-                    .to_owned(),
-                )
+            let baseline = if let Some(rev) = baseline {
+                let args = ["rev-parse", "--verify", &format!("{rev}^{{commit}}")];
+                let commit = process::checked(std::process::Command::new("git").current_dir(&run.repo).args(args))?;
+                Some(commit.trim().to_owned())
             } else {
                 None
             };
-            let mut observation = if matches!(action, Action::Resume { .. }) {
-                Observation::new(run.launch.state(), String::new(), UnknownCause::Unconfirmed)
-            } else {
-                runs::observe(&mut run, locked.as_ref())
-            };
-            let mut code = 0;
-            let detail = match action {
-                Action::Report { .. } => {
-                    let path = dir.join(run.report_name());
-                    let content = store::report(&path)?;
-                    if content.is_none() {
-                        code = 1;
-                    }
-                    RunDetail::Report { path, content }
-                }
-                Action::Stop { .. } => {
-                    observation = runs::stop(&mut run, locked.as_ref().expect("stop acquired lock"))?;
-                    RunDetail::Stop
-                }
-                Action::Resume { brief, request_id, .. } => {
-                    runs::resume(
-                        &mut run,
-                        &brief,
-                        request_id.as_deref(),
-                        locked.as_ref().expect("resume acquired lock"),
-                    )?;
-                    observation = runs::observe(&mut run, locked.as_ref());
-                    RunDetail::Resume
-                }
-                Action::Verify { paths, checks, .. } => {
-                    if matches!(observation.state(), State::Starting | State::Running | State::Blocked) {
-                        return Ok((
-                            Output::Message(format!("cannot verify worker in state {}", observation.state().as_str())),
-                            2,
-                        ));
-                    }
-                    if paths.is_empty() && run.authorized_paths.is_empty() {
-                        return Ok((
-                            Output::Message("verify requires --path when none were recorded at dispatch".into()),
-                            2,
-                        ));
-                    }
-                    drop(locked.take());
-                    let verification = crate::verify::run(&mut run, paths, checks, baseline, &store)?;
-                    if matches!(verification.verdict, Verdict::Fail) {
-                        code = 1;
-                    }
-                    locked = store.try_lock(&run.id)?;
-                    run = store.load(&run.id)?;
-                    observation = runs::observe(&mut run, locked.as_ref());
-                    RunDetail::Verify(verification)
-                }
-                Action::Status { tail, .. } => RunDetail::Status {
-                    tail: tail.map(|count| {
-                        if run.launch.target().executor() == Executor::Claude {
-                            return Tail::NoStream(
-                                "tail: none (Claude runs have no herder-recorded event stream)".into(),
-                            );
-                        }
-                        let attempt = run.launch_attempt().get();
-                        let suffix = if attempt == 1 { String::new() } else { attempt.to_string() };
-                        let path = dir.join(format!("events{suffix}.jsonl"));
-                        match std::fs::read_to_string(&path) {
-                            Ok(content) => {
-                                let mut lines: Vec<_> = content
-                                    .lines()
-                                    .rev()
-                                    .take(usize::from(count))
-                                    .map(|line| match line.char_indices().nth(500) {
-                                        Some((cut, _)) => format!("{} ...[+{} bytes]", &line[..cut], line.len() - cut),
-                                        None => line.to_owned(),
-                                    })
-                                    .collect();
-                                lines.reverse();
-                                Tail::Lines(path, lines)
-                            }
-                            Err(error) => {
-                                let message = if error.kind() == std::io::ErrorKind::NotFound {
-                                    format!("tail: stream does not exist yet: {}", path.display())
-                                } else {
-                                    format!("tail: cannot read {}: {error}", path.display())
-                                };
-                                Tail::Unavailable(path, message)
-                            }
-                        }
-                    }),
-                    dir,
-                },
-                _ => unreachable!(),
-            };
-            Ok((Output::Run { run: Box::new(run), observation, detail }, code))
+            let observation = runs::observe(&mut run, locked.as_ref());
+            let state = observation.state();
+            if matches!(state, State::Starting | State::Running | State::Blocked) {
+                let message = format!("cannot verify worker in state {}", state.as_str());
+                return Ok((Output::Message(message), 2));
+            }
+            if paths.is_empty() && run.authorized_paths.is_empty() {
+                return Ok((Output::Message("verify requires --path when none were recorded at dispatch".into()), 2));
+            }
+            drop(locked);
+            let verification = crate::verify::run(&mut run, paths, checks, baseline, &store, &id)?;
+            let code = i32::from(matches!(verification.verdict, Verdict::Fail));
+            let locked = store.try_lock(&id)?;
+            let mut run = store.load(&id)?;
+            let observation = runs::observe(&mut run, locked.as_ref());
+            (run, observation, RunDetail::Verify(verification), code)
         }
-    }
+    };
+    Ok((Output::Run { run: Box::new(run), observation, detail }, code))
 }
-fn misuse(args: &Dispatch, handoff: bool) -> Option<&'static str> {
-    if args.executor != Executor::Claude && args.profile.is_some() {
-        Some("--profile applies only to Claude")
-    } else if args.model.len() < 2 {
-        None
-    } else if handoff {
-        Some("a handoff continues one conversation; pass --model at most once")
-    } else if args.mode != "review" {
+enum Models {
+    Single(Option<String>),
+    Review(Vec<String>),
+}
+
+fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32)> {
+    let Dispatch { mode, executor, brief, repo, mut model, goal, name, profile, pane, paths, extra } = args;
+    let reject = |message: String| Ok((Output::Rejection(message), 2));
+    if executor != Executor::Claude && profile.is_some() {
+        return reject("--profile applies only to Claude".into());
+    }
+    let models = match model.as_slice() {
+        [] | [_] => Models::Single(model.pop()),
+        _ if handoff => return reject("a handoff continues one conversation; pass --model at most once".into()),
         // Several writers in one worktree would edit the same files concurrently.
-        Some("repeat --model only with --mode review; a writer runs one model")
-    } else if args.model.iter().enumerate().any(|(i, model)| args.model[..i].contains(model)) {
-        Some("each repeated --model must name a different model")
+        _ if mode != "review" => {
+            return reject("repeat --model only with --mode review; a writer runs one model".into());
+        }
+        _ if model.iter().enumerate().any(|(i, name)| model[..i].contains(name)) => {
+            return reject("each repeated --model must name a different model".into());
+        }
+        _ => Models::Review(model),
+    };
+    let repo = store::repo(&repo)?;
+    let input = if handoff {
+        // Validate the continuation document before any staging or launch side effect.
+        let document = match crate::handoff::document(&brief) {
+            Ok(document) => document,
+            Err(error) => return reject(format!("{error:#}")),
+        };
+        Input::Generated(crate::handoff::prompt(&mode, &document).into_bytes())
     } else {
-        None
-    }
-}
-fn dispatch(mut args: Dispatch, store: &Store) -> Result<(Output, i32)> {
-    if let Some(message) = misuse(&args, false) {
-        return Ok((Output::Rejection(message.into()), 2));
-    }
-    let repo = store::repo(&args.repo)?;
-    process::lint(&args.brief, &args.mode)?;
-    let brief = args.brief.clone();
-    if args.model.len() < 2 {
-        let (launched, code) = launch_run(store, args, repo, Input::Brief(brief))?;
-        return Ok((Output::Launch(launched), code));
-    }
+        process::lint(&brief, &mode)?;
+        Input::Brief(brief)
+    };
+    let launch_run = |name: Option<String>, model: Option<String>| -> Result<_> {
+        let baseline_commit =
+            process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
+                .ok()
+                .map(|s| s.trim().to_owned());
+        let mut dispatch_dirty = std::collections::BTreeMap::new();
+        if baseline_commit.is_some() {
+            for path in crate::verify::dirty_paths(&repo)? {
+                let hash = crate::verify::content_hash(&repo, &path)?;
+                dispatch_dirty.insert(path, hash);
+            }
+        }
+        let (id, mut locked) = store.create()?;
+        let dir = store.dir(&id);
+        let input_md = locked.dir.join("input.md");
+        match &input {
+            Input::Brief(source) => {
+                store::copy(source, &input_md)?;
+            }
+            Input::Generated(bytes) => {
+                store::atomic(&input_md, bytes)?;
+                if let Err(error) = process::lint(&input_md, &mode) {
+                    // Rejected handoff input must leave neither staging nor a published run behind.
+                    let _ = std::fs::remove_dir_all(&locked.dir);
+                    return Err(error);
+                }
+            }
+        }
+        let target = match executor {
+            Executor::Claude => Target::Claude { profile: process::profile(profile.clone())? },
+            Executor::Vibe => Target::Vibe,
+            Executor::Codex => Target::Codex,
+        };
+        let id = id.to_string();
+        let mut run = Run {
+            name: name.unwrap_or_else(|| id.clone()),
+            id,
+            model,
+            extra: extra.clone(),
+            repo: repo.clone(),
+            baseline_commit,
+            dispatch_dirty,
+            brief: dir.join("input.md"),
+            goal: goal.clone(),
+            launch: Launch::Starting { target },
+            attempt: NonZeroU32::MIN,
+            request_attempts: Default::default(),
+            authorized_paths: paths.clone(),
+            verifications: vec![],
+            created_at: store::timestamp(),
+        };
+        store.publish(&mut locked, &run, &dir)?;
+        let outcome = match runs::launch(&mut run, &dir, None, &locked) {
+            Err(error) => LaunchOutcome::LaunchFailed(format!("{error:#}")),
+            Ok(()) if pane => match runs::pane(&run) {
+                Ok(()) => LaunchOutcome::Started,
+                Err(error) => LaunchOutcome::PaneFailed(format!("worker recorded; pane failed: {error:#}")),
+            },
+            Ok(()) => LaunchOutcome::Started,
+        };
+        let code = i32::from(!matches!(outcome, LaunchOutcome::Started));
+        Ok((Launched { run: Box::new(run), outcome }, code))
+    };
+    let models = match models {
+        Models::Single(model) => {
+            return launch_run(name, model).map(|(launched, code)| (Output::Launch(launched), code));
+        }
+        Models::Review(models) => models,
+    };
     let (mut runs, mut code, mut error) = (vec![], 0, None);
-    for model in std::mem::take(&mut args.model) {
-        let mut one = args.clone();
-        one.name = args.name.as_ref().map(|name| format!("{name}-{model}"));
-        one.model = vec![model.clone()];
-        match launch_run(store, one, repo.clone(), Input::Brief(brief.clone())) {
+    for model in models {
+        let name = name.as_ref().map(|name| format!("{name}-{model}"));
+        match launch_run(name, Some(model.clone())) {
             Ok((launched, one_code)) => {
                 runs.push(launched);
                 code = code.max(one_code);
@@ -282,90 +333,15 @@ fn dispatch(mut args: Dispatch, store: &Store) -> Result<(Output, i32)> {
     }
     Ok((Output::Launches { runs, error }, code))
 }
-fn handoff(args: Dispatch, store: &Store) -> Result<(Output, i32)> {
-    if let Some(message) = misuse(&args, true) {
-        return Ok((Output::Rejection(message.into()), 2));
-    }
-    let repo = store::repo(&args.repo)?;
-    // Validate the continuation document before any staging or launch side effect.
-    let document = match crate::handoff::document(&args.brief) {
-        Ok(document) => document,
-        Err(error) => return Ok((Output::Rejection(format!("{error:#}")), 2)),
-    };
-    let prompt = crate::handoff::prompt(&args.mode, &document);
-    let (launched, code) = launch_run(store, args, repo, Input::Generated(prompt.into_bytes()))?;
-    Ok((Output::Launch(launched), code))
-}
+
 enum Input {
     /// Dispatch byte-copies the already linted brief file into the run staging directory.
     Brief(PathBuf),
     /// Handoff stages the generated prompt as input.md and lints it inside the staging directory.
     Generated(Vec<u8>),
 }
-/// Launches one run; `misuse` has already limited `args.model` to at most one entry.
-fn launch_run(store: &Store, args: Dispatch, repo: PathBuf, input: Input) -> Result<(Launched, i32)> {
-    let baseline_commit =
-        process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
-            .ok()
-            .map(|s| s.trim().to_owned());
-    let mut dispatch_dirty = std::collections::BTreeMap::new();
-    if baseline_commit.is_some() {
-        for path in crate::verify::dirty_paths(&repo)? {
-            let hash = crate::verify::content_hash(&repo, &path)?;
-            dispatch_dirty.insert(path, hash);
-        }
-    }
-    let (id, mut locked) = store.create()?;
-    let dir = store.dir(&id)?;
-    let input_md = locked.dir.join("input.md");
-    match &input {
-        Input::Brief(source) => {
-            store::copy(source, &input_md)?;
-        }
-        Input::Generated(bytes) => {
-            store::atomic(&input_md, bytes)?;
-            if let Err(error) = process::lint(&input_md, &args.mode) {
-                // Rejected handoff input must leave neither staging nor a published run behind.
-                let _ = std::fs::remove_dir_all(&locked.dir);
-                return Err(error);
-            }
-        }
-    }
-    let target = match args.executor {
-        Executor::Claude => Target::Claude { profile: process::profile(args.profile)? },
-        Executor::Vibe => Target::Vibe,
-        Executor::Codex => Target::Codex,
-    };
-    let mut run = Run {
-        name: args.name.unwrap_or_else(|| id.clone()),
-        id,
-        model: args.model.into_iter().next(),
-        extra: args.extra,
-        repo,
-        baseline_commit,
-        dispatch_dirty,
-        brief: dir.join("input.md"),
-        goal: args.goal,
-        launch: Launch::Starting { target },
-        attempt: NonZeroU32::MIN,
-        request_attempts: Default::default(),
-        authorized_paths: args.paths,
-        verifications: vec![],
-        created_at: store::timestamp(),
-    };
-    store.publish(&mut locked, &run)?;
-    let result = runs::launch(&mut run, &dir, None, &locked);
-    let error = result.err().map(|e| format!("{e:#}"));
-    let pane_error = if args.pane && error.is_none() {
-        runs::pane(&run).err().map(|e| format!("worker recorded; pane failed: {e:#}"))
-    } else {
-        None
-    };
-    let code = if error.is_some() || pane_error.is_some() { 1 } else { 0 };
-    Ok((Launched { run: Box::new(run), launch_error: error, pane_error }, code))
-}
 
-fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: bool) -> Result<(Output, i32)> {
+fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool) -> Result<(Output, i32)> {
     use std::time::{Duration, Instant};
     let started = Instant::now();
     let timeout = Duration::from_secs(timeout);
@@ -387,7 +363,7 @@ fn wait(store: &Store, ids: &[String], all: bool, timeout: u64, json_output: boo
             }
             settled += usize::from(matches!(state, State::Finished | State::Failed | State::Stopped | State::Blocked));
             unknown |= state == State::Unknown;
-            let report_path = store.dir(id)?.join(run.report_name());
+            let report_path = store.dir(id).join(run.report_name());
             data.push(WaitEntry { id: run.id, name: run.name, state, report_path });
         }
         let met = if all { settled == ids.len() } else { settled > 0 };
