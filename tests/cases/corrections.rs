@@ -11,26 +11,20 @@ fn c1_busy_reads_return_recorded_state_and_mutations_time_out() {
     let id = f.launch("codex");
     let before = f.record(&id);
     fs::write(f.dir(&id).join("final.md"), "existing report").unwrap();
-    let mut holder = Command::new("/usr/bin/python3").args(["-c",
-        "import fcntl,sys,time,pathlib; f=open(sys.argv[1],'w'); fcntl.flock(f,fcntl.LOCK_EX); pathlib.Path(sys.argv[2]).touch(); time.sleep(6)"])
-        .arg(f.dir(&id).join("run.lock")).arg(f.state.join("held")).spawn().unwrap();
-    super::durability::wait_file(&f.state.join("held"));
-    let mut outputs = vec![];
+    let lock = fs::OpenOptions::new().write(true).open(f.dir(&id).join("run.lock")).unwrap();
+    lock.try_lock().unwrap();
     for args in [vec!["status", &id], vec!["report", &id], vec!["ls"], vec!["stop", &id]] {
         let mut child = f.cmd().args(&args).arg("--json").stdout(Stdio::piped()).spawn().unwrap();
-        let deadline = Instant::now() + Duration::from_millis(if args[0] == "stop" { 3000 } else { 1000 });
+        let deadline = Instant::now() + Duration::from_secs(15);
         while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
         let finished = child.try_wait().unwrap().is_some();
         if !finished {
-            child.kill().unwrap();
+            let _ = child.kill();
         }
-        outputs.push((args[0], finished, child.wait_with_output().unwrap()));
-    }
-    let _ = holder.kill();
-    holder.wait().unwrap();
-    for (command, finished, output) in outputs {
+        let output = child.wait_with_output().unwrap();
+        let command = args[0];
         assert!(finished, "{command} blocked on run.lock");
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         if command == "stop" {
@@ -47,8 +41,6 @@ fn c1_busy_reads_return_recorded_state_and_mutations_time_out() {
         }
     }
     assert_eq!(f.record(&id), before);
-    let lock = fs::OpenOptions::new().write(true).open(f.dir(&id).join("run.lock")).unwrap();
-    lock.try_lock().unwrap();
     for launch in [
         json!({"state":"accepted", "id":"abc123", "profile":null, "error":null}),
         json!({"state":"pending_resume", "previous":before["launch"]["native"], "attempt":2, "error":null}),

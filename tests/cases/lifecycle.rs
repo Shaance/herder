@@ -1,5 +1,4 @@
 use super::*;
-use std::time::{Duration, Instant};
 
 #[test]
 fn a4_scope_includes_committed_staged_unstaged_and_untracked_paths() {
@@ -40,32 +39,31 @@ fn a5_current_attempt_does_not_inherit_previous_verdict() {
 
 #[test]
 fn a7_queries_timeout_but_existing_reports_remain_readable() {
-    for executor in ["codex", "vibe", "claude"] {
-        let f = Fixture::new();
-        let id = f.launch(executor);
-        if executor == "claude" {
-            f.executable(&f.bin.join("claude"), "echo query-entered; sleep 4 & wait");
-        } else {
-            f.script(
-                &format!("{executor}-implementer"),
-                if executor == "codex" { "status_classic" } else { "status_vibe" },
-                "echo query-entered; sleep 4 & wait",
-            );
-        }
-        fs::write(f.dir(&id).join("final.md"), "existing report").unwrap();
-        for command in ["status", "report", "ls"] {
-            let start = Instant::now();
-            let result = f.call(&if command == "ls" { vec![command] } else { vec![command, &id] }, 0);
-            assert!(start.elapsed() < Duration::from_millis(3500));
-            let data = if command == "ls" { &result["data"]["runs"][0] } else { &result["data"] };
-            assert_eq!(data["observation"]["state"], "unknown");
-            assert!(data["observation"]["evidence"].as_str().unwrap().contains("timed out"));
-            assert!(data["observation"]["evidence"].as_str().unwrap().contains("query-entered"));
-            if command == "report" {
-                assert_eq!(data["report"]["content"], "existing report");
+    std::thread::scope(|scope| {
+        for (executor, suffix) in [("codex", "classic"), ("vibe", "vibe"), ("claude", "")] {
+            for command in ["status", "report", "ls"] {
+                scope.spawn(move || {
+                    let f = Fixture::new();
+                    let id = f.launch(executor);
+                    let stalled = "echo query-entered; sleep 60 & wait";
+                    if executor == "claude" {
+                        f.executable(&f.bin.join("claude"), stalled);
+                    } else {
+                        f.script(&format!("{executor}-implementer"), &format!("status_{suffix}"), stalled);
+                    }
+                    fs::write(f.dir(&id).join("final.md"), "existing report").unwrap();
+                    let result = f.call(&if command == "ls" { vec![command] } else { vec![command, &id] }, 0);
+                    let data = if command == "ls" { &result["data"]["runs"][0] } else { &result["data"] };
+                    assert_eq!(data["observation"]["state"], "unknown", "{executor} {command}: {data}");
+                    assert!(data["observation"]["evidence"].as_str().unwrap().contains("timed out"));
+                    assert!(data["observation"]["evidence"].as_str().unwrap().contains("query-entered"));
+                    if command == "report" {
+                        assert_eq!(data["report"]["content"], "existing report");
+                    }
+                });
             }
         }
-    }
+    });
 }
 
 #[test]
@@ -76,7 +74,14 @@ fn a8_stop_waits_or_reports_stop_sent_without_failure() {
         fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(&id).join("final.md").display())).unwrap();
         f.executable(&f.bin.join("kill"), "touch \"$HERDER_STATE_DIR/signalled\"");
         if delayed {
-            f.executable(&f.bin.join("kill"), "(sleep 0.3; printf 'state=exited pid=43210\\nverdict: STOPPED\\n' > \"$HERDER_SKILLS_DIR/status\") </dev/null >/dev/null 2>&1 &");
+            f.script(
+                "codex-implementer",
+                "status_classic",
+                r#"cat "$HERDER_SKILLS_DIR/status"
+if test -f "$HERDER_STATE_DIR/signalled"; then
+    printf 'state=exited pid=43210\nverdict: STOPPED\n' > "$HERDER_SKILLS_DIR/status"
+fi"#,
+            );
         }
         let stopped = f.call(&["stop", &id], 0);
         assert_eq!(stopped["data"]["observation"]["state"], if delayed { "stopped" } else { "running" });

@@ -10,7 +10,7 @@ Every command accepts `--json` and returns an envelope: `{ "ok": boolean, "data"
 
 A successful status query can report `unknown`; inspect its evidence before acting. Unknown observations include a `cause` in JSON and a `cause: <value>` line in human `herder status` output. The causes are `query_failed`, `identity_mismatch`, `record_disagrees`, `unrecognized_status` and `unconfirmed`; other states omit the cause.
 
-Executor queries time out after two seconds with `unknown` evidence. Existing reports remain readable. Claude completion requires a terminal executor state. Codex and Vibe outcomes follow their status script verdicts, so correctness also depends on those scripts. Their evidence includes `stream_age_s`, the seconds since the event stream last changed. For a live Codex run, `running_command:` names a started command that has not completed.
+Executor queries time out after ten seconds with `unknown` evidence. Existing reports remain readable. Claude completion requires a terminal executor state. Codex and Vibe outcomes follow their status script verdicts, so correctness also depends on those scripts. Their evidence includes `stream_age_s`, the seconds since the event stream last changed. For a live Codex run, `running_command:` names a started command that has not completed.
 
 ## Run record, storage and locking
 

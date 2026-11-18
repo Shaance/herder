@@ -1,5 +1,5 @@
+use super::durability::wait_file;
 use super::*;
-use std::{thread, time::Duration};
 
 fn setup() -> (Fixture, PathBuf) {
     let f = Fixture::new();
@@ -120,23 +120,28 @@ fn real_codex_partial_stream_and_failed_report_preserve_truth() {
     fs::write(
         stub_body(&f.bin.join("codex")),
         r#"#!/usr/bin/python3
-import sys,time,pathlib
+import os,sys,time,pathlib
+hold = pathlib.Path(os.environ['HERDER_STATE_DIR']) / 'hold-partial'
 pathlib.Path(sys.argv[sys.argv.index('-o')+1]).write_text('partial report')
 sys.stdout.write('{"type":"thread.started","thread_id":"stub-thread"}\n{"type":')
 sys.stdout.flush()
-time.sleep(3)
-print('"turn.failed","error":{"message":"failed after report"}}')
+while hold.exists():
+    time.sleep(0.02)
+if hold.parent.is_dir():
+    print('"turn.failed","error":{"message":"failed after report"}}', flush=True)
+    (hold.parent / 'stream-complete').touch()
 "#,
     )
     .unwrap();
+    f.write("state/hold-partial", "");
     let (code, dispatch) = call(
         &f,
         &skills,
         &["dispatch", "--executor", "codex", "--repo", ".", "--brief", f.root.join("brief.md").to_str().unwrap()],
     );
-    // The stub always exits itself, including when the launch contract is broken.
-    thread::sleep(Duration::from_secs(3));
     assert_eq!(code, 0, "accepted partial JSONL must survive: {dispatch}");
+    fs::remove_file(f.state.join("hold-partial")).unwrap();
+    wait_file(&f.state.join("stream-complete"));
     let id = dispatch["data"]["run_id"].as_str().unwrap();
     let (code, report) = call(&f, &skills, &["report", id]);
     assert_eq!(code, 0, "{report}");
@@ -148,16 +153,17 @@ print('"turn.failed","error":{"message":"failed after report"}}')
 fn real_status_scripts_report_stream_age_and_running_command() {
     for executor in ["codex", "vibe"] {
         let (f, skills) = setup();
-        let body = if executor == "codex" {
-            r#"import sys,time
-print('{"type":"thread.started","thread_id":"stub-thread"}')
-print('{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"stub-long-command"}}', flush=True)
-time.sleep(6)"#
+        let events = if executor == "codex" {
+            r#"{"type":"thread.started","thread_id":"stub-thread"}\n{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"stub-long-command"}}"#
         } else {
-            r#"import time
-print('{"sessionId":"stub-session"}', flush=True)
-time.sleep(6)"#
+            r#"{"sessionId":"stub-session"}"#
         };
+        f.write("state/hold-worker", "");
+        let body = format!(
+            "import os,pathlib,time\nprint('{events}', flush=True)\n\
+             hold = pathlib.Path(os.environ['HERDER_STATE_DIR']) / 'hold-worker'\n\
+             while hold.exists():\n    time.sleep(0.02)"
+        );
         fs::write(stub_body(&f.bin.join(executor)), format!("#!/usr/bin/python3\n{body}\n")).unwrap();
         let (code, dispatch) = call(
             &f,
@@ -167,6 +173,7 @@ time.sleep(6)"#
         assert_eq!(code, 0, "{dispatch}");
         let id = dispatch["data"]["run_id"].as_str().unwrap();
         let (code, status) = call(&f, &skills, &["status", id]);
+        fs::remove_file(f.state.join("hold-worker")).unwrap();
         assert_eq!(code, 0, "{status}");
         assert_eq!(status["data"]["observation"]["state"], "running", "{status}");
         let evidence = status["data"]["observation"]["evidence"].as_str().unwrap();
@@ -175,7 +182,6 @@ time.sleep(6)"#
         if executor == "codex" {
             assert!(evidence.contains("running_command: stub-long-command"), "{evidence}");
         }
-        thread::sleep(Duration::from_secs(6));
     }
 }
 
@@ -202,7 +208,7 @@ fn real_status_scripts_reject_recycled_pids() {
     for executor in ["codex", "vibe"] {
         let (f, skills) = setup();
         let id = f.launch(executor);
-        let mut unrelated = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        let mut unrelated = Command::new("/bin/cat").stdin(std::process::Stdio::piped()).spawn().unwrap();
         let mut record = f.record(&id);
         record["launch"]["native"]["pid"] = json!(unrelated.id());
         fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
@@ -210,8 +216,7 @@ fn real_status_scripts_reject_recycled_pids() {
         fs::write(f.dir(&id).join("events.jsonl"), "").unwrap();
         fs::write(f.dir(&id).join("stderr.log"), "").unwrap();
         let (code, status) = call(&f, &skills, &["status", &id]);
-        unrelated.kill().unwrap();
-        unrelated.wait().unwrap();
+        assert!(unrelated.wait().unwrap().success());
         assert_eq!(code, 0);
         assert_ne!(status["data"]["observation"]["state"], "running", "{status}");
     }

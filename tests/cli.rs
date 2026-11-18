@@ -861,18 +861,26 @@ fn unrecognized_executor_status_has_a_cause() {
 
 #[test]
 fn wait_outlasts_a_transient_unknown_and_reports_a_lasting_one() {
+    use std::io::{BufRead, BufReader, Read};
+
     let f = Fixture::new();
     let id = f.launch("codex");
     fs::write(f.skills.join("query-fail"), "").unwrap();
-    let waiter =
-        f.cmd().args(["--json", "wait", &id, "--timeout", "30"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    let mut waiter =
+        f.cmd().args(["wait", &id, "--timeout", "30"]).stdout(std::process::Stdio::piped()).spawn().unwrap();
+    let mut output = BufReader::new(waiter.stdout.take().unwrap());
+    let mut progress = String::new();
+    output.read_line(&mut progress).unwrap();
+    assert_eq!(progress, format!("{id}\t{id}\tunknown\n"));
     f.status("exited", "COMPLETED");
     fs::remove_file(f.skills.join("query-fail")).unwrap();
-    let out = waiter.wait_with_output().unwrap();
-    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(out.status.code(), Some(0), "{result}");
-    assert_eq!(result["data"]["runs"][0]["state"], "finished");
+    let mut rest = String::new();
+    output.read_to_string(&mut rest).unwrap();
+    assert!(waiter.wait().unwrap().success(), "{rest}");
+    assert_eq!(
+        rest,
+        format!("{id}\t{id}\tfinished\n{id}\t{id}\tfinished\t{}\n", f.dir(&id).join("final.md").display())
+    );
 
     fs::write(f.skills.join("query-fail"), "").unwrap();
     let lasting = f.call(&["wait", &id, "--timeout", "1"], 1);

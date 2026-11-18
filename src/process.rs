@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+const EXECUTOR_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+
 pub fn output(cmd: &mut Command) -> Result<(Option<i32>, String)> {
     let out = cmd.stdin(Stdio::null()).output().with_context(|| format!("execute {:?}", cmd.get_program()))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
@@ -24,7 +26,7 @@ pub fn query(cmd: &mut Command) -> Result<String> {
     let mut capture = tempfile::tempfile()?;
     let mut child =
         cmd.stdin(Stdio::null()).stdout(capture.try_clone()?).stderr(capture.try_clone()?).process_group(0).spawn()?;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + EXECUTOR_QUERY_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break Some(status);
@@ -40,7 +42,9 @@ pub fn query(cmd: &mut Command) -> Result<String> {
     capture.rewind()?;
     let mut text = String::new();
     capture.read_to_string(&mut text)?;
-    let status = status.ok_or_else(|| anyhow::anyhow!("executor query timed out after 2s: {text}"))?;
+    let status = status.ok_or_else(|| {
+        anyhow::anyhow!("executor query timed out after {}s: {text}", EXECUTOR_QUERY_TIMEOUT.as_secs())
+    })?;
     ensure!(status.success(), "exit {:?}: {text}", status.code());
     Ok(text)
 }

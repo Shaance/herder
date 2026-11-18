@@ -6,7 +6,7 @@ use std::{
 };
 
 pub(super) fn wait_file(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     while !path.exists() {
         assert!(Instant::now() < deadline, "waiting for {}", path.display());
         thread::sleep(Duration::from_millis(10));
@@ -52,7 +52,7 @@ fn a2_claude_acceptance_survives_coordinator_death() {
     let cli = stub_body(&f.bin.join("claude"));
     let stub = fs::read_to_string(&cli).unwrap().replace(
         "agents)",
-        "agents)\nif test -f \"$HERDER_STATE_DIR/pause\"; then touch \"$HERDER_STATE_DIR/entered\"; sleep 1; fi",
+        "agents)\nif test -f \"$HERDER_STATE_DIR/pause\"; then touch \"$HERDER_STATE_DIR/entered\"; while test -f \"$HERDER_STATE_DIR/pause\"; do sleep 0.02; done; fi",
     );
     fs::write(&cli, stub).unwrap();
     fs::write(f.state.join("pause"), "").unwrap();
