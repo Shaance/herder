@@ -74,7 +74,8 @@ jobs:
             target/aarch64-apple-darwin/release/herder \
             target/x86_64-apple-darwin/release/herder
           lipo -archs dist/herder
-          lipo -verify_arch arm64 x86_64 dist/herder
+          lipo dist/herder -verify_arch arm64
+          lipo dist/herder -verify_arch x86_64
 
       - name: Sign
         env:
