@@ -25,7 +25,7 @@ jobs:
       - run: cargo test --locked
 
   msrv:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.89 --profile minimal
