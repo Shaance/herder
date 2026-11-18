@@ -40,7 +40,7 @@ pub struct Launched {
 }
 
 pub enum RunDetail {
-    Status { tail: Option<Tail> },
+    Status { dir: PathBuf, tail: Option<Tail> },
     Report { path: PathBuf, content: Option<String> },
     Stop,
     Resume,
@@ -126,7 +126,8 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
                 Action::Stop { .. } | Action::Resume { .. } => Some(store.lock(id)?),
                 _ => store.try_lock(id)?,
             };
-            let mut run = store.load(id)?;
+            let dir = store.dir(id)?;
+            let mut run = store::load(&dir)?;
             // Validate before observation, which can recover and save executor identity.
             let baseline = if let Action::Verify { baseline: Some(rev), .. } = &action {
                 Some(
@@ -149,7 +150,7 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
             let mut code = 0;
             let detail = match action {
                 Action::Report { .. } => {
-                    let path = store.dir(&run.id)?.join(run.report_name());
+                    let path = dir.join(run.report_name());
                     let content = store::report(&path)?;
                     if content.is_none() {
                         code = 1;
@@ -204,11 +205,7 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
                         }
                         let attempt = run.launch_attempt().get();
                         let suffix = if attempt == 1 { String::new() } else { attempt.to_string() };
-                        let path = run
-                            .brief
-                            .parent()
-                            .expect("brief is stored in the run directory")
-                            .join(format!("events{suffix}.jsonl"));
+                        let path = dir.join(format!("events{suffix}.jsonl"));
                         let mut lines = vec![];
                         let message = match std::fs::read_to_string(&path) {
                             Ok(content) => {
@@ -231,6 +228,7 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
                         };
                         Tail { path: Some(path), lines, message }
                     }),
+                    dir,
                 },
                 _ => unreachable!(),
             };

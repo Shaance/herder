@@ -38,7 +38,7 @@ fn data(output: &Output) -> Value {
                 _ => Value::Null,
             };
             let mut data = json!({"run":run,"observation":observation,"report":report});
-            if let RunDetail::Status { tail: Some(tail) } = detail {
+            if let RunDetail::Status { tail: Some(tail), .. } = detail {
                 data["tail"] = json!(tail);
             }
             data
@@ -156,8 +156,7 @@ fn human(output: &Output) {
             );
         }
         Output::Run { run, observation, detail } => match detail {
-            RunDetail::Status { tail } => {
-                let dir = run.brief.parent().expect("brief is stored in the run directory");
+            RunDetail::Status { dir, tail } => {
                 println!("state: {}", observation.state().as_str());
                 if let Some(cause) = observation.cause() {
                     println!("cause: {}", cause.as_str());

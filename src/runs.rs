@@ -24,13 +24,11 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun
                 Launch::Accepted { .. } | Launch::Launched { native: Native::Claude { .. }, .. }
             ) {
                 "worker accepted; use herder status to observe it; do not relaunch".into()
-            } else if message.contains("Workspace not trusted") {
-                let profile = match &target {
-                    Target::Claude { profile } => {
-                        profile.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "none (default)".into())
-                    }
-                    _ => String::new(),
-                };
+            } else if let Target::Claude { profile } = &target
+                && message.contains("Workspace not trusted")
+            {
+                let profile =
+                    profile.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "none (default)".into());
                 format!("open `claude` in {} under profile {profile} once and accept trust", run.repo.display())
             } else {
                 "inspect the executor message and run herder doctor; correct the cause before retrying".into()
@@ -258,8 +256,11 @@ pub fn pane(run: &Run) -> Result<()> {
         cmd.args(["-s", &session]);
     }
     cmd.args(["-b", &block, "--focus=false", "--shell=none", "--"]);
-    match run.launch.native().ok_or_else(|| anyhow::anyhow!("pane requires native identity"))? {
-        Native::Claude { id, profile, .. } => {
+    match run.launch.target() {
+        Target::Claude { .. } => {
+            let Some(Native::Claude { id, profile, .. }) = run.launch.native() else {
+                bail!("pane requires native identity");
+            };
             cmd.arg("env");
             if let Some(p) = profile {
                 cmd.arg(format!("CLAUDE_CONFIG_DIR={}", p.display()));
@@ -268,7 +269,7 @@ pub fn pane(run: &Run) -> Result<()> {
             }
             cmd.args(["claude", "attach", id]);
         }
-        Native::Vibe { .. } | Native::Codex { .. } => {
+        Target::Vibe | Target::Codex => {
             cmd.arg("env");
             if let Some(root) = std::env::var_os("HERDER_STATE_DIR") {
                 let mut assignment = std::ffi::OsString::from("HERDER_STATE_DIR=");

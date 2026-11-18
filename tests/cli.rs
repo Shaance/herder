@@ -373,6 +373,21 @@ fn human_launch_failures_and_rejections_keep_their_output_streams() {
 }
 
 #[test]
+fn codex_launch_failure_uses_generic_remediation_for_trust_message() {
+    let f = Fixture::new();
+    f.script("codex-implementer", "launch_classic", "echo 'Workspace not trusted' >&2; exit 1");
+    let result = f.dispatch("codex", &[], 1);
+    let id = result["data"]["run_id"].as_str().unwrap();
+    let record = f.record(id);
+    let error = &record["launch"]["error"];
+    assert!(error["message"].as_str().unwrap().contains("Workspace not trusted"));
+    assert_eq!(
+        error["remediation"],
+        "inspect the executor message and run herder doctor; correct the cause before retrying"
+    );
+}
+
+#[test]
 fn script_dispatch_status_and_report_use_executor_artifacts() {
     for executor in ["vibe", "codex"] {
         let f = Fixture::new();
@@ -747,6 +762,29 @@ fn status_tail_reads_current_attempt_without_changing_status() {
 }
 
 #[test]
+fn status_uses_moved_state_directory_for_tail_and_display_paths() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    let brief = f.record(&id)["brief"].clone();
+    fs::write(f.dir(&id).join("events.jsonl"), "first\nlast\n").unwrap();
+    let moved = f.root.join("moved");
+    fs::rename(&f.state, &moved).unwrap();
+    let dir = moved.join("runs").join(&id);
+
+    let mut cmd = f.cmd();
+    cmd.env("HERDER_STATE_DIR", &moved).args(["status", &id, "--tail", "1"]);
+    let human = cmd.output().unwrap();
+    let out = cmd.arg("--json").output().unwrap();
+    assert!(out.status.success());
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["data"]["run"]["brief"], brief);
+    assert_eq!(result["data"]["tail"], json!({"path":dir.join("events.jsonl"),"lines":["last"],"message":null}));
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains(&format!("run dir: {}\nreport path: {}\n", dir.display(), dir.join("final.md").display())));
+}
+
+#[test]
 fn status_tail_explains_claude_stream_absence() {
     let f = Fixture::new();
     let id = f.launch("claude");
@@ -803,6 +841,20 @@ fn wait_outlasts_a_transient_unknown_and_reports_a_lasting_one() {
     fs::write(f.skills.join("query-fail"), "").unwrap();
     let lasting = f.call(&["wait", &id, "--timeout", "1"], 1);
     assert!(lasting["data"]["message"].as_str().unwrap().contains("unknown state at timeout"), "{lasting}");
+}
+
+#[test]
+fn dispatch_pane_waits_on_deferred_script_launch() {
+    for executor in ["vibe", "codex"] {
+        let f = Fixture::new();
+        f.write("skills/gate", "");
+        let result = f.dispatch(executor, &["--pane"], 0);
+        let id = result["data"]["run_id"].as_str().unwrap();
+        assert_eq!(f.record(id)["launch"]["state"], "starting");
+        assert_eq!(result["data"]["pane_error"], Value::Null);
+        let pane = fs::read_to_string(f.state.join("rex-args")).unwrap();
+        assert!(pane.ends_with(&format!("\n{}\nwait\n{id}\n", env!("CARGO_BIN_EXE_herder"))));
+    }
 }
 
 #[test]
@@ -964,8 +1016,6 @@ fn doctor_reports_embedded_scripts_and_missing_bash() {
 
 #[test]
 fn doctor_preserves_paths_in_json_and_escapes_them_in_human_output() {
-    use std::os::unix::ffi::OsStringExt;
-
     let f = Fixture::new();
     let skills = f.root.join("skills\nwith\\controls");
     std::os::unix::fs::symlink(&f.skills, &skills).unwrap();
@@ -1001,7 +1051,13 @@ fn doctor_preserves_paths_in_json_and_escapes_them_in_human_output() {
         skills.join("implementer-core/scripts/check_brief.sh").to_str().unwrap().escape_debug()
     )));
     assert!(text.contains(&format!("claude profile: {}\n", profile.to_str().unwrap().escape_debug())));
+}
 
+#[test]
+fn doctor_reports_non_utf8_profile_as_an_operational_error() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let f = Fixture::new();
     let invalid_profile = f.root.join(std::ffi::OsString::from_vec(vec![b'p', 0xff]));
     let out = f
         .cmd()
@@ -1011,9 +1067,9 @@ fn doctor_preserves_paths_in_json_and_escapes_them_in_human_output() {
         .arg("--json")
         .output()
         .unwrap();
-    assert_eq!(out.status.code(), Some(101));
-    assert!(out.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&out.stderr).contains("path contains invalid UTF-8 characters"));
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result, json!({"ok":false,"data":null,"error":"Claude profile path contains invalid UTF-8 characters"}));
 }
 
 #[test]

@@ -120,7 +120,7 @@ impl Store {
         Ok(runs)
     }
 }
-fn load(dir: &Path) -> Result<Run> {
+pub(super) fn load(dir: &Path) -> Result<Run> {
     let path = dir.join("run.json");
     let run: Run = serde_json::from_slice(&fs::read(&path).with_context(|| path.display().to_string())?)
         .with_context(|| path.display().to_string())?;

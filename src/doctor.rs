@@ -1,5 +1,5 @@
 use crate::{domain::Executor, process, scripts::ScriptExecutor};
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use serde::Serialize;
 use std::{path::PathBuf, process::Command};
 
@@ -32,6 +32,10 @@ pub struct RexCheck {
 
 pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doctor, i32)> {
     let profile = process::profile(profile)?;
+    ensure!(
+        profile.as_ref().is_none_or(|path| path.to_str().is_some()),
+        "Claude profile path contains invalid UTF-8 characters"
+    );
     let mut executors = vec![];
     let mut healthy = true;
     for e in [Executor::Claude, Executor::Vibe, Executor::Codex] {
