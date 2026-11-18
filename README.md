@@ -1,190 +1,164 @@
 # herder
 
-A Rust CLI for coordinating Claude, Vibe and Codex workers from any agent or
-person. Installing from source requires Rust.
+herder is a Rust CLI that lets your coding agent delegate work to Codex, Vibe or Claude workers, track them, and verify their work independently. People can use it directly too.
 
-macOS is supported and tested in CI; Linux is untested.
+Here a stub worker claimed success but edited `config.toml`, outside the `src/` path it was allowed to touch. `verify` catches it:
 
-Prerequisites: bash, jq, perl, git, and the executor CLIs you use: codex, vibe,
-and/or claude.
+```text
+$ herder verify outside-src --check 'true'
+fail attempt 1
+baseline scope: outside authorized paths since 586e325ca49f67aba030fc402f5b32ed90ca7543: ["config.toml"]; files={"config.toml"}; pre-existing and unchanged=[]
+$ herder ls
+20261118-142959-f035	outside-src	-	codex	finished	1	-
+20261118-143001-fa83	crashed	-	codex	failed	1	-
+codex: 2 runs (failed 1, finished 1)
+```
+
+The list columns are run ID, name, goal, executor, state, attempt and model.
+
+## Why
+
+A worker can run in the background for hours. You need to know whether it is still working, stopped, or changed files outside its brief. A worker's report that tests passed is its own claim.
+
+herder keeps a durable record for each worker. It queries Claude's CLI or uses the Codex and Vibe status scripts to inspect executor evidence; when that evidence is unresolved, it reports `unknown` with a cause. Verification checks changed files against the authorized `--path` prefixes you supply and runs the check commands you choose.
+
+## How it works
+
+```mermaid
+stateDiagram-v2
+    [*] --> starting: dispatch
+    starting --> running: identity confirmed
+    starting --> failed: launch fails
+    starting --> unknown: evidence unresolved
+    running --> blocked: waiting
+    blocked --> running: continues
+    running --> finished: completes
+    running --> failed: fails
+    running --> stopped: stops
+    finished --> running: resume with delta brief
+    failed --> running: resume with delta brief
+    stopped --> running: resume with delta brief
+    note right of finished
+        verify records a verdict
+        for an attempt
+    end note
+```
+
+The arrows show common observations; `unknown` can occur whenever evidence is unresolved. A successful resume starts a new attempt on a recorded session, and verification records a verdict separately from the lifecycle; see the [reference](docs/reference.md) for the rules and [architecture](docs/architecture.md) for the implementation.
+
+## Use it from your agent
+
+With Rust, bash, jq, perl, git and your executor CLIs installed, clone the repository and install herder from its root. Then run the line for your host to link the [herder skill](skill/SKILL.md). Keep the clone in place; if a host already has a `herder` skill, inspect that entry before replacing it.
+
+```sh
+git clone https://github.com/Shaance/herder.git
+cd herder
+cargo install --path .
+# Claude Code
+mkdir -p ~/.claude/skills && ln -s "$PWD/skill" ~/.claude/skills/herder
+# Codex
+mkdir -p ~/.codex/skills && ln -s "$PWD/skill" ~/.codex/skills/herder
+# Vibe
+mkdir -p ~/.vibe/skills && ln -s "$PWD/skill" ~/.vibe/skills/herder
+```
+
+Allow your agent to run herder with normal user access, since herder starts executor CLIs that use the network and their own configuration:
+
+- Claude Code: allow `Bash(herder:*)` in settings, or approve commands when asked.
+- Codex: add `prefix_rule(pattern=["herder"], decision="allow")` to `~/.codex/rules/default.rules`.
+- Vibe: approve commands when asked, or run the session with the `auto-approve` agent.
+
+Then ask your agent, for example:
+
+> Have Codex add a module comment to `src/lib.rs` with herder, then verify it with `cargo test`.
+
+The agent writes a brief, dispatches the worker, waits for it to settle, and reads its report. It then inspects the changes and runs herder verification; you or the coordinating agent decide what to do with the evidence.
+
+## Quick start (by hand)
+
+Install Rust to build from source. You also need bash, jq, perl, git and the executor CLIs you use (`codex`, `vibe` and/or `claude`). This example checks Codex; change the executor if needed.
 
 ```sh
 cargo install --git https://github.com/Shaance/herder
-herder doctor --json
+herder doctor --executor codex
 ```
 
-**Optional: Rex.** [Rex](https://superlogical.com) is a macOS terminal in
-invite-only public beta. In Rex, `--pane` opens a pane to attach to a Claude
-worker or wait for a Vibe or Codex worker.
-
-Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. A direct-mode brief such as `/tmp/task.md` requires the blocks `<task>`,
-`<workstream_contract>`, `<implementation_authority>`, `<action_safety>`,
-`<default_follow_through_policy>`, `<verification_loop>`, `<economy_contract>`, and
-`<structured_output_contract>`. Name authorized paths and rejected alternatives.
+Adapt this brief to your repository and save it outside the repository so the brief itself does not affect scope verification. Pass the same authorized paths to dispatch with `--path`:
 
 ```sh
-herder dispatch --executor codex --brief /tmp/task.md --repo . --goal feature-1 --path src/
-# Use the printed run ID below.
-herder ls --goal feature-1
-herder status 20261101-120000-abcd
-herder wait 20261101-120000-abcd --timeout 3600
-herder report 20261101-120000-abcd
-herder verify 20261101-120000-abcd --check 'cargo test --offline'
-# Review evidence before publishing as coordinator.
+cat > "${TMPDIR:-/tmp}/herder-task.md" <<'BRIEF'
+<task>Add a module comment to src/lib.rs.</task>
+<workstream_contract>Work alone.</workstream_contract>
+<implementation_authority>Authorized paths: src/. Rejected alternative: a separate document would put the comment away from the module.</implementation_authority>
+<action_safety>Do not commit or push.</action_safety>
+<default_follow_through_policy>Finish the task and its checks.</default_follow_through_policy>
+<verification_loop>Run cargo test.</verification_loop>
+<economy_contract>Keep the change small.</economy_contract>
+<structured_output_contract>Report changes and check results.</structured_output_contract>
+BRIEF
 ```
 
-All commands accept `--json`: `{ "ok": boolean, "data": object|null,
-"error": string|null }`. Operational findings (failed launches, verification,
-missing reports, doctor gaps) remain in `data`; invocation errors use `error`.
-Exit codes: 0 success, 1 operational failure, 2 usage error. A successful status
-query can report `unknown`; inspect its evidence before taking action.
-Unknown observations include a `cause` in JSON and a `cause: <value>` line in `herder status`:
-`query_failed`, `identity_mismatch`, `record_disagrees`, `unrecognized_status`, or `unconfirmed`; other states omit it.
-Use `herder <command> --help` for examples and flags; no command prompts.
-
-State defaults to `~/.local/state/herder`, overridden by `HERDER_STATE_DIR`.
-Existing state is not moved automatically.
-`runs/<id>/run.json` owns recorded run facts; scripts place evidence beside it.
-`input.md` is herder's brief copy; `final.md`, `final2.md`, etc. are attempt reports.
-Run writes use temporary files and rename under a per-run `run.lock` advisory lock,
-including status recovery. Read commands never wait for that lock: while busy,
-they show recorded state and `run busy` evidence without saving. Mutating lock
-waits time out after two seconds. Launch gates retain the lock; verification
-runs checks outside it, then locks, reloads and appends the original attempt's
-verdict. Unrelated runs remain independent. Issue-log writes are not serialized.
-Dispatch prepares `.ID.pending/` and publishes the directory only with `run.json`.
-Interrupted preparation can leave a hidden staging directory; `ls` ignores it.
-Broken published directories appear as individual errors in `ls`, alongside healthy runs.
-Scripts are embedded in the binary. To override them, set `HERDER_SKILLS_DIR` to an
-ai-skills-shaped directory containing `<owner>/scripts/<name>.sh`.
-Claude profile precedence is `--profile`, `CLAUDE_CONFIG_DIR`, then explicitly
-none (Claude's default). Dispatch detects trust failures without editing trust.
-
-Status, report, stop, resume, verify and wait accept a run ID or a unique dispatch
-`--name`. Existing IDs take precedence; ambiguous names list their matches, unknown names list similar ones.
-Human dispatch output includes both ID and name.
-`herder status <run> --tail <N>` (1–1000) shows the current launch attempt's last N event-stream lines capped at 500 characters each, adds `data.tail` in JSON, and explains missing streams or Claude's lack of a herder-recorded stream without changing status or exit codes.
-
-`herder wait <run>...` polls every 5 seconds, returning when any run settles;
-`--all` waits for every listed run. Finished, failed, stopped and blocked count as
-settled (exit 0); unknown evidence or timeout exits 1. The default timeout is 3600
-seconds. Human output shows state changes; final human and JSON output includes
-every run's id, name, state and current report path.
-`herder ls` includes models and a per-executor state tally (`data.summary` in JSON),
-scoped by `--goal` when supplied. Broken entries remain errors outside the tally.
-`--pane` uses Rex; Vibe/Codex panes run `herder wait` and close when it exits.
-Claude panes continue to use `claude attach`. Vibe/Codex launch and resume scripts
-receive no inherited `REX_SESSION`, `REX_BLOCK` or `REX_SERVER`.
-Extra dispatch arguments after `--` are recorded and replayed with `--model` on
-Vibe/Codex resume. They go to the executor, including Vibe arguments
-past its launcher's separator. Herder Vibe runs are auto-approve only.
-Launcher gate exit 3 preserves `starting` or `pending_resume`; herder returns 0.
-A resume requires a non-empty delta; the delta can use `<task>`, `<verification_loop>`
-and `<constraints>` without dispatch's full brief contract. The accepted attempt
-and report remain current until resume succeeds (Vibe/Codex require a new PID with the same executor identity).
-After correcting a recorded pending-resume error, `herder resume` retries the same
-attempt using its previous identity when the executor confirms no live worker.
-Running or unknown executor states block retry. Executor rejection diagnostics
-still apply, including Vibe's refusal to reuse existing attempt evidence files.
-`herder resume --request-id KEY` (KEY: 1-200 bytes, no control characters) makes a
-resume idempotent: Herder records the request id and its attempt in `run.json`
-(`request_attempts`) in the same saved mutation that marks the resume pending,
-before launching. Replaying a known KEY with byte-identical `--brief` content
-returns the recorded run and observation without another launch, whatever its
-state; the same KEY with different bytes is rejected. A new KEY never takes over
-a pending attempt reserved by another KEY, and a resume without an id cannot
-rewrite an input file reserved by a KEY with different content. A stored request
-means accepted by Herder, not agent receipt or success; a failed or unknown launch
-is never automatically relaunched under a replayed key.
-A late script identity can be recorded by status.
-Initial Claude dispatch failures before acceptance remain terminal. Once Claude prints an accepted
-short ID, a later launch gate failure returns exit 1 but retains that ID and its
-diagnosis in `run.json`. Use status to observe that worker; do not relaunch it.
-Status validates cwd and a nonempty full session identity before recording it,
-then requires that same identity on every query and before stop. Gate errors
-remain historical facts even when the worker later runs or finishes. Existing
-failed records are unchanged and are not automatically attached to workers.
-Claude resume stops a settled session if still live, then wakes the same session
-with its saved options and recorded profile. No launch flags are replayed. Copies
-are stopped and rejected; failed pending resumes can retry the same attempt.
-Codex `status_classic.sh` inspects the newest resumed attempt itself, so herder
-passes no attempt suffix and checks the reported pid against the resumed worker.
-Executor queries time out after two seconds with `unknown` evidence; existing reports
-remain readable. Stop waits briefly for exit and otherwise reports `stop sent` with exit 0.
-Claude completion requires a terminal executor state. Codex/Vibe outcomes follow their
-status script verdicts, so correctness also depends on those scripts.
-Their evidence includes `stream_age_s`, the seconds since the event stream last changed,
-and for a live Codex run `running_command:` naming a started command that has not completed.
-A report is never proof. Verification is separate from lifecycle and approval.
-Dispatch records the Git baseline commit. After rebasing a worker branch, use
-`herder verify <run> --baseline <new-upstream-rev>` to verify against and persist
-the new commit baseline. Invalid revisions fail without changing the run record. Verification checks committed, staged,
-unstaged and untracked paths against that baseline, then runs the evidence script
-and requested commands. Records without a baseline load, but scope verification fails
-explicitly. A verdict belongs to its attempt; a resumed attempt starts unverified.
-Legacy `starting` intents load as running, and untagged legacy verdicts belong to attempt 1.
-
-For paired read-only reviews, write one brief containing `<task>`, `<action_safety>`,
-`<default_follow_through_policy>` and `<structured_output_contract>`. Dispatch it to each
-executor with the same goal; select a Codex model, and repeat `--model` to review with several
-Vibe models (use the review models your host instructions name):
+From the repository to be changed, dispatch the worker and use its unique name in the remaining commands:
 
 ```sh
-herder dispatch --mode review --executor codex --model <codex-model> --brief /tmp/review.md --repo . --goal paired-review --name codex-review
-herder dispatch --mode review --executor vibe --model <vibe-model-1> --model <vibe-model-2> --brief /tmp/review.md --repo . --goal paired-review --name vibe-review
-herder wait <id1> <id2> <id3> --all
+herder dispatch --executor codex --brief "${TMPDIR:-/tmp}/herder-task.md" --repo . --name module-comment --path src/
+herder wait module-comment
+herder report module-comment
+herder verify module-comment --check 'cargo test'
 ```
 
-A repeated `--model` launches one recorded run per model, named `<name>-<model>`, and
-prints every run ID. It is refused outside `--mode review` and for handoffs, because
-one worktree has one writer, and when a model repeats, because both runs would share
-one name. If a later launch fails, the runs already started stay listed beside the
-error. Wait on all printed run IDs, then read every report.
-`--mode` selects brief linting only; the brief must enforce read-only behavior.
+Wait also returns for blocked or failed runs; inspect `herder status module-comment` before continuing if the worker has not finished. Review the evidence before publishing. For review mode, use `--mode review` and include `<task>`, `<action_safety>`, `<default_follow_through_policy>` and `<structured_output_contract>` blocks; the brief must require read-only behavior.
 
-## Handing a conversation to another agent
+## Concepts
 
-When this coordinating conversation moves to another agent, write the continuation
-context yourself (decisions, constraints, remaining work, explicit authorizations)
-into a plain UTF-8 document, stop editing the task and repository, then:
+| Term | Meaning |
+| --- | --- |
+| Run | A recorded worker and its lifecycle, identified by a run ID or unique name. |
+| Goal | An optional label used to group and list runs. |
+| Attempt | A numbered launch or resume of a run; verdicts are recorded per attempt. |
+| Brief | The instructions given to a worker; herder stores a copy. |
+| Report | The worker's output for the current accepted attempt. |
+| Verdict | A recorded pass or fail from verification for an attempt. |
+
+## Commands
+
+| Command | Purpose |
+| --- | --- |
+| `doctor` | Check executors, profiles and Rex. |
+| `dispatch` | Lint a brief and launch a recorded worker. |
+| `handoff` | Launch a worker with a plain continuation document. |
+| `ls` | List runs with fresh executor status. |
+| `wait` | Wait for any or all runs to settle. |
+| `status` | Query a run's current executor status. |
+| `report` | Read the current attempt's report. |
+| `stop` | Stop the exact recorded worker. |
+| `resume` | Resume a recorded session with a delta brief. |
+| `verify` | Record scope and command verification. |
+
+Use `herder <command> --help` for flags and examples. All commands accept `--json` with an `{ok, data, error}` envelope; exit codes are 0 for success, 1 for operational failure and 2 for usage error. See [JSON and exit codes](docs/reference.md#json-output-and-exit-codes) for details.
+
+## Configuration
+
+`HERDER_STATE_DIR` overrides the default `~/.local/state/herder`. `HERDER_SKILLS_DIR` replaces the embedded scripts with scripts from an ai-skills-shaped directory. For Claude, `--profile` takes precedence over `CLAUDE_CONFIG_DIR`, then Claude's default applies. See [storage](docs/reference.md#run-record-storage-and-locking) and [Claude profiles](docs/reference.md#claude-identity-profiles-and-resume).
+
+## Optional: Rex
+
+[Rex](https://superlogical.com) is a macOS terminal in invite-only public beta. In Rex, `--pane` opens a pane to attach to a Claude worker or wait for a Vibe or Codex worker. See [Rex panes](docs/reference.md#rex-panes-and-environment).
+
+## Platform support
+
+macOS is supported and tested in CI; Linux is untested.
+
+## Development
 
 ```sh
-herder handoff --executor claude --brief /tmp/HANDOFF.md --repo . --path src/
+cargo build --offline --locked
+cargo test --offline --locked
+cargo clippy --offline --locked --all-targets -- -D warnings
 ```
 
-`herder handoff` reuses dispatch's options, launch, store and `--pane`, but accepts a
-plain continuation document instead of a structured implementer brief: it snapshots
-the document's full bytes into the run's `input.md` behind a standard continuation
-contract and sends that durable input to the worker. The generated prompt still
-passes the same brief linter as dispatch. Missing, empty, whitespace-only or
-non-UTF-8 documents fail before any launch and leave no run record; later edits or
-deletion of the original file cannot change what the worker receives, and the
-document is never printed to stdout.
+Tests use stub executors and temporary state, never real workers. Contract tests run the vendored launch and status scripts and require `jq`; set `HERDER_SKILLS_DIR` to test another ai-skills-shaped directory.
 
-This launches a continuation only: it does not transfer hidden conversation, stop
-another writer, or prove the context was understood, and
-the launch result is launch evidence only. Use `--pane` for the existing Claude
-attach functionality when in Rex. `--mode review` instructs the receiver to stay read-only; it does not add an OS sandbox. No delegation or
-publication happens unless the document or you expressly authorized it.
+## License
 
-## Using herder from any agent
-
-herder is a plain CLI, so any agent that can run shell commands can coordinate with it. Each host needs
-herder to run with normal user access, because dispatch starts other agent CLIs that use the network and
-their own config directories.
-
-- Claude Code: allow `Bash(herder:*)` in settings, or approve herder commands when asked.
-- Codex: add `prefix_rule(pattern=["herder"], decision="allow")` to `~/.codex/rules/default.rules`.
-  Codex then runs herder outside its sandbox without prompting. Without the rule, read commands work in
-  the `workspace-write` sandbox and writes fail with "Operation not permitted".
-- Vibe: approve herder commands when asked, or run the session with the `auto-approve` agent.
-
-The skill (`skill/SKILL.md`) is the same for every host; install it as a skill in each one.
-
-See [architecture](docs/architecture.md) for the run lifecycle and implementation.
-
-Development checks: `cargo build --offline --locked`, `cargo test --offline --locked`,
-and `cargo clippy --offline --locked --all-targets -- -D warnings`.
-Tests invoke the binary with temporary state and stub executors, never real workers.
-Contract tests run the vendored launch/status scripts and require `jq`. Set
-`HERDER_SKILLS_DIR` to test another ai-skills-shaped directory instead.
+Licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
