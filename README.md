@@ -195,7 +195,8 @@ Tests use stub executors and temporary state, never real workers. Contract tests
 
 ## Releasing
 
-Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` picks it up, commit both, and push a matching `vX.Y.Z` tag. The workflow publishes the signed GitHub Release and then the crate. If the crate job fails after the release succeeds, re-run only that job.
+First, add a `## X.Y.Z (YYYY-MM-DD)` section to `CHANGELOG.md` for the GitHub Release notes.
+Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` picks it up, commit the changes, and push a matching `vX.Y.Z` tag. The workflow publishes the signed GitHub Release and then the crate. If the crate job fails after the release succeeds, re-run only that job.
 
 ## License
 

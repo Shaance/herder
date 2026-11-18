@@ -60,6 +60,26 @@ jobs:
             exit 1
           fi
 
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          awk -v heading="## $version " '
+            /^## / {
+              if (in_section) exit
+              in_section = index($0, heading) == 1
+              next
+            }
+            in_section && /^[[:space:]]*$/ {
+              if (printed) blanks = blanks $0 ORS
+              next
+            }
+            in_section { printf "%s%s\n", blanks, $0; blanks = ""; printed = 1 }
+          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            echo "::error::CHANGELOG.md has no section for $version"
+            exit 1
+          fi
+
       - name: Add Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
@@ -154,7 +174,7 @@ jobs:
         run: |
           gh release create "$GITHUB_REF_NAME" \
             dist/herder-macos-universal.tar.gz dist/herder-macos-universal.tar.gz.sha256 \
-            --title "herder ${GITHUB_REF_NAME#v}" --generate-notes
+            --title "herder ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/release-notes.md"
 
   publish-crate:
     name: Publish to crates.io
