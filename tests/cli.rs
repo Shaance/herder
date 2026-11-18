@@ -1195,13 +1195,13 @@ fn human_actions_and_multiline_evidence() {
         (
             vec!["verify", &id, "--path", "src/"],
             0,
-            "PASS  worker\\nname  attempt 1\n  scope  baseline scope  ok\n  check  collect_evidence.sh  ok\n".into(),
+            "PASS  worker\\nname  attempt 1\n  scope  ok\n  check  collect_evidence.sh  ok\n".into(),
         ),
         (
             vec!["verify", &id, "--path", "src/", "--check", check],
             1,
             format!(
-                "FAIL  worker\\nname  attempt 1\n  scope  baseline scope  ok\n  check  collect_evidence.sh  ok\n  check  {check}  failed (exit 1)\n    first\n    second\n"
+                "FAIL  worker\\nname  attempt 1\n  scope  ok\n  check  collect_evidence.sh  ok\n  check  {check}  failed (exit 1)\n    first\n    second\n"
             ),
         ),
     ] {
@@ -1280,7 +1280,7 @@ fn terminal_lists_and_verification_honor_no_color() {
     let (code, plain) = run(&["verify", &id, "--check", "true"], Some("1"));
     assert_eq!(code, Some(0));
     assert!(!plain.contains('\x1b'), "{plain:?}");
-    assert!(plain.contains("PASS  terminal  attempt 1\n  scope  baseline scope  ok"), "{plain:?}");
+    assert!(plain.contains("PASS  terminal  attempt 1\n  scope  ok"), "{plain:?}");
 }
 
 #[test]

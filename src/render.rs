@@ -274,7 +274,11 @@ fn verification_text(name: &str, verification: &Verification, color: bool) -> St
             Some(exit) => (format!("failed (exit {exit})"), "31"),
             None => ("failed (no exit code)".to_owned(), "31"),
         };
-        output.push_str(&format!("  {label}  {}  {}\n", check.command.escape_debug(), paint(&result, code, color)));
+        output.push_str(&format!(
+            "  {label}  {}{}\n",
+            if label == "scope" { String::new() } else { format!("{}  ", check.command.escape_debug()) },
+            paint(&result, code, color)
+        ));
         if check.exit_code != Some(0) {
             let mut remaining = 2000;
             let mut lines = check.output.lines();
@@ -371,7 +375,7 @@ mod tests {
             verification_text("worker\nname", &verification, false),
             concat!(
                 "FAIL  worker\\nname  attempt 2\n",
-                "  scope  baseline scope  failed (exit 1)\n",
+                "  scope  failed (exit 1)\n",
                 "    outside src/\n",
                 "    file\n",
                 "  check  true  ok\n",

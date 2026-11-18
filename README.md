@@ -15,7 +15,7 @@ Here a stub worker claimed success but edited `config.toml`, outside the `src/` 
 ```text
 $ herder verify outside-src --check 'true'
 FAIL  outside-src  attempt 1
-  scope  baseline scope  failed (exit 1)
+  scope  failed (exit 1)
     config.toml changed outside allowed paths (src/) since cf2e240.
     Changed files: config.toml.
     Pre-existing and unchanged: none.
