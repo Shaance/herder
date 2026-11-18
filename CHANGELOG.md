@@ -1,0 +1,32 @@
+# Changelog
+
+All notable changes to herder are listed here. herder follows [Semantic Versioning](https://semver.org/); before 1.0, a minor version can change behavior that scripts depend on.
+
+## 0.2.0 (2026-11-18)
+
+### Changed
+
+- **`herder wait` exits 1 when a run did not finish.** It exits 0 only when every run that satisfied the wait is `finished`. A failed, stopped or blocked run now exits 1, as a timeout already did, so `herder wait X && next` stops after a failure. Scripts that relied on exit 0 for any settled run need updating.
+- **`herder verify` reuses earlier checks.** Without `--check`, verify reruns the commands from this run's latest verification. If the run has none, it takes them from the most recent run with the same goal and repository. Human output names the run the checks came from. An explicit `--check` still wins.
+- **Parallel Claude dispatches start one at a time.** Claude Code 2.1.327 can kill one of two `claude --bg` sessions started at the same moment. herder now holds a lock from launch until the session has started, so a second dispatch waits about a second. This is a workaround for the Claude bug and will be removed once it is fixed.
+- The verify scope row reads `scope  failed` instead of `scope  baseline scope  failed`.
+
+### Fixed
+
+- **Resuming a Claude run right after it finished** always failed with "Claude resume created a copy". herder now waits for the stopped Claude process to exit before resuming.
+- **Executor queries timed out under load.** The deadline is now 10 seconds instead of 2, which also stops `status` reporting `unknown` and Claude launches failing on a busy machine.
+- `dispatch --pane` on a deferred Vibe or Codex launch opens the wait pane instead of failing with "pane requires native identity".
+- The Claude trust remediation is only shown for Claude runs.
+- `status` reads the event stream from the directory it loaded the run from, so a moved `HERDER_STATE_DIR` keeps working.
+- `doctor` with a non-UTF-8 `--profile` reports an error with exit 1 instead of panicking.
+- The brief lint no longer rejects read-only review briefs that mention new types or fields.
+
+### Internal
+
+- Domain facts are carried in types across doctor, verify, render, run storage and launch, removing re-checks and unreachable branches. JSON output, human output, exit codes and `run.json` are unchanged, checked against 240 recorded outputs.
+- Tests wait on conditions instead of fixed sleeps and pass with three suites running at once.
+- Releases publish to crates.io from the release workflow with Trusted Publishing. GitHub Actions moved to v7 and the MSRV check runs on Linux.
+
+## 0.1.0 (2026-11-18)
+
+First public release.
