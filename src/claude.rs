@@ -37,6 +37,7 @@ struct Agent {
     session_id: String,
     cwd: String,
     status: Option<String>,
+    pid: Option<u32>,
     state: String,
 }
 fn agents(profile: Option<&Path>, repo: &Path) -> Result<Vec<Agent>> {
@@ -63,6 +64,22 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
         );
         if a.status.is_some() {
             process::checked(command(profile).current_dir(&run.repo).args(["stop", id]))?;
+        }
+        // Claude clears the listing before the stopped process exits.
+        if let Some(pid) = a.pid {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let pid_arg = pid.to_string();
+            loop {
+                let (code, text) = output(Command::new("ps").args(["-p", &pid_arg, "-o", "pid="]))?;
+                if code == Some(1) && text.is_empty() {
+                    break;
+                }
+                ensure!(code == Some(0), "could not check Claude session {id} process {pid}: {text}");
+                ensure!(Instant::now() < deadline, "Claude session {id} is still running after stop (pid {pid})");
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+        if a.status.is_some() {
             ensure!(
                 identity(run, previous, profile)?.1.status.is_none(),
                 "Claude session {id} is still live after stop"

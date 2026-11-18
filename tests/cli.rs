@@ -87,6 +87,11 @@ case "$1" in
     test "$3" = native-session
     test "$(pwd)" = "$(cat "$HERDER_STATE_DIR/resume-repo")"
     printf '%s\n' "$@" > "$HERDER_STATE_DIR/resume-args"
+    if test -f "$HERDER_SKILLS_DIR/claude-pid" && ps -p "$(cat "$HERDER_SKILLS_DIR/claude-pid")" -o pid= >/dev/null; then
+      echo 'note: background session abc123 is already running in the background, so this started a copy as def456.'
+      echo 'backgrounded · def456 · worker'
+      exit 0
+    fi
     if test -f "$HERDER_SKILLS_DIR/resume-output"; then cat "$HERDER_SKILLS_DIR/resume-output"; exit 0; fi
     if test -f "$HERDER_SKILLS_DIR/delayed-wake"; then touch "$HERDER_SKILLS_DIR/waking"; echo 'backgrounded · abc123 · worker'; exit 0; fi
     if test -f "$HERDER_SKILLS_DIR/resume-copy"; then
@@ -478,6 +483,37 @@ fn claude_resume_stops_idle_and_wakes_same_identity() {
     f.call(&["resume", id, "--brief", brief.to_str().unwrap(), "--request-id", "delta"], 0);
     assert_eq!(f.record(id)["attempt"], 2);
     assert_eq!(fs::read_to_string(f.dir(id).join("final.md")).unwrap(), "earlier evidence");
+}
+
+#[test]
+fn claude_resume_waits_for_stopped_process_to_exit() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    let native = f.record(&id)["launch"]["native"].clone();
+    let listing = f.skills.join("agents.json");
+    f.executable(&f.bin.join("ps"), r#"exec /bin/ps "$@""#);
+    let mut helper = Command::new("/bin/sh")
+        .args([
+            "-c",
+            r#"while test -f "$1" && ! grep -q '"status":null' "$1"; do sleep 0.05; done; sleep 1"#,
+            "claude-helper",
+        ])
+        .arg(&listing)
+        .spawn()
+        .unwrap();
+    let pid = helper.id();
+    let reaper = std::thread::spawn(move || helper.wait().unwrap());
+    let done = json!([{"id":"abc123","kind":"background","sessionId":"native-session","cwd":f.repo,
+        "status":"idle","state":"done","pid":pid}]);
+    fs::write(listing, done.to_string()).unwrap();
+    fs::write(f.skills.join("claude-pid"), pid.to_string()).unwrap();
+    fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
+    fs::write(f.dir(&id).join("final.md"), "earlier evidence").unwrap();
+    f.call(&["wait", &id, "--timeout", "1"], 0);
+    f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+    assert!(reaper.join().unwrap().success());
+    assert_eq!(f.record(&id)["attempt"], 2);
+    assert_eq!(f.record(&id)["launch"]["native"], native);
 }
 
 #[test]
