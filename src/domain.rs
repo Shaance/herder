@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::{num::NonZeroU32, path::PathBuf, str::FromStr};
+use std::{num::NonZeroU32, path::PathBuf};
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
 pub enum Executor {
     Claude,
@@ -14,17 +14,6 @@ impl Executor {
             Self::Claude => "claude",
             Self::Vibe => "vibe",
             Self::Codex => "codex",
-        }
-    }
-}
-impl FromStr for Executor {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "claude" => Ok(Self::Claude),
-            "vibe" => Ok(Self::Vibe),
-            "codex" => Ok(Self::Codex),
-            _ => Err("expected claude, vibe, or codex".into()),
         }
     }
 }
@@ -144,7 +133,7 @@ impl State {
         }
     }
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
     Pass,
@@ -158,7 +147,7 @@ impl Verdict {
         }
     }
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Check {
     pub command: String,
     pub exit_code: Option<i32>,
@@ -170,6 +159,12 @@ pub struct Verification {
     pub checks: Vec<Check>,
     pub timestamp: String,
     #[serde(default = "first_attempt")]
+    pub attempt: NonZeroU32,
+}
+pub struct FreshVerification {
+    pub verdict: Verdict,
+    pub scope: Check,
+    pub commands: Vec<Check>,
     pub attempt: NonZeroU32,
 }
 fn first_attempt() -> NonZeroU32 {

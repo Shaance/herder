@@ -1,24 +1,26 @@
 use crate::{
-    domain::{Executor, Run, State, Verdict, Verification},
-    handlers::{Launched, ListEntry, Output, RunDetail},
+    doctor::CheckStatus,
+    domain::{Executor, FreshVerification, Run, State, Verdict},
+    handlers::{Launched, ListEntry, Output, RunDetail, Tail},
 };
 use anyhow::Result;
 use serde_json::{Value, json};
 use std::{io::IsTerminal, path::Path};
 
 pub fn emit(json_output: bool, result: Result<(Output, i32)>, failure_code: i32) -> ! {
-    let (output, error, code) = match result {
-        Ok((output, code)) => (Some(output), None, code),
-        Err(e) => (None, Some(format!("{e:#}")), failure_code),
+    let (data, error, code) = match result {
+        Ok((output, code)) if json_output => (data(&output), None, code),
+        Err(error) if json_output => (Value::Null, Some(format!("{error:#}")), failure_code),
+        Ok((output, code)) => {
+            human(&output);
+            std::process::exit(code)
+        }
+        Err(error) => {
+            eprintln!("{error:#}");
+            std::process::exit(failure_code)
+        }
     };
-    if json_output {
-        let data = output.as_ref().map(data).unwrap_or(Value::Null);
-        println!("{}", json!({"ok":code == 0,"data":data,"error":error}));
-    } else if let Some(error) = error {
-        eprintln!("{error}");
-    } else if let Some(output) = output {
-        human(&output);
-    }
+    println!("{}", json!({"ok":code == 0,"data":data,"error":error}));
     std::process::exit(code)
 }
 
@@ -39,7 +41,11 @@ fn data(output: &Output) -> Value {
             };
             let mut data = json!({"run":run,"observation":observation,"report":report});
             if let RunDetail::Status { tail: Some(tail), .. } = detail {
-                data["tail"] = json!(tail);
+                data["tail"] = match tail {
+                    Tail::Lines(path, lines) => json!({"path":path,"lines":lines,"message":null}),
+                    Tail::Unavailable(path, message) => json!({"path":path,"lines":[],"message":message}),
+                    Tail::NoStream(message) => json!({"path":null,"lines":[],"message":message}),
+                };
             }
             data
         }
@@ -66,14 +72,14 @@ fn human(output: &Output) {
             for executor in &doctor.executors {
                 for check in &executor.checks {
                     let item = format!("{}: {}", executor.executor.as_str(), path_text(&check.item).escape_debug());
-                    print_check(check.ok, &item, check.fix.as_deref());
+                    print_check(&item, &check.status);
                 }
             }
             if doctor.executors.iter().any(|e| e.executor == Executor::Claude) {
                 let profile = doctor.claude_profile.as_deref().map(path_text).unwrap_or("none");
                 println!("claude profile: {}", profile.escape_debug());
             }
-            print_check(doctor.rex.ok, "rex", doctor.rex.fix);
+            print_check("rex", &doctor.rex);
         }
         Output::Ls { runs, summary } => {
             if terminal {
@@ -178,15 +184,15 @@ fn human(output: &Output) {
                         .map(|v| v.verdict.as_str())
                         .unwrap_or("none")
                 );
-                if let Some(tail) = tail {
-                    if let Some(message) = &tail.message {
-                        println!("{message}");
-                    } else if let Some(path) = &tail.path {
+                match tail {
+                    Some(Tail::Unavailable(_, message) | Tail::NoStream(message)) => println!("{message}"),
+                    Some(Tail::Lines(path, lines)) => {
                         println!("tail: {}", path.display());
-                        for line in &tail.lines {
+                        for line in lines {
                             println!("  {line}");
                         }
                     }
+                    None => {}
                 }
             }
             RunDetail::Report { path, content } => {
@@ -200,8 +206,7 @@ fn human(output: &Output) {
             RunDetail::Resume => {
                 println!("{} attempt {}: {}", run.id.escape_debug(), run.attempt, observation.state().as_str());
             }
-            RunDetail::Verify => {
-                let verification = run.verifications.last().expect("verify records a verification");
+            RunDetail::Verify(verification) => {
                 print!("{}", verification_text(&run.name, verification, color));
             }
             RunDetail::Stop => {
@@ -259,25 +264,23 @@ fn table(rows: &[[String; 7]], color: bool) -> String {
     output
 }
 
-fn verification_text(name: &str, verification: &Verification, color: bool) -> String {
+fn verification_text(name: &str, verification: &FreshVerification, color: bool) -> String {
     let (verdict, code) = match verification.verdict {
         Verdict::Pass => ("PASS", "32"),
         Verdict::Fail => ("FAIL", "31"),
     };
     let mut output =
         format!("{}  {}  attempt {}\n", paint(verdict, code, color), name.escape_debug(), verification.attempt);
-    for (index, check) in verification.checks.iter().enumerate() {
-        let label = if index == 0 && check.command == "baseline scope" { "scope" } else { "check" };
+    let scope = std::iter::once(("scope".to_owned(), &verification.scope));
+    let commands =
+        verification.commands.iter().map(|check| (format!("check  {}", check.command.escape_debug()), check));
+    for (label, check) in scope.chain(commands) {
         let (result, code) = match check.exit_code {
             Some(0) => ("ok".to_owned(), "32"),
             Some(exit) => (format!("failed (exit {exit})"), "31"),
             None => ("failed (no exit code)".to_owned(), "31"),
         };
-        output.push_str(&format!(
-            "  {label}  {}{}\n",
-            if label == "scope" { String::new() } else { format!("{}  ", check.command.escape_debug()) },
-            paint(&result, code, color)
-        ));
+        output.push_str(&format!("  {label}  {}\n", paint(&result, code, color)));
         if check.exit_code != Some(0) {
             let mut remaining = 2000;
             let mut lines = check.output.lines();
@@ -311,12 +314,11 @@ pub fn path_text(path: &Path) -> &str {
         .unwrap()
 }
 
-fn print_check(ok: bool, item: &str, fix: Option<&str>) {
-    print!("{} {item}", if ok { "ok" } else { "missing" });
-    if !ok {
-        print!("; fix: {}", fix.unwrap_or("none").escape_debug());
+fn print_check(item: &str, status: &CheckStatus) {
+    match status {
+        CheckStatus::Present => println!("ok {item}"),
+        CheckStatus::Missing(fix) => println!("missing {item}; fix: {}", fix.escape_debug()),
     }
-    println!();
 }
 
 #[cfg(test)]
@@ -359,12 +361,11 @@ mod tests {
 
     #[test]
     fn verification_layout_shows_results_and_failed_output() {
-        let verification = Verification {
+        let verification = FreshVerification {
             verdict: Verdict::Fail,
             attempt: NonZeroU32::new(2).unwrap(),
-            timestamp: String::new(),
-            checks: vec![
-                Check { command: "baseline scope".into(), exit_code: Some(1), output: "outside src/\nfile".into() },
+            scope: Check { command: String::new(), exit_code: Some(1), output: "outside src/\nfile".into() },
+            commands: vec![
                 Check { command: "true".into(), exit_code: Some(0), output: "not displayed".into() },
                 Check { command: "exit 7".into(), exit_code: Some(7), output: "first\nsecond\n".into() },
                 Check { command: "signal".into(), exit_code: None, output: "no status".into() },
@@ -394,11 +395,11 @@ mod tests {
 
     #[test]
     fn verification_trims_output_and_escapes_control_codes() {
-        let verification = Verification {
+        let verification = FreshVerification {
             verdict: Verdict::Fail,
             attempt: NonZeroU32::MIN,
-            timestamp: String::new(),
-            checks: vec![Check {
+            scope: Check { command: String::new(), exit_code: Some(0), output: String::new() },
+            commands: vec![Check {
                 command: "echo\x1b".into(),
                 exit_code: Some(3),
                 output: format!("\x1b{}", "x".repeat(2500)),

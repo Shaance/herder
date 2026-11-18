@@ -9,7 +9,7 @@ mod runs;
 mod scripts;
 mod store;
 mod verify;
-use clap::{Args, Parser, Subcommand, builder::TypedValueParser};
+use clap::{Args, Parser, Subcommand};
 use domain::Executor;
 use std::path::PathBuf;
 
@@ -33,7 +33,7 @@ enum Action {
     )]
     Doctor {
         /// Executor to use
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["claude", "vibe", "codex"]).map(|s| s.parse::<Executor>().expect("listed executor is valid")))]
+        #[arg(long, value_enum)]
         executor: Option<Executor>,
         /// Claude configuration directory (--profile > CLAUDE_CONFIG_DIR > none, Claude default)
         #[arg(long)]
@@ -138,7 +138,7 @@ struct Dispatch {
     #[arg(long, default_value = "direct", value_parser = ["direct", "review"])]
     mode: String,
     /// Executor to use
-    #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["claude", "vibe", "codex"]).map(|s| s.parse::<Executor>().expect("listed executor is valid")))]
+    #[arg(long, value_enum)]
     executor: Executor,
     /// Brief file to send to the worker
     #[arg(long)]

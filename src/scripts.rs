@@ -1,12 +1,12 @@
 use crate::{
     domain::{Launch, Native, Observation, Run, State, UnknownCause, UnknownError},
-    process::{checked, output, query, script},
+    process::{Script, checked, output, query, script},
 };
 use anyhow::{Result, ensure};
 use std::{fs, num::NonZeroU32, path::Path, process::Command};
 
 pub struct ScriptExecutor {
-    script: (&'static str, &'static str),
+    pub scripts: [Script; 3],
     identity: (&'static str, &'static str),
     launch_separator: Option<&'static str>,
     numbered_status: bool,
@@ -14,22 +14,19 @@ pub struct ScriptExecutor {
 }
 impl ScriptExecutor {
     pub const VIBE: Self = Self {
-        script: ("vibe-implementer", "vibe"),
+        scripts: [Script::LaunchVibe, Script::StatusVibe, Script::ResumeVibe],
         identity: ("session-id", "SESSION_ID"),
         launch_separator: Some("--"),
         numbered_status: true,
         native: |session_id, pid| Native::Vibe { session_id, pid },
     };
     pub const CODEX: Self = Self {
-        script: ("codex-implementer", "classic"),
+        scripts: [Script::LaunchClassic, Script::StatusClassic, Script::ResumeClassic],
         identity: ("thread-id", "THREAD_ID"),
         launch_separator: None,
         numbered_status: false,
         native: |thread_id, pid| Native::Codex { thread_id, pid },
     };
-    pub fn command(&self, action: &str) -> Command {
-        script(self.script.0, &format!("{action}_{}", self.script.1))
-    }
     pub fn status_args(&self, run: &Run) -> Option<String> {
         self.numbered_status
             .then(|| if run.launch_attempt().get() == 1 { String::new() } else { run.launch_attempt().to_string() })
@@ -45,7 +42,8 @@ impl ScriptExecutor {
         )
     }
     pub fn launch(&self, run: &Run, dir: &Path, delta: Option<&Path>) -> Result<Option<Native>> {
-        let mut cmd = self.command(if delta.is_some() { "resume" } else { "launch" });
+        let [launch, _, resume] = self.scripts;
+        let mut cmd = script(if delta.is_some() { resume } else { launch });
         cmd.env_remove("REX_SESSION").env_remove("REX_BLOCK").env_remove("REX_SERVER");
         if let Some(delta) = delta {
             cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.launch_attempt().to_string()).arg("--");
@@ -80,7 +78,8 @@ impl ScriptExecutor {
         Ok(Some(native))
     }
     pub fn query(&self, run: &Run, dir: &Path) -> Result<Observation> {
-        let text = query(self.command("status").arg(dir).args(self.status_args(run)))?;
+        let [_, status, _] = self.scripts;
+        let text = query(script(status).arg(dir).args(self.status_args(run)))?;
         let recovered = self.identity(dir).ok();
         if let Some(native) = run.launch.native().or(recovered.as_ref()) {
             confirm(native, dir)?;

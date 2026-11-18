@@ -1,5 +1,10 @@
-use crate::{domain::Executor, process, scripts::ScriptExecutor};
+use crate::{
+    domain::Executor,
+    process::{self, Script},
+    scripts::ScriptExecutor,
+};
 use anyhow::{Result, ensure};
+use clap::ValueEnum;
 use serde::Serialize;
 use std::{path::PathBuf, process::Command};
 
@@ -8,7 +13,7 @@ pub struct Doctor {
     pub executors: Vec<ExecutorChecks>,
     pub claude_profile: Option<PathBuf>,
     pub profile_resolution: &'static str,
-    pub rex: RexCheck,
+    pub rex: CheckStatus,
 }
 
 #[derive(Serialize)]
@@ -20,14 +25,29 @@ pub struct ExecutorChecks {
 #[derive(Serialize)]
 pub struct DoctorCheck {
     pub item: PathBuf,
-    pub ok: bool,
-    pub fix: Option<String>,
+    #[serde(flatten)]
+    pub status: CheckStatus,
 }
 
-#[derive(Serialize)]
-pub struct RexCheck {
-    pub ok: bool,
-    pub fix: Option<&'static str>,
+pub enum CheckStatus {
+    Present,
+    Missing(String),
+}
+
+impl CheckStatus {
+    fn from_probe(present: bool, fix: impl FnOnce() -> String) -> Self {
+        if present { Self::Present } else { Self::Missing(fix()) }
+    }
+}
+
+impl Serialize for CheckStatus {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let fix = match self {
+            Self::Present => None,
+            Self::Missing(fix) => Some(fix),
+        };
+        serde_json::json!({"ok": fix.is_none(), "fix": fix}).serialize(serializer)
+    }
 }
 
 pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doctor, i32)> {
@@ -37,63 +57,47 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doct
         "Claude profile path contains invalid UTF-8 characters"
     );
     let mut executors = vec![];
-    let mut healthy = true;
-    for e in [Executor::Claude, Executor::Vibe, Executor::Codex] {
-        if executor.is_some_and(|wanted| wanted != e) {
-            continue;
-        }
-        let (name, adapter) = match e {
-            Executor::Claude => ("claude", None),
-            Executor::Vibe => ("vibe", Some(ScriptExecutor::VIBE)),
-            Executor::Codex => ("codex", Some(ScriptExecutor::CODEX)),
+    let override_set = std::env::var_os("HERDER_SKILLS_DIR").is_some();
+    for &e in executor.as_ref().map_or(Executor::value_variants(), std::slice::from_ref) {
+        let name = e.as_str();
+        let adapter = match e {
+            Executor::Claude => None,
+            Executor::Vibe => Some(ScriptExecutor::VIBE),
+            Executor::Codex => Some(ScriptExecutor::CODEX),
         };
         let mut checks = vec![];
-        let override_set = std::env::var_os("HERDER_SKILLS_DIR").is_some();
         let binaries = match (e == Executor::Claude, override_set) {
             (true, true) => vec![name],
             (true, false) => vec![name, "bash"],
             (false, _) => vec![name, "bash", "jq"],
         };
         for exe in binaries {
-            let present = process::on_path(exe);
-            healthy &= present;
-            checks.push(DoctorCheck {
-                item: exe.into(),
-                ok: present,
-                fix: (!present).then(|| format!("install {exe} and put its executable on PATH")),
+            let status = CheckStatus::from_probe(process::on_path(exe), || {
+                format!("install {exe} and put its executable on PATH")
             });
+            checks.push(DoctorCheck { item: exe.into(), status });
         }
         if override_set {
-            let mut commands = vec![
-                process::script("implementer-core", "check_brief"),
-                process::script("implementer-core", "collect_evidence"),
-            ];
+            let mut scripts = vec![Script::CheckBrief, Script::CollectEvidence];
             if let Some(adapter) = adapter {
-                commands.extend(["launch", "status", "resume"].map(|a| adapter.command(a)));
+                scripts.extend(adapter.scripts);
             }
-            for command in commands {
-                let path = PathBuf::from(command.get_program());
-                let present = process::executable(&path);
-                healthy &= present;
-                let fix = (!present).then(|| {
+            for script in scripts {
+                let path = PathBuf::from(process::script(script).get_program());
+                let status = CheckStatus::from_probe(process::executable(&path), || {
                     format!("restore executable {} or set HERDER_SKILLS_DIR to the skills directory", path.display())
                 });
-                checks.push(DoctorCheck { item: path, ok: present, fix });
+                checks.push(DoctorCheck { item: path, status });
             }
         } else {
-            checks.push(DoctorCheck { item: "scripts (embedded)".into(), ok: true, fix: None });
+            checks.push(DoctorCheck { item: "scripts (embedded)".into(), status: CheckStatus::Present });
         }
         executors.push(ExecutorChecks { executor: e, checks });
     }
+    let healthy = executors.iter().flat_map(|e| &e.checks).all(|c| matches!(c.status, CheckStatus::Present));
     let rex = process::checked(Command::new("rex").args(["--autostart=false", "whoami", "--json"]));
-    let data = Doctor {
-        executors,
-        claude_profile: profile,
-        profile_resolution: "--profile > CLAUDE_CONFIG_DIR > none",
-        rex: RexCheck {
-            ok: rex.is_ok(),
-            fix: rex.is_err().then_some("Rex is optional; install and start it to use --pane"),
-        },
-    };
+    let rex = CheckStatus::from_probe(rex.is_ok(), || "Rex is optional; install and start it to use --pane".into());
+    let data =
+        Doctor { executors, claude_profile: profile, profile_resolution: "--profile > CLAUDE_CONFIG_DIR > none", rex };
     Ok((data, if healthy { 0 } else { 1 }))
 }

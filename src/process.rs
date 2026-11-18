@@ -47,39 +47,39 @@ pub fn query(cmd: &mut Command) -> Result<String> {
 pub fn home() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
 }
-pub fn script(owner: &str, name: &str) -> Command {
-    if let Some(dir) = env::var_os("HERDER_SKILLS_DIR") {
-        return Command::new(PathBuf::from(dir).join(owner).join("scripts").join(format!("{name}.sh")));
+#[derive(Clone, Copy)]
+pub enum Script {
+    CheckBrief,
+    CollectEvidence,
+    LaunchVibe,
+    StatusVibe,
+    ResumeVibe,
+    LaunchClassic,
+    StatusClassic,
+    ResumeClassic,
+}
+
+pub fn script(script: Script) -> Command {
+    macro_rules! embedded {
+        ($owner:literal, $file:literal) => {
+            ($owner, $file, include_str!(concat!("../vendor/ai-skills/", $owner, "/scripts/", $file)))
+        };
     }
-    let text = match (owner, name) {
-        ("implementer-core", "check_brief") => {
-            include_str!("../vendor/ai-skills/implementer-core/scripts/check_brief.sh")
-        }
-        ("implementer-core", "collect_evidence") => {
-            include_str!("../vendor/ai-skills/implementer-core/scripts/collect_evidence.sh")
-        }
-        ("vibe-implementer", "launch_vibe") => {
-            include_str!("../vendor/ai-skills/vibe-implementer/scripts/launch_vibe.sh")
-        }
-        ("vibe-implementer", "status_vibe") => {
-            include_str!("../vendor/ai-skills/vibe-implementer/scripts/status_vibe.sh")
-        }
-        ("vibe-implementer", "resume_vibe") => {
-            include_str!("../vendor/ai-skills/vibe-implementer/scripts/resume_vibe.sh")
-        }
-        ("codex-implementer", "launch_classic") => {
-            include_str!("../vendor/ai-skills/codex-implementer/scripts/launch_classic.sh")
-        }
-        ("codex-implementer", "status_classic") => {
-            include_str!("../vendor/ai-skills/codex-implementer/scripts/status_classic.sh")
-        }
-        ("codex-implementer", "resume_classic") => {
-            include_str!("../vendor/ai-skills/codex-implementer/scripts/resume_classic.sh")
-        }
-        _ => unreachable!("unknown embedded script: {owner}/{name}"),
+    let (owner, file, text) = match script {
+        Script::CheckBrief => embedded!("implementer-core", "check_brief.sh"),
+        Script::CollectEvidence => embedded!("implementer-core", "collect_evidence.sh"),
+        Script::LaunchVibe => embedded!("vibe-implementer", "launch_vibe.sh"),
+        Script::StatusVibe => embedded!("vibe-implementer", "status_vibe.sh"),
+        Script::ResumeVibe => embedded!("vibe-implementer", "resume_vibe.sh"),
+        Script::LaunchClassic => embedded!("codex-implementer", "launch_classic.sh"),
+        Script::StatusClassic => embedded!("codex-implementer", "status_classic.sh"),
+        Script::ResumeClassic => embedded!("codex-implementer", "resume_classic.sh"),
     };
+    if let Some(dir) = env::var_os("HERDER_SKILLS_DIR") {
+        return Command::new(PathBuf::from(dir).join(owner).join("scripts").join(file));
+    }
     let mut cmd = Command::new("bash");
-    cmd.arg("-c").arg(text).arg(format!("{name}.sh"));
+    cmd.args(["-c", text, file]);
     cmd
 }
 pub fn executable(path: &Path) -> bool {
@@ -96,7 +96,7 @@ pub fn profile(value: Option<PathBuf>) -> Result<Option<PathBuf>> {
         .transpose()
 }
 pub fn lint(brief: &Path, mode: &str) -> Result<()> {
-    checked(script("implementer-core", "check_brief").arg(brief).arg(mode))?;
+    checked(script(Script::CheckBrief).arg(brief).arg(mode))?;
     Ok(())
 }
 

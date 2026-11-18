@@ -1,6 +1,6 @@
 use crate::{
-    domain::{Check, Run, Verdict, Verification},
-    process,
+    domain::{Check, FreshVerification, Run, Verdict, Verification},
+    process::{self, Script},
     store::{Store, timestamp},
 };
 use anyhow::Result;
@@ -12,18 +12,15 @@ pub fn run(
     commands: Vec<String>,
     baseline: Option<String>,
     store: &Store,
-) -> Result<()> {
+) -> Result<FreshVerification> {
     let transition = baseline
         .as_ref()
         .map(|new| format!("baseline {} -> {new}\n", run.baseline_commit.as_deref().unwrap_or("none")))
         .unwrap_or_default();
     let paths = if paths.is_empty() { &run.authorized_paths } else { &paths };
-    let mut jobs = vec![("collect_evidence.sh".into(), {
-        let mut cmd = process::script("implementer-core", "collect_evidence");
-        cmd.arg(store.dir(&run.id)?).arg(&run.repo);
-        cmd
-    })];
-    jobs.extend(commands.into_iter().map(|text| {
+    let mut evidence = process::script(Script::CollectEvidence);
+    evidence.arg(store.dir(&run.id)?).arg(&run.repo);
+    let jobs = std::iter::once(("collect_evidence.sh".into(), evidence)).chain(commands.into_iter().map(|text| {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", &text]);
         (text, cmd)
@@ -78,25 +75,29 @@ pub fn run(
         );
         Ok(format!("Allowed paths: {allowed}. Baseline: {short_baseline}.\n{details}"))
     })();
-    let mut checks = vec![match scope {
-        Ok(output) => Check { command: "baseline scope".into(), exit_code: Some(0), output },
-        Err(error) => Check { command: "baseline scope".into(), exit_code: Some(1), output: format!("{error:#}") },
-    }];
-    checks[0].output.insert_str(0, &transition);
+    let (exit_code, output) = match scope {
+        Ok(output) => (0, output),
+        Err(error) => (1, format!("{error:#}")),
+    };
+    let scope = Check { command: "baseline scope".into(), exit_code: Some(exit_code), output: transition + &output };
+    let mut commands = Vec::new();
     for (command, mut cmd) in jobs {
         let result = process::output(cmd.current_dir(&run.repo));
         let (exit_code, output) = result.unwrap_or_else(|e| (None, format!("{e:#}")));
-        checks.push(Check { command, exit_code, output });
+        commands.push(Check { command, exit_code, output });
     }
-    let verdict = if checks.iter().all(|c| c.exit_code == Some(0)) { Verdict::Pass } else { Verdict::Fail };
-    let verification = Verification { verdict, checks, timestamp: timestamp(), attempt: run.attempt };
+    let checks = std::iter::once(&scope).chain(&commands);
+    let verdict = if checks.clone().all(|c| c.exit_code == Some(0)) { Verdict::Pass } else { Verdict::Fail };
+    let attempt = run.attempt;
+    let verification = Verification { verdict, checks: checks.cloned().collect(), timestamp: timestamp(), attempt };
     let locked = store.lock(&run.id)?;
     *run = locked.load()?;
     if baseline.is_some() {
         run.baseline_commit = baseline;
     }
     run.verifications.push(verification);
-    locked.save(run)
+    locked.save(run)?;
+    Ok(FreshVerification { verdict, scope, commands, attempt })
 }
 
 pub fn dirty_paths(repo: &Path) -> Result<std::collections::BTreeSet<String>> {

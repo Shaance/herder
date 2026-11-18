@@ -44,14 +44,13 @@ pub enum RunDetail {
     Report { path: PathBuf, content: Option<String> },
     Stop,
     Resume,
-    Verify,
+    Verify(FreshVerification),
 }
 
-#[derive(Serialize)]
-pub struct Tail {
-    pub path: Option<PathBuf>,
-    pub lines: Vec<String>,
-    pub message: Option<String>,
+pub enum Tail {
+    Lines(PathBuf, Vec<String>),
+    Unavailable(PathBuf, String),
+    NoStream(String),
 }
 
 #[derive(Serialize)]
@@ -185,31 +184,28 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
                         ));
                     }
                     drop(locked.take());
-                    crate::verify::run(&mut run, paths, checks, baseline, &store)?;
-                    if matches!(run.verifications.last().map(|v| &v.verdict), Some(Verdict::Fail)) {
+                    let verification = crate::verify::run(&mut run, paths, checks, baseline, &store)?;
+                    if matches!(verification.verdict, Verdict::Fail) {
                         code = 1;
                     }
                     locked = store.try_lock(&run.id)?;
                     run = store.load(&run.id)?;
                     observation = runs::observe(&mut run, locked.as_ref());
-                    RunDetail::Verify
+                    RunDetail::Verify(verification)
                 }
                 Action::Status { tail, .. } => RunDetail::Status {
                     tail: tail.map(|count| {
                         if run.launch.target().executor() == Executor::Claude {
-                            return Tail {
-                                path: None,
-                                lines: vec![],
-                                message: Some("tail: none (Claude runs have no herder-recorded event stream)".into()),
-                            };
+                            return Tail::NoStream(
+                                "tail: none (Claude runs have no herder-recorded event stream)".into(),
+                            );
                         }
                         let attempt = run.launch_attempt().get();
                         let suffix = if attempt == 1 { String::new() } else { attempt.to_string() };
                         let path = dir.join(format!("events{suffix}.jsonl"));
-                        let mut lines = vec![];
-                        let message = match std::fs::read_to_string(&path) {
+                        match std::fs::read_to_string(&path) {
                             Ok(content) => {
-                                lines = content
+                                let mut lines: Vec<_> = content
                                     .lines()
                                     .rev()
                                     .take(usize::from(count))
@@ -219,14 +215,17 @@ pub fn handle(mut action: Action, json_output: bool) -> Result<(Output, i32)> {
                                     })
                                     .collect();
                                 lines.reverse();
-                                None
+                                Tail::Lines(path, lines)
                             }
-                            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                                Some(format!("tail: stream does not exist yet: {}", path.display()))
+                            Err(error) => {
+                                let message = if error.kind() == std::io::ErrorKind::NotFound {
+                                    format!("tail: stream does not exist yet: {}", path.display())
+                                } else {
+                                    format!("tail: cannot read {}: {error}", path.display())
+                                };
+                                Tail::Unavailable(path, message)
                             }
-                            Err(error) => Some(format!("tail: cannot read {}: {error}", path.display())),
-                        };
-                        Tail { path: Some(path), lines, message }
+                        }
                     }),
                     dir,
                 },
