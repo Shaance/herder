@@ -173,7 +173,7 @@ fn human(output: &Output) {
                     println!("cause: {}", cause.as_str());
                 }
                 println!("evidence:");
-                for line in observation.evidence.lines() {
+                for line in observation.evidence().lines() {
                     println!("  {line}");
                 }
                 println!(
@@ -217,7 +217,7 @@ fn human(output: &Output) {
             RunDetail::Stop => {
                 println!("{}: {}", run.id.escape_debug(), observation.state().as_str());
                 if observation.state() != State::Stopped {
-                    println!("{}", observation.evidence);
+                    println!("{}", observation.evidence());
                 }
             }
         },

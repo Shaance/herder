@@ -56,6 +56,10 @@ impl Native {
         }
     }
 }
+pub enum LaunchPhase<'a> {
+    Initial,
+    Resume { previous: &'a Native, delta: &'a std::path::Path },
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LaunchError {
     pub message: String,
@@ -237,13 +241,23 @@ impl std::error::Error for UnknownError {}
 #[derive(Debug, Serialize)]
 pub struct Observation {
     state: State,
-    pub evidence: String,
+    evidence: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     cause: Option<UnknownCause>,
 }
 impl Observation {
-    pub fn new(state: State, evidence: String, unknown_cause: UnknownCause) -> Self {
-        Self { state, evidence, cause: (state == State::Unknown).then_some(unknown_cause) }
+    pub fn known(state: State, evidence: String) -> Self {
+        assert_ne!(state, State::Unknown);
+        Self { state, evidence, cause: None }
+    }
+    pub fn unknown(cause: UnknownCause, evidence: String) -> Self {
+        Self { state: State::Unknown, evidence, cause: Some(cause) }
+    }
+    pub fn evidence(&self) -> &str {
+        &self.evidence
+    }
+    pub fn prefix_evidence(&mut self, prefix: &str) {
+        self.evidence.insert_str(0, prefix);
     }
     pub fn state(&self) -> State {
         self.state
@@ -258,19 +272,15 @@ impl std::fmt::Display for Observation {
     }
 }
 pub fn reconcile(recorded: State, observed: Observation) -> Observation {
-    let agrees = match recorded {
-        State::Running => true,
-        State::Starting => observed.state == State::Starting,
-        State::Stopped => matches!(observed.state, State::Stopped | State::Finished | State::Failed),
-        _ => recorded == observed.state,
-    };
-    if agrees {
-        Observation { state: if recorded == State::Stopped { State::Stopped } else { observed.state }, ..observed }
-    } else {
-        Observation::new(
-            State::Unknown,
-            format!("recorded={recorded:?}; executor={:?}: {}", observed.state, observed.evidence),
+    match recorded {
+        State::Running => observed,
+        State::Stopped if matches!(observed.state, State::Finished | State::Failed) => {
+            Observation::known(State::Stopped, observed.evidence)
+        }
+        _ if recorded == observed.state => observed,
+        _ => Observation::unknown(
             if recorded == State::Starting { UnknownCause::Unconfirmed } else { UnknownCause::RecordDisagrees },
-        )
+            format!("recorded={recorded:?}; executor={:?}: {}", observed.state, observed.evidence),
+        ),
     }
 }

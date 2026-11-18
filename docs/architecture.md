@@ -112,3 +112,7 @@ mode selects brief linting and does not add an OS sandbox. Invalid input fails
 before launch. The coordinator supplies the context and stops its own edits;
 launch alone cannot transfer hidden conversation or prove understanding. See
 [`src/handoff.rs`](../src/handoff.rs) and [`src/handlers.rs`](../src/handlers.rs).
+
+## Design rules
+
+- When parsing input, resolving identity, or committing a result establishes a fact, pass that fact to its consumer in the type instead of re-deriving it, re-reading it, or calling `expect`. Add a type only when it deletes an existing re-check, re-read or `expect`. The rule covers facts herder itself established; checks of external state that can change, such as executor files and the process table, stay where the state is used.

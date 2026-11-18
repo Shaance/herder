@@ -298,7 +298,7 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
             created_at: store::timestamp(),
         };
         store.publish(&mut locked, &run, &dir)?;
-        let outcome = match runs::launch(&mut run, &dir, None, &locked) {
+        let outcome = match runs::launch(&mut run, LaunchPhase::Initial, &locked) {
             Err(error) => LaunchOutcome::LaunchFailed(format!("{error:#}")),
             Ok(()) if pane => match runs::pane(&run) {
                 Ok(()) => LaunchOutcome::Started,

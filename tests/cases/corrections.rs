@@ -63,7 +63,7 @@ fn c1_busy_reads_return_recorded_state_and_mutations_time_out() {
 }
 
 #[test]
-fn c2_legacy_starting_and_untagged_verdict_load() {
+fn c2_legacy_intents_and_untagged_verdict_load() {
     let f = Fixture::new();
     let id = f.launch("codex");
     let mut record = f.record(&id);
@@ -75,6 +75,15 @@ fn c2_legacy_starting_and_untagged_verdict_load() {
     assert_eq!(result["data"]["run"]["launch"]["intent"]["state"], "running");
     assert_eq!(result["data"]["run"]["verifications"][0]["attempt"], 1);
     assert_eq!(f.call(&["ls"], 0)["data"]["runs"][0]["run"]["id"], id);
+
+    let failed = json!({"state":"failed","error":{"message":"legacy failure","remediation":"inspect launch"}});
+    record["launch"]["intent"] = failed.clone();
+    fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
+    f.status("exited", "FAILED");
+    let result = f.call(&["status", &id], 0);
+    assert_eq!(result["data"]["run"]["launch"]["intent"], failed);
+    assert_eq!(result["data"]["observation"]["state"], "failed");
+    assert!(result["data"]["observation"].get("cause").is_none());
 }
 
 #[test]

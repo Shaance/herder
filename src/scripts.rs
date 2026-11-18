@@ -1,5 +1,5 @@
 use crate::{
-    domain::{Launch, Native, Observation, Run, State, UnknownCause, UnknownError},
+    domain::{LaunchPhase, Native, Observation, Run, State, UnknownCause, UnknownError},
     process::{Script, checked, output, query, script},
 };
 use anyhow::{Result, ensure};
@@ -35,40 +35,40 @@ impl ScriptExecutor {
         ensure!(!id.is_empty() && !id.chars().any(char::is_whitespace), "invalid native id");
         Ok((self.native)(id, pid))
     }
-    pub fn identity(&self, dir: &Path) -> Result<Native> {
+    fn identity(&self, dir: &Path) -> Result<Native> {
         self.native(
             fs::read_to_string(dir.join("run.pid"))?.trim().parse()?,
             fs::read_to_string(dir.join(self.identity.0))?.trim().into(),
         )
     }
-    pub fn launch(&self, run: &Run, dir: &Path, delta: Option<&Path>) -> Result<Option<Native>> {
+    pub fn launch(&self, run: &Run, dir: &Path, phase: LaunchPhase<'_>) -> Result<Option<Native>> {
         let [launch, _, resume] = self.scripts;
-        let mut cmd = script(if delta.is_some() { resume } else { launch });
+        let (mut cmd, suffix, previous) = match phase {
+            LaunchPhase::Initial => {
+                let mut cmd = script(launch);
+                cmd.arg(&run.repo).arg(&run.brief).arg(dir).args(self.launch_separator);
+                (cmd, run.suffix(), None)
+            }
+            LaunchPhase::Resume { previous, delta } => {
+                let suffix = run.launch_attempt().to_string();
+                let mut cmd = script(resume);
+                cmd.arg(dir).arg(&run.repo).arg(delta).arg(&suffix).arg("--");
+                (cmd, suffix, Some(previous))
+            }
+        };
         cmd.env_remove("REX_SESSION").env_remove("REX_BLOCK").env_remove("REX_SERVER");
-        if let Some(delta) = delta {
-            cmd.arg(dir).arg(&run.repo).arg(delta).arg(run.launch_attempt().to_string()).arg("--");
-        } else {
-            cmd.arg(&run.repo).arg(&run.brief).arg(dir);
-            cmd.args(self.launch_separator);
-        }
         if let Some(model) = &run.model {
             cmd.arg("--model").arg(model);
         }
         cmd.args(&run.extra);
         let (code, text) = output(&mut cmd)?;
-        crate::store::atomic(
-            &dir.join(format!(
-                "launch{}.log",
-                if delta.is_some() { run.launch_attempt().to_string() } else { run.suffix() }
-            )),
-            text.as_bytes(),
-        )?;
+        crate::store::atomic(&dir.join(format!("launch{suffix}.log")), text.as_bytes())?;
         if code == Some(3) {
             return Ok(None);
         }
         ensure!(code == Some(0), "{text}");
         let native = self.native(field(&text, "PID")?.parse()?, field(&text, self.identity.1)?.into())?;
-        if let Launch::PendingResume { previous: old, .. } = &run.launch {
+        if let Some(old) = previous {
             ensure!(
                 old.process().map(|p| p.2) == native.process().map(|p| p.2),
                 "resumed identity disagrees with record: {text}"
@@ -77,11 +77,11 @@ impl ScriptExecutor {
         }
         Ok(Some(native))
     }
-    pub fn query(&self, run: &Run, dir: &Path) -> Result<Observation> {
+    pub fn query(&self, run: &Run, dir: &Path) -> Result<(Observation, Result<Native>)> {
         let [_, status, _] = self.scripts;
         let text = query(script(status).arg(dir).args(self.status_args(run)))?;
-        let recovered = self.identity(dir).ok();
-        if let Some(native) = run.launch.native().or(recovered.as_ref()) {
+        let identity = run.launch.native().cloned().map_or_else(|| self.identity(dir), Ok);
+        if let Ok(native) = &identity {
             confirm(native, dir)?;
             ensure!(
                 field(&text, "pid")? == native.process().unwrap().0.to_string(),
@@ -93,9 +93,9 @@ impl ScriptExecutor {
             "exited" if text.contains("verdict: COMPLETED") => State::Finished,
             "exited" if text.contains("verdict: STOPPED") => State::Stopped,
             "exited" if text.contains("verdict: DIED") || text.contains("verdict: FAILED") => State::Failed,
-            _ => State::Unknown,
+            _ => return Ok((Observation::unknown(UnknownCause::UnrecognizedStatus, text), identity)),
         };
-        Ok(Observation::new(state, text, UnknownCause::UnrecognizedStatus))
+        Ok((Observation::known(state, text), identity))
     }
 }
 fn field<'a>(text: &'a str, key: &str) -> Result<&'a str> {

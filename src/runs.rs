@@ -3,12 +3,12 @@ use crate::{claude, domain::*, process, scripts, store::LockedRun};
 use anyhow::{Result, bail, ensure};
 use std::{path::Path, process::Command};
 
-pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun) -> Result<()> {
+pub fn launch(run: &mut Run, phase: LaunchPhase<'_>, store: &LockedRun) -> Result<()> {
     let target = run.launch.target();
     let outcome = match target {
-        Target::Claude { .. } => claude::launch(run, dir, delta, store).map(Some),
-        Target::Vibe => ScriptExecutor::VIBE.launch(run, dir, delta),
-        Target::Codex => ScriptExecutor::CODEX.launch(run, dir, delta),
+        Target::Claude { ref profile } => claude::launch(run, profile.as_deref(), phase, store).map(Some),
+        Target::Vibe => ScriptExecutor::VIBE.launch(run, &store.dir, phase),
+        Target::Codex => ScriptExecutor::CODEX.launch(run, &store.dir, phase),
     };
     let result = match outcome {
         Ok(Some(native)) => {
@@ -19,10 +19,7 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun
         Ok(None) => Ok(()),
         Err(error) => {
             let message = format!("{error:#}");
-            let remediation = if matches!(
-                run.launch,
-                Launch::Accepted { .. } | Launch::Launched { native: Native::Claude { .. }, .. }
-            ) {
+            let remediation = if matches!(run.launch, Launch::Accepted { .. } | Launch::Launched { .. }) {
                 "worker accepted; use herder status to observe it; do not relaunch".into()
             } else if let Target::Claude { profile } = &target
                 && message.contains("Workspace not trusted")
@@ -35,10 +32,10 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun
             };
             let error = LaunchError { message: message.clone(), remediation: remediation.clone() };
             match &mut run.launch {
-                Launch::Accepted { error: recorded, .. } => *recorded = Some(error),
-                Launch::PendingResume { error: recorded, .. } => *recorded = Some(error),
-                Launch::Launched { native: Native::Claude { .. }, intent } => *intent = Intent::Unconfirmed { error },
-                Launch::Launched { intent, .. } => *intent = Intent::Failed { error },
+                Launch::Accepted { error: recorded, .. } | Launch::PendingResume { error: recorded, .. } => {
+                    *recorded = Some(error)
+                }
+                Launch::Launched { intent, .. } => *intent = Intent::Unconfirmed { error },
                 _ => run.launch = Launch::Failed { target, error },
             }
             Err(anyhow::anyhow!("run {}: {message}; {remediation}", run.id))
@@ -49,56 +46,37 @@ pub fn launch(run: &mut Run, dir: &Path, delta: Option<&Path>, store: &LockedRun
 }
 pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
     let Some(store) = store else {
-        return Observation::new(
-            run.launch.state(),
-            "run busy: another herder command holds the lock".into(),
-            UnknownCause::Unconfirmed,
-        );
+        let evidence = "run busy: another herder command holds the lock".into();
+        return match run.launch.state() {
+            State::Unknown => Observation::unknown(UnknownCause::Unconfirmed, evidence),
+            state => Observation::known(state, evidence),
+        };
     };
     if let Launch::Failed { error, .. } = &run.launch {
-        return Observation::new(
-            State::Failed,
-            format!("{}; {}", error.message, error.remediation),
-            UnknownCause::Unconfirmed,
-        );
+        return Observation::known(State::Failed, format!("{}; {}", error.message, error.remediation));
     }
     let result = (|| -> Result<Observation> {
         let dir = &store.dir;
         let mut observed = match run.launch.target() {
             Target::Claude { profile } => {
-                if run.launch.native().is_some()
-                    || matches!(
-                        run.launch,
-                        Launch::Accepted { .. } | Launch::PendingResume { previous: Native::Claude { .. }, .. }
-                    )
-                {
-                    let accepted = matches!(run.launch, Launch::Accepted { .. });
-                    let observed = claude::query(run)?;
-                    if matches!(run.launch, Launch::PendingResume { .. }) {
-                        return Ok(observed);
-                    }
-                    if accepted {
-                        store.save(run)?;
-                    }
-                    observed
-                } else {
-                    process::query(
-                        claude::command(profile.as_deref()).current_dir(&run.repo).args(["agents", "--json", "--all"]),
-                    )?;
-                    bail!(UnknownError(
-                        UnknownCause::IdentityMismatch,
-                        "no recorded Claude identity; inspect launch facts before attaching".into()
-                    ));
+                let accepted = matches!(run.launch, Launch::Accepted { .. });
+                let observed = claude::query(run, profile.as_deref())?;
+                if matches!(run.launch, Launch::PendingResume { .. }) {
+                    return Ok(observed);
                 }
+                if accepted {
+                    store.save(run)?;
+                }
+                observed
             }
             target @ (Target::Vibe | Target::Codex) => {
                 let executor = match target {
                     Target::Vibe => ScriptExecutor::VIBE,
                     _ => ScriptExecutor::CODEX,
                 };
-                let observed = executor.query(run, dir)?;
+                let (observed, identity) = executor.query(run, dir)?;
                 if matches!(run.launch, Launch::Starting { .. } | Launch::PendingResume { .. })
-                    && let Ok(native) = executor.identity(dir)
+                    && let Ok(native) = identity
                 {
                     if let Launch::PendingResume { previous, .. } = &run.launch {
                         ensure!(
@@ -117,27 +95,24 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
                 observed
             }
         };
-        if matches!(run.launch, Launch::Launched { intent: Intent::StopSent, .. }) {
+        if let Launch::Launched { intent: intent @ Intent::StopSent, .. } = &mut run.launch {
             if matches!(observed.state(), State::Stopped | State::Finished | State::Failed) {
-                if let Launch::Launched { intent, .. } = &mut run.launch {
-                    *intent = Intent::Stopped;
-                }
+                *intent = Intent::Stopped;
                 store.save(run)?;
             } else {
-                observed.evidence = format!("stop sent; {}", observed.evidence);
+                observed.prefix_evidence("stop sent; ");
                 return Ok(observed);
             }
         }
         if matches!(run.launch, Launch::Launched { intent: Intent::Stopped, .. }) {
-            observed.evidence = format!("stopped by herder stop; {}", observed.evidence);
+            observed.prefix_evidence("stopped by herder stop; ");
         }
         Ok(reconcile(run.launch.state(), observed))
     })();
     result.unwrap_or_else(|e| {
-        Observation::new(
-            State::Unknown,
-            format!("recorded={:?}; executor query failed: {e:#}", run.launch.state()),
+        Observation::unknown(
             e.downcast_ref::<UnknownError>().map_or(UnknownCause::QueryFailed, |error| error.0),
+            format!("recorded={:?}; executor query failed: {e:#}", run.launch.state()),
         )
     })
 }
@@ -166,7 +141,7 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
             return Ok(observed);
         }
         if std::time::Instant::now() >= deadline {
-            observed.evidence = format!("stop sent; exit not confirmed: {}", observed.evidence);
+            observed.prefix_evidence("stop sent; exit not confirmed: ");
             return Ok(observed);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
@@ -200,21 +175,21 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
                 "pending attempt {attempt} is reserved by another request id; resolve it with status first, or retry without --request-id to continue the same attempt"
             );
         }
-        let executor = match &previous {
-            Native::Claude { .. } => None,
-            Native::Vibe { .. } => Some(ScriptExecutor::VIBE),
-            Native::Codex { .. } => Some(ScriptExecutor::CODEX),
-        };
-        let observed = match &executor {
-            Some(executor) => executor.query(run, dir)?,
-            None => claude::query(run)?,
+        let (observed, identity) = match &previous {
+            Native::Claude { profile, .. } => (claude::query(run, profile.as_deref())?, None),
+            native => {
+                let executor =
+                    if matches!(native, Native::Vibe { .. }) { ScriptExecutor::VIBE } else { ScriptExecutor::CODEX };
+                let (observed, identity) = executor.query(run, dir)?;
+                (observed, Some(identity))
+            }
         };
         ensure!(
             matches!(observed.state(), State::Finished | State::Failed | State::Stopped),
             "cannot retry pending resume: {observed}"
         );
-        if let Some(executor) = executor {
-            let recorded = executor.identity(dir)?;
+        if let Some(identity) = identity {
+            let recorded = identity?;
             ensure!(
                 recorded.process().map(|p| p.2) == previous.process().map(|p| p.2),
                 UnknownError(UnknownCause::IdentityMismatch, "resume identity changed".into())
@@ -244,9 +219,9 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
     if let Some(id) = request_id {
         run.request_attempts.insert(id.to_owned(), attempt);
     }
-    run.launch = Launch::PendingResume { previous: native, attempt, error: None };
+    run.launch = Launch::PendingResume { previous: native.clone(), attempt, error: None };
     store.save(run)?;
-    launch(run, dir, Some(&delta), store)
+    launch(run, LaunchPhase::Resume { previous: &native, delta: &delta }, store)
 }
 pub fn pane(run: &Run) -> Result<()> {
     let block = std::env::var("REX_BLOCK")?;
