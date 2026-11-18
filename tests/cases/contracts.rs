@@ -223,6 +223,21 @@ fn real_status_scripts_reject_recycled_pids() {
 }
 
 #[test]
+fn brief_lint_allows_review_questions_about_new_types() {
+    let (f, skills) = setup();
+    f.script(
+        "implementer-core",
+        "check_brief",
+        &format!("exec bash '{}' \"$@\"", skills.join("implementer-core/scripts/check_brief.sh").display()),
+    );
+    let brief = fs::read_to_string(f.root.join("brief.md")).unwrap();
+    f.write("brief.md", &format!("{brief}\nIs each new type necessary?\n"));
+    let direct = f.dispatch("codex", &["--mode", "direct"], 1);
+    assert!(direct["error"].as_str().unwrap().contains("Rejected alternative:"));
+    f.dispatch("codex", &["--mode", "review"], 0);
+}
+
+#[test]
 fn real_linter_accepts_generated_handoff_prompt_and_rejects_plain_dispatch() {
     let (f, skills) = setup();
     fs::write(

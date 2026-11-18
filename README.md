@@ -162,7 +162,7 @@ The arrows show common observations; `unknown` can occur whenever evidence is un
 | `dispatch` | Lint a brief and launch a recorded worker. |
 | `handoff` | Launch a worker with a plain continuation document. |
 | `ls` | List runs with fresh executor status. |
-| `wait` | Wait for any or all runs to settle. |
+| `wait` | Wait for any or all runs to settle. Exit 0 if every settled run at return is finished, or 1 if any failed, stopped, or blocked, or the wait times out. |
 | `status` | Query a run's current executor status. |
 | `report` | Read the current attempt's report. |
 | `stop` | Stop the exact recorded worker. |

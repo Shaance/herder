@@ -60,7 +60,7 @@ enum Action {
     },
     #[command(
         about = "Wait for any or all runs to settle",
-        after_help = "Example: herder wait 20261101-120000-abcd 20261101-120001-ef01 --all --timeout 60\nSettled: finished, failed, stopped, blocked (exit 0). Unknown or timeout exits 1.\nPolls every 5 seconds; final output includes every run and its report path."
+        after_help = "Example: herder wait 20261101-120000-abcd 20261101-120001-ef01 --all --timeout 60\nSettled states: finished, failed, stopped, blocked. Exits 0 if all settled runs at return are finished.\nExits 1 if a settled run failed, stopped or blocked, or if the wait times out.\nPolls every 5 seconds; final output includes every run and its report path."
     )]
     Wait {
         /// Run ids or unique dispatch names to observe
@@ -127,7 +127,7 @@ enum Action {
         /// Authorized path prefix (repeatable); required if none were recorded at dispatch
         #[arg(long = "path")]
         paths: Vec<String>,
-        /// Shell command to verify in the repository (repeatable)
+        /// Shell command to verify in the repository (repeatable). When omitted, reuse the latest recorded commands from this run. If it has none, use the latest commands from another run with the same goal and repository, when available.
         #[arg(long = "check")]
         checks: Vec<String>,
     },

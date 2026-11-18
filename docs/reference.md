@@ -32,7 +32,7 @@ Scripts are embedded in the binary. Set `HERDER_SKILLS_DIR` to an ai-skills-shap
 
 ## Wait
 
-`herder wait <run>...` polls every five seconds and returns when any run settles; `--all` waits for every listed run. Finished, failed, stopped and blocked count as settled. The command exits 0 when its wait condition is met. An unknown observation can clear during polling and does not itself end the wait. Without `--all`, a settled run can satisfy the wait while another remains unknown. If the wait condition is not met at timeout, the command exits 1. The default timeout is 3600 seconds. Human output shows state changes; final human and JSON output includes every run's ID, name, state and current report path.
+`herder wait <run>...` polls every five seconds and returns when any run settles; `--all` waits for every listed run. Finished, failed, stopped and blocked count as settled. When the wait condition is met, the command exits 0 if every settled run at return is finished and 1 if any is failed, stopped or blocked. An unknown observation can clear during polling and does not itself end the wait. Without `--all`, a settled run can satisfy the wait while another remains unknown. If the wait condition is not met at timeout, the command exits 1. The default timeout is 3600 seconds. Human output shows state changes; final human and JSON output includes every run's ID, name, state and current report path.
 
 ## List runs
 
@@ -73,6 +73,8 @@ Stop requires a running or blocked worker with a matching recorded identity. Cla
 A report is never proof. Verification is separate from lifecycle and approval. Dispatch records the Git baseline commit. Verification checks committed, staged, unstaged and untracked paths against that baseline, then runs the evidence script and requested commands. Records without a baseline load, but scope verification fails explicitly. A verdict belongs to its attempt; a resumed attempt starts unverified.
 
 Pass one or more `--path` options to verify to use those paths for that check in place of the paths recorded at dispatch. If dispatch recorded no paths, verify requires at least one `--path`. Verification rejects starting, running and blocked workers; it can run when the observation is unknown, so inspect the evidence first.
+
+Explicit `--check` commands take precedence. If omitted, verify reuses commands from the latest verification of this run that recorded any. If this run has no commands and has a goal, verify looks for the most recent verification with commands from another run in the same repository and goal. If no commands are found, verify runs only its built-in checks. Human output names the source run when commands are reused.
 
 After rebasing a worker branch, use `herder verify <run> --baseline <new-upstream-rev>` to verify against and persist the new commit baseline. Invalid revisions fail without changing the run record. Review the evidence before publishing as coordinator.
 

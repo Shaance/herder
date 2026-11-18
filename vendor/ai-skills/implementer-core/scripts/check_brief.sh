@@ -44,8 +44,11 @@ fi
 # recent precedent. Escape hatch: "Rejected alternative: none, no new surface".
 surface_words='(^|[^[:alnum:]_])new (public )?(endpoint|route|api|field|column|table|artifact|module|package|schema|type|flag|output)s?([^[:alnum:]_]|$)|(^|[^[:alnum:]_])(add|adds|added|adding|create|creates|introduce|introduces|expose|exposes)([^.]{0,80})(endpoint|route|field|artifact|module|table|column|schema|flag)s?([^[:alnum:]_]|$)'
 surface_paths='(GET|POST|PUT|PATCH|DELETE) /'
-surface_hit=$(grep -inE "$surface_words" "$BRIEF" | head -n1 || true)
-[[ -n "$surface_hit" ]] || surface_hit=$(grep -nE "$surface_paths" "$BRIEF" | head -n1 || true)
+surface_hit=
+if [[ "$MODE" != review ]]; then
+	surface_hit=$(grep -inE "$surface_words" "$BRIEF" | head -n1 || true)
+	[[ -n "$surface_hit" ]] || surface_hit=$(grep -nE "$surface_paths" "$BRIEF" | head -n1 || true)
+fi
 if [[ -n "$surface_hit" ]] && ! grep -qi 'Rejected alternative:' "$BRIEF"; then
 	echo "FAIL: brief adds or names a public surface but has no 'Rejected alternative:' line" >&2
 	echo "      first match (line:text): ${surface_hit:0:160}" >&2

@@ -30,10 +30,10 @@ saved options under the recorded profile; copies are stopped and rejected.
    Vibe/Codex status evidence carries `stream_age_s` (seconds since the stream last
    changed) and, for a live Codex run, `running_command:`.
    Use `herder wait <run>...` for any settled run, or `--all` for all runs;
-   `--timeout <secs>` defaults to 3600. It polls every 5 seconds and exits 0 when
-   its condition is met by finished, failed, stopped or blocked runs, or 1 if the
-   condition is not met at timeout. Unknown observations can clear during polling;
-   without `--all`, another settled run can satisfy the wait. Final output
+   `--timeout <secs>` defaults to 3600. It polls every 5 seconds. When the wait
+   condition is met, it exits 0 if every settled run is finished, or 1 if any
+   failed, stopped or blocked. A timeout also exits 1. Unknown observations can
+   clear during polling. Without `--all`, another settled run can satisfy the wait. Final output
    lists every run and report path. Example: `herder wait run-id --timeout 60`.
    When Rex is available, `--pane` opens a pane; Vibe/Codex panes use `herder wait`
    and close on exit. Read `herder report`.

@@ -348,7 +348,7 @@ fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool
     let mut previous = vec![None; ids.len()];
     loop {
         let mut data = Vec::with_capacity(ids.len());
-        let (mut settled, mut unknown) = (0, false);
+        let (mut settled, mut finished, mut unknown) = (0, 0, false);
         for (index, id) in ids.iter().enumerate() {
             // The guard is dropped at the end of this iteration, before sleeping.
             let locked = store.try_lock(id)?;
@@ -362,6 +362,7 @@ fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool
                 previous[index] = Some(state);
             }
             settled += usize::from(matches!(state, State::Finished | State::Failed | State::Stopped | State::Blocked));
+            finished += usize::from(state == State::Finished);
             unknown |= state == State::Unknown;
             let report_path = store.dir(id).join(run.report_name());
             data.push(WaitEntry { id: run.id, name: run.name, state, report_path });
@@ -376,6 +377,6 @@ fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool
             std::thread::sleep(Duration::from_secs(5).min(timeout.saturating_sub(started.elapsed())));
             continue;
         };
-        return Ok((Output::Wait { runs: data, message }, i32::from(message.is_some())));
+        return Ok((Output::Wait { runs: data, message }, i32::from(!met || finished != settled)));
     }
 }

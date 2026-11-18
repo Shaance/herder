@@ -212,6 +212,9 @@ fn human(output: &Output) {
                 println!("{} attempt {}: {}", run.id.escape_debug(), run.attempt, observation.state().as_str());
             }
             RunDetail::Verify(verification) => {
+                if let Some(id) = &verification.reused_from {
+                    println!("checks: reused from {}", id.escape_debug());
+                }
                 print!("{}", verification_text(&run.name, verification, color));
             }
             RunDetail::Stop => {
@@ -369,6 +372,7 @@ mod tests {
         let verification = FreshVerification {
             verdict: Verdict::Fail,
             attempt: NonZeroU32::new(2).unwrap(),
+            reused_from: None,
             scope: Check { command: String::new(), exit_code: Some(1), output: "outside src/\nfile".into() },
             commands: vec![
                 Check { command: "true".into(), exit_code: Some(0), output: "not displayed".into() },
@@ -403,6 +407,7 @@ mod tests {
         let verification = FreshVerification {
             verdict: Verdict::Fail,
             attempt: NonZeroU32::MIN,
+            reused_from: None,
             scope: Check { command: String::new(), exit_code: Some(0), output: String::new() },
             commands: vec![Check {
                 command: "echo\x1b".into(),

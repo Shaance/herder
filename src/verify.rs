@@ -6,14 +6,40 @@ use crate::{
 use anyhow::Result;
 use std::{path::Path, process::Command};
 
+const SCOPE_CHECK: &str = "baseline scope";
+const EVIDENCE_CHECK: &str = "collect_evidence.sh";
+
 pub fn run(
     run: &mut Run,
     paths: Vec<String>,
-    commands: Vec<String>,
+    mut commands: Vec<String>,
     baseline: Option<String>,
     store: &Store,
     id: &RunId,
 ) -> Result<FreshVerification> {
+    let mut reused_from = None;
+    if commands.is_empty() {
+        let is_user_check = |check: &Check| !matches!(check.command.as_str(), SCOPE_CHECK | EVIDENCE_CHECK);
+        if let Some(previous) = run.verifications.iter().rfind(|v| v.checks.iter().any(is_user_check)) {
+            commands
+                .extend(previous.checks.iter().filter(|check| is_user_check(check)).map(|check| check.command.clone()));
+            reused_from = Some(run.id.clone());
+        } else if let Some(goal) = &run.goal
+            && let Some((source, previous)) = store
+                .runs()?
+                .into_iter()
+                .flatten()
+                .filter_map(|id| store.load(&id).ok())
+                .filter(|other| other.id != run.id && other.goal.as_ref() == Some(goal) && other.repo == run.repo)
+                .filter_map(|other| {
+                    other.verifications.into_iter().rfind(|v| v.checks.iter().any(is_user_check)).map(|v| (other.id, v))
+                })
+                .max_by(|(a_id, a), (b_id, b)| (&a.timestamp, a_id).cmp(&(&b.timestamp, b_id)))
+        {
+            commands.extend(previous.checks.into_iter().filter(is_user_check).map(|check| check.command));
+            reused_from = Some(source);
+        }
+    }
     let transition = baseline
         .as_ref()
         .map(|new| format!("baseline {} -> {new}\n", run.baseline_commit.as_deref().unwrap_or("none")))
@@ -21,7 +47,7 @@ pub fn run(
     let paths = if paths.is_empty() { &run.authorized_paths } else { &paths };
     let mut evidence = process::script(Script::CollectEvidence);
     evidence.arg(store.dir(id)).arg(&run.repo);
-    let jobs = std::iter::once(("collect_evidence.sh".into(), evidence)).chain(commands.into_iter().map(|text| {
+    let jobs = std::iter::once((EVIDENCE_CHECK.into(), evidence)).chain(commands.into_iter().map(|text| {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", &text]);
         (text, cmd)
@@ -80,7 +106,7 @@ pub fn run(
         Ok(output) => (0, output),
         Err(error) => (1, format!("{error:#}")),
     };
-    let scope = Check { command: "baseline scope".into(), exit_code: Some(exit_code), output: transition + &output };
+    let scope = Check { command: SCOPE_CHECK.into(), exit_code: Some(exit_code), output: transition + &output };
     let mut commands = Vec::new();
     for (command, mut cmd) in jobs {
         let result = process::output(cmd.current_dir(&run.repo));
@@ -98,7 +124,7 @@ pub fn run(
     }
     run.verifications.push(verification);
     locked.save(run)?;
-    Ok(FreshVerification { verdict, scope, commands, attempt })
+    Ok(FreshVerification { verdict, scope, commands, attempt, reused_from })
 }
 
 pub fn dirty_paths(repo: &Path) -> Result<std::collections::BTreeSet<String>> {

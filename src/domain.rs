@@ -170,6 +170,7 @@ pub struct FreshVerification {
     pub scope: Check,
     pub commands: Vec<Check>,
     pub attempt: NonZeroU32,
+    pub reused_from: Option<String>,
 }
 fn first_attempt() -> NonZeroU32 {
     NonZeroU32::MIN

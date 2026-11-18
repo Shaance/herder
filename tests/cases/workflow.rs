@@ -62,7 +62,7 @@ fn wait_any_returns_first_settled_and_all_polls_until_every_run_settles() {
     }
     fs::write(f.dir(&first).join("test-status"), "state=exited pid=43210\nverdict: FAILED\n").unwrap();
     fs::write(f.dir(&second).join("test-status"), "state=alive pid=43210\n").unwrap();
-    let any = f.call(&["wait", &second, &first, "--timeout", "0"], 0);
+    let any = f.call(&["wait", &second, &first, "--timeout", "0"], 1);
     assert_eq!(any["data"]["runs"][0]["state"], "running");
     assert_eq!(any["data"]["runs"][1]["state"], "failed");
     for (index, id) in [&second, &first].iter().enumerate() {
@@ -91,7 +91,7 @@ fn wait_any_returns_first_settled_and_all_polls_until_every_run_settles() {
     use std::io::Read;
     let mut rest = String::new();
     output.read_to_string(&mut rest).unwrap();
-    assert!(child.wait().unwrap().success());
+    assert_eq!(child.wait().unwrap().code(), Some(1));
     assert_eq!(
         rest,
         format!(
@@ -100,6 +100,30 @@ fn wait_any_returns_first_settled_and_all_polls_until_every_run_settles() {
             f.dir(&second).display()
         )
     );
+}
+
+#[test]
+fn wait_requires_every_satisfying_run_to_be_finished() {
+    let f = Fixture::new();
+    let finished = f.launch("vibe");
+    let other = f.launch("codex");
+    for (owner, suffix) in [("vibe-implementer", "vibe"), ("codex-implementer", "classic")] {
+        f.script(owner, &format!("status_{suffix}"), "cat \"$1/test-status\"");
+    }
+    fs::write(f.dir(&finished).join("test-status"), "state=exited pid=43210\nverdict: COMPLETED\n").unwrap();
+    let status = f.dir(&other).join("test-status");
+    fs::write(&status, "state=alive pid=43210\n").unwrap();
+    f.call(&["wait", &finished, &other, "--timeout", "0"], 0);
+    fs::write(&status, "state=exited pid=43210\nverdict: FAILED\n").unwrap();
+    let any = f.call(&["wait", &finished, &other, "--timeout", "0"], 1);
+    assert_eq!(any["data"]["message"], Value::Null);
+    assert_eq!(any["error"], Value::Null);
+    assert_eq!(any["data"]["runs"][0]["state"], "finished");
+    assert_eq!(any["data"]["runs"][1]["state"], "failed");
+    let all = f.call(&["wait", &finished, &other, "--all", "--timeout", "0"], 1);
+    assert_eq!(all, any);
+    fs::write(&status, "state=exited pid=43210\nverdict: COMPLETED\n").unwrap();
+    f.call(&["wait", &finished, &other, "--all", "--timeout", "0"], 0);
 }
 
 #[test]
@@ -128,9 +152,87 @@ fn wait_unknown_and_timeout_are_operational_failures() {
     assert_eq!(unknown["data"]["runs"][1]["state"], "unknown");
     fs::remove_file(f.skills.join("query-fail")).unwrap();
     f.agents("idle", "blocked", "native-session");
-    assert_eq!(f.call(&["wait", &settled, "--all", "--timeout", "0"], 0)["data"]["runs"][0]["state"], "blocked");
+    assert_eq!(f.call(&["wait", &settled, "--all", "--timeout", "0"], 1)["data"]["runs"][0]["state"], "blocked");
     f.call(&["wait"], 2);
     f.call(&["wait", &id, "--timeout", "-1"], 2);
+}
+
+#[test]
+fn verify_reuses_latest_checks_from_the_run_or_same_goal_and_repo() {
+    let f = Fixture::new();
+    let launch = |goal| {
+        f.dispatch("codex", &["--goal", goal, "--path", "src/"], 0)["data"]["run_id"].as_str().unwrap().to_owned()
+    };
+    let mut candidates = [launch("shared"), launch("shared")];
+    candidates.sort();
+    let [older, recent] = candidates;
+    let target = launch("shared");
+    let unrelated = launch("unrelated");
+    let foreign = launch("shared");
+    f.status("exited", "COMPLETED");
+    let scope_only = f.call(&["verify", &target], 0);
+    let scope_only = &scope_only["data"]["run"]["verifications"][0];
+    assert_eq!(scope_only["checks"].as_array().unwrap().len(), 2);
+    let verify = |id, check| f.call(&["verify", id, "--check", check], 0);
+    let recorded = f.call(&["verify", &recent, "--check", "printf recent", "--check", "printf second"], 0);
+    verify(&older, "printf older");
+    verify(&unrelated, "printf unrelated");
+    verify(&foreign, "printf foreign");
+    let timestamp = recorded["data"]["run"]["verifications"][0]["timestamp"].as_str().unwrap();
+    assert_eq!(timestamp.len(), "YYYY-MM-DDTHH:MM:SSZ".len());
+    assert!(timestamp.ends_with('Z'));
+    for (id, timestamp) in [
+        (&older, "2000-01-01T00:00:00Z"),
+        (&recent, "2000-01-01T00:00:00Z"),
+        (&unrelated, "2001-01-01T00:00:00Z"),
+        (&foreign, "2001-01-01T00:00:00Z"),
+    ] {
+        let mut record = f.record(id);
+        let verification = &mut record["verifications"][0];
+        verification["timestamp"] = json!(timestamp);
+        if id == &recent {
+            verification["checks"].as_array_mut().unwrap().retain(|check| check["command"] != "collect_evidence.sh");
+        }
+        if id == &foreign {
+            record["repo"] = json!(f.root);
+        }
+        fs::write(f.dir(id).join("run.json"), record.to_string()).unwrap();
+    }
+
+    let reused = f.call(&["verify", &target], 0);
+    let checks = &reused["data"]["run"]["verifications"][1]["checks"];
+    let recorded = &recorded["data"]["run"]["verifications"][0]["checks"];
+    assert_eq!(checks, recorded);
+    let peer = launch("shared");
+    let out = f.cmd().args(["verify", &peer]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(String::from_utf8(out.stdout).unwrap().lines().any(|line| line == format!("checks: reused from {target}")));
+
+    let explicit = verify(&target, "printf local");
+    let explicit = &explicit["data"]["run"]["verifications"][2]["checks"];
+    assert!(explicit.as_array().unwrap().iter().any(|check| check["command"] == "printf local"));
+    verify(&recent, "printf newer");
+    // Records from older herder versions can end with a scope-only verification.
+    let mut record = f.record(&target);
+    record["verifications"][2]["checks"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|check| check["command"] != "collect_evidence.sh");
+    record["verifications"].as_array_mut().unwrap().push(scope_only.clone());
+    fs::write(f.dir(&target).join("run.json"), record.to_string()).unwrap();
+    let out = f.cmd().args(["verify", &target]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        stdout.lines().filter(|line| line.starts_with("checks: reused")).collect::<Vec<_>>(),
+        [format!("checks: reused from {target}")]
+    );
+    let run = f.record(&target);
+    assert_eq!(&run["verifications"][4]["checks"], explicit);
+
+    let out = f.cmd().args(["verify", &older, "--check", "printf explicit"]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert!(!String::from_utf8(out.stdout).unwrap().contains("checks: reused"));
 }
 
 #[test]
@@ -214,7 +316,7 @@ fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
     f.status("alive", "RUNNING");
     fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(id).join("final.md").display())).unwrap();
     f.call(&["stop", "review worker"], 0);
-    assert_eq!(f.call(&["wait", "review worker", "--all"], 0)["data"]["runs"][0]["id"], id);
+    assert_eq!(f.call(&["wait", "review worker", "--all"], 1)["data"]["runs"][0]["id"], id);
     f.call(&["resume", "review worker", "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
     f.dispatch("codex", &["--name", id], 0);
     assert_eq!(f.call(&["status", id], 0)["data"]["run"]["id"], id);

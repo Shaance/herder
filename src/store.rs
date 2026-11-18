@@ -189,7 +189,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn utc_preserves_calendar_boundaries_and_discards_subseconds() {
+    fn utc_preserves_calendar_boundaries_and_truncates_to_seconds() {
         for (secs, expected) in [
             (0, (1970, 1, 1, 0, 0, 0)),
             (86_399, (1970, 1, 1, 23, 59, 59)),
