@@ -185,6 +185,8 @@ macOS is supported and tested in CI; Linux is untested.
 
 ## Development
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and pull request guidance.
+
 ```sh
 cargo build --offline --locked
 cargo test --offline --locked
@@ -195,7 +197,7 @@ Tests use stub executors and temporary state, never real workers. Contract tests
 
 ## Releasing
 
-First, add a `## X.Y.Z (YYYY-MM-DD)` section to `CHANGELOG.md` for the GitHub Release notes.
+First, rename `## Unreleased` in `CHANGELOG.md` to `## X.Y.Z (YYYY-MM-DD)` for the GitHub Release notes, and add a new empty `## Unreleased` above it.
 Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` picks it up, commit the changes, and push a matching `vX.Y.Z` tag. The workflow publishes the signed GitHub Release and then the crate. If the crate job fails after the release succeeds, re-run only that job.
 
 ## License

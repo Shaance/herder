@@ -1,0 +1,46 @@
+name: Bug report
+description: Report a problem with herder
+body:
+  - type: input
+    id: herder-version
+    attributes:
+      label: herder version
+      description: Output of `herder --version`.
+    validations:
+      required: true
+  - type: input
+    id: executor
+    attributes:
+      label: Executor and version
+      description: Which executor and version were you using, if applicable?
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      description: Paste `herder doctor --json` output if available. Redact credentials and sensitive paths before posting.
+      render: json
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the herder commands you ran.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
