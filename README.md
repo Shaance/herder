@@ -193,6 +193,10 @@ cargo clippy --offline --locked --all-targets -- -D warnings
 
 Tests use stub executors and temporary state, never real workers. Contract tests run the vendored launch and status scripts and require `jq`; set `HERDER_SKILLS_DIR` to test another ai-skills-shaped directory.
 
+## Releasing
+
+Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` picks it up, commit both, and push a matching `vX.Y.Z` tag. The workflow publishes the signed GitHub Release and then the crate. If the crate job fails after the release succeeds, re-run only that job.
+
 ## License
 
 Licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
