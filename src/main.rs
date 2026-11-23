@@ -27,6 +27,8 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Action {
+    #[command(hide = true)]
+    ClaudeStopHook { dir: PathBuf },
     #[command(
         about = "Check executors, profiles and Rex",
         after_help = "Example: herder doctor --executor claude --profile ~/.claude"

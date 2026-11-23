@@ -37,6 +37,7 @@ agent or person can use the same CLI.
    Codex also replays the requested effort.
 Claude resume stops a settled live session, then wakes the same identity with its
 saved options under the recorded profile; copies are stopped and rejected.
+   For new Claude runs, trust the repository and have the worker put its report in its last reply. Herder captures the reply on dispatch and resume.
 4. Follow progress with `herder ls` (models, requested effort and executor state tallies) and `herder status`.
    Use `herder status <run> --tail <N>` (1–1000) for the current launch attempt's last N stream lines capped at 500 characters each (`data.tail` in JSON), with a message for missing streams or Claude runs.
    Vibe/Codex status evidence carries `stream_age_s` (seconds since the stream last

@@ -62,6 +62,8 @@ Codex `status_classic.sh` inspects the newest resumed attempt itself. Herder pas
 
 Claude profile precedence is `--profile`, `CLAUDE_CONFIG_DIR`, then explicitly none, which uses Claude's default. Dispatch detects trust failures without editing trust.
 
+For new Claude runs, the profile needs to trust the repository only. At the end of each reply, the Stop hook saves the latest nonempty reply as the report for that attempt. Resuming the session reuses this hook.
+
 Herder starts Claude background sessions one at a time across processes that share a state directory.
 Parallel Claude dispatches wait for each other's launch gate to finish.
 Herder coordinates launches using `claude-launch.lock` in the state directory.

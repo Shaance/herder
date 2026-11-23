@@ -1,12 +1,13 @@
 use crate::{
     domain::{Intent, Launch, LaunchPhase, Native, Observation, Run, State, UnknownCause, UnknownError},
     process::{self, output},
-    store::LockedRun,
+    store::{self, LockedRun},
 };
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use std::{
     fs,
+    io::{self, Write},
     path::Path,
     process::Command,
     thread,
@@ -45,15 +46,30 @@ fn agents(profile: Option<&Path>, repo: &Path) -> Result<Vec<Agent>> {
         serde_json::from_str(&process::query(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?;
     Ok(listed.into_iter().filter_map(|l| if let Listed::Background(a) = l { Some(a) } else { None }).collect())
 }
+pub fn stop_hook(dir: &Path) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Reply {
+        last_assistant_message: Option<String>,
+    }
+    let reply: Reply = serde_json::from_reader(io::stdin().lock())?;
+    if let Some(message) = reply.last_assistant_message.filter(|s| !s.is_empty()) {
+        // Launch holds run.lock and may be waiting for this report. run.json is published atomically.
+        let run = store::load(dir)?;
+        let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+        temp.write_all(message.as_bytes())?;
+        temp.persist(dir.join(run.launch_report_name()))?;
+    }
+    Ok(())
+}
+
 pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, store: &LockedRun) -> Result<Native> {
     let dir = &store.dir;
-    let (previous, brief, report) = match phase {
-        LaunchPhase::Initial => (None, run.brief.as_path(), dir.join("final.md")),
-        LaunchPhase::Resume { previous, delta } => {
-            (Some(previous), delta, dir.join(format!("final{}.md", run.launch_attempt())))
-        }
+    let report = dir.join(run.launch_report_name());
+    let (previous, brief) = match phase {
+        LaunchPhase::Initial => (None, run.brief.as_path()),
+        LaunchPhase::Resume { previous, delta } => (Some(previous), delta),
     };
-    let prompt = format!("{}\n\nWrite your final report to {}.\n", fs::read_to_string(brief)?, report.display());
+    let prompt = format!("{}\n\nYour last reply is your final report.\n", fs::read_to_string(brief)?);
     let mut cmd = command(profile);
     cmd.current_dir(&run.repo).arg("--bg");
     if let Some(Native::Claude { id, session_id, .. }) = previous {
@@ -88,9 +104,15 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
         // Saved options must be used: passing any launch flags makes Claude fork the session.
         cmd.arg("--resume").arg(session_id).arg(prompt);
     } else {
-        cmd.arg(prompt).arg("-n").arg(&run.name).arg("--add-dir").arg(dir);
-        // Edit --repo in place; --bg otherwise moves into .claude/worktrees/.
-        cmd.args(["--settings", r#"{"worktree":{"bgIsolation":"none"}}"#]);
+        let quote = |p: &Path| -> Result<String> {
+            Ok(format!("'{}'", p.to_str().context("Claude hook path must be UTF-8")?.replace('\'', "'\\''")))
+        };
+        let hook = format!("{} claude-stop-hook {} || :", quote(&std::env::current_exe()?)?, quote(dir)?);
+        let settings = serde_json::json!({
+            "worktree": {"bgIsolation": "none"},
+            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": hook}]}]}
+        });
+        cmd.arg(prompt).arg("-n").arg(&run.name).arg("--settings").arg(settings.to_string());
         if let Some(m) = &run.model {
             cmd.arg("--model").arg(m);
         }

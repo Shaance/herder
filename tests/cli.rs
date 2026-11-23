@@ -102,22 +102,29 @@ case "$1" in
       exit 0
     fi
     grep -q '"status":null' "$HERDER_SKILLS_DIR/agents.json"
-    report=$(printf '%s' "$4" | sed -n 's/^Write your final report to \(.*\)\.$/\1/p')
-    printf 'attempt 2\n' > "$report"
+    printf '%s\n' '{"last_assistant_message":"attempt 2\n"}' | sh -c "$(cat "$HERDER_STATE_DIR/stop-hook")"
     sed 's/"stopped"/"done"/' "$HERDER_SKILLS_DIR/agents.json" > "$HERDER_SKILLS_DIR/resumed.json"
     mv "$HERDER_SKILLS_DIR/resumed.json" "$HERDER_SKILLS_DIR/agents.json"
     echo 'prompt: started a copy as deadbeef'
     echo 'backgrounded · abc123 · worker'
     exit 0
   fi
-  for arg in "$@"; do
-    if test "${next:-}" = yes; then dir=$arg; break; fi
-    if test "$arg" = --add-dir; then next=yes; fi
-  done
-  test -f "$dir/run.json"
-  grep -q '"state": "starting"' "$dir/run.json"
+  while test "$1" != --settings; do shift; done
+  printf '%s' "$2" | perl -MJSON::PP -0777 -ne '
+    $settings = decode_json($_);
+    die unless $settings->{worktree}{bgIsolation} eq "none";
+    $hook = $settings->{hooks}{Stop}[0]{hooks}[0];
+    die unless $hook->{type} eq "command" && length $hook->{command};
+    print $hook->{command};
+  ' > "$HERDER_STATE_DIR/stop-hook"
+  grep -q '"state": "starting"' "$HERDER_STATE_DIR"/runs/*/run.json
   if test -f "$HERDER_SKILLS_DIR/trust"; then echo 'Workspace not trusted. Accept trust.'; exit 1; fi
   if test -f "$HERDER_SKILLS_DIR/idle"; then echo '(idle — send a prompt to start)'; exit 0; fi
+  if test -f "$HERDER_SKILLS_DIR/replies"; then
+    while IFS= read -r payload; do
+      printf '%s' "$payload" | sh -c "$(cat "$HERDER_STATE_DIR/stop-hook")"
+    done < "$HERDER_SKILLS_DIR/replies"
+  fi
   echo 'backgrounded · abc123 · worker';;
 agents)
   if test -f "$HERDER_SKILLS_DIR/waking"; then
@@ -300,7 +307,8 @@ fn claude_dispatch_records_identity_profile_and_prompt_first() {
     assert_eq!(record["extra"], json!(["--effort=low"]));
     let args = fs::read_to_string(f.state.join("claude-args")).unwrap();
     assert!(args.starts_with("--bg\nimplement this task"));
-    assert!(args.contains(&format!("Write your final report to {}/final.md", f.dir(id).display())));
+    assert!(args.contains("Your last reply is your final report."));
+    assert!(!args.lines().any(|arg| arg == "--add-dir"));
     assert!(args.ends_with("--model\nmodel-x\n--effort=low\n"), "{args}");
     let pane = fs::read_to_string(f.state.join("rex-args")).unwrap();
     assert!(pane.contains("CLAUDE_CONFIG_DIR=/tmp/explicit-profile\nclaude\nattach\nabc123"));
@@ -309,6 +317,34 @@ fn claude_dispatch_records_identity_profile_and_prompt_first() {
     f.agents("idle", "waiting_for_permission", "native-session");
     assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "blocked");
     assert_eq!(f.call(&["ls", "--goal", "other"], 0)["data"]["runs"], json!([]));
+}
+
+#[test]
+fn claude_stop_hook_saves_only_the_latest_nonempty_reply() {
+    let mut f = Fixture::new();
+    f.state = f.root.join("herder's state");
+    for (payloads, expected) in [
+        (vec![json!({}), json!({"last_assistant_message": ""})], None),
+        (
+            vec![
+                json!({"last_assistant_message": "first reply"}),
+                json!({"last_assistant_message": "# Final report\n\nDone."}),
+                json!({"last_assistant_message": ""}),
+            ],
+            Some("# Final report\n\nDone."),
+        ),
+    ] {
+        fs::create_dir_all(&f.state).unwrap();
+        let lines: String = payloads.iter().map(|v| format!("{v}\n")).collect();
+        fs::write(f.skills.join("replies"), lines).unwrap();
+        let id = f.launch("claude");
+        let path = f.dir(&id).join("final.md");
+        if let Some(expected) = expected {
+            assert_eq!(fs::read_to_string(path).unwrap(), expected);
+        } else {
+            assert!(!path.exists());
+        }
+    }
 }
 
 #[test]
@@ -545,10 +581,7 @@ fn claude_resume_stops_idle_and_wakes_same_identity() {
     assert_eq!(fs::read_to_string(f.state.join("stops")).unwrap(), "abc123\n");
     assert_eq!(
         fs::read_to_string(f.state.join("resume-args")).unwrap(),
-        format!(
-            "--bg\n--resume\nnative-session\nimplement this task\n\n\nWrite your final report to {}/final2.md.\n\n",
-            f.dir(id).display()
-        )
+        "--bg\n--resume\nnative-session\nimplement this task\n\n\nYour last reply is your final report.\n\n"
     );
     assert_eq!(f.call(&["report", id], 0)["data"]["report"]["content"], "attempt 2\n");
     assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "finished");

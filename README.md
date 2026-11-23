@@ -119,6 +119,8 @@ A worker can run in the background for hours. You need to know whether it is sti
 
 herder keeps a durable record for each worker. It queries Claude's CLI or uses the Codex and Vibe status scripts to inspect executor evidence; when that evidence is unresolved, it reports `unknown` with a cause. Verification checks changed files against the authorized `--path` prefixes you supply and runs the check commands you choose.
 
+Claude workers give their report in their last reply. Herder saves it automatically, so a new dispatch only requires Claude to trust the repository.
+
 ## How it works
 
 ```mermaid
