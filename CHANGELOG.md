@@ -14,6 +14,10 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 - **Codex review runs are read-only.** `--mode review` on a Codex dispatch or handoff saves `--sandbox read-only` with the executor arguments and replays it on every resume. Arguments that would widen the sandbox (`--sandbox` or `sandbox_mode` with another value, bypass or auto-approve flags) exit 2 before a run is recorded. Review runs recorded by earlier versions without a saved sandbox flag resume with the launcher's default sandbox.
 - **`herder ls` has an `EFFORT` column** after `MODEL`, and piped run rows end with an effort field (`-` when unset). Scripts that split piped `ls` rows by position need updating.
 
+### Fixed
+
+- Claude sessions that are just starting now show as running, so `herder wait` no longer exits early with a blocked result. Unrecognised idle states report as unknown.
+
 ## 0.2.0 (2026-11-18)
 
 ### Changed

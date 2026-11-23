@@ -133,7 +133,7 @@ agents)
     sed 's/"stopped"/"done"/' "$HERDER_SKILLS_DIR/agents.json"
     exit 0
   fi
-  if test -f "$HERDER_SKILLS_DIR/awake"; then sed 's/"status":null/"status":"busy"/' "$HERDER_SKILLS_DIR/agents.json"; exit 0; fi
+  if test -f "$HERDER_SKILLS_DIR/awake"; then sed 's/"status":null/"status":"idle"/; s/"stopped"/"working"/' "$HERDER_SKILLS_DIR/agents.json"; exit 0; fi
   test ! -f "$HERDER_SKILLS_DIR/query-fail"
   if test -f "$HERDER_SKILLS_DIR/idle-once"; then rm "$HERDER_SKILLS_DIR/idle-once"; if test -f "$HERDER_SKILLS_DIR/fail-after-identity"; then touch "$HERDER_SKILLS_DIR/query-fail"; fi; sed 's/"busy"/"idle"/' "$HERDER_SKILLS_DIR/agents.json"; exit 0; fi
   cat "$HERDER_SKILLS_DIR/agents.json";;
@@ -317,6 +317,26 @@ fn claude_dispatch_records_identity_profile_and_prompt_first() {
     f.agents("idle", "waiting_for_permission", "native-session");
     assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "blocked");
     assert_eq!(f.call(&["ls", "--goal", "other"], 0)["data"]["runs"], json!([]));
+}
+
+#[test]
+fn claude_status_reports_working_without_status_as_running() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    let agents =
+        json!([{"id":"abc123","kind":"background","sessionId":"native-session","cwd":f.repo,"state":"working"}]);
+    fs::write(f.skills.join("agents.json"), agents.to_string()).unwrap();
+    assert_eq!(f.call(&["status", &id], 0)["data"]["observation"]["state"], "running");
+}
+
+#[test]
+fn claude_status_reports_unrecognized_idle_state_as_unknown() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    f.agents("idle", "unrecognized", "native-session");
+    let status = f.call(&["status", &id], 0);
+    assert_eq!(status["data"]["observation"]["state"], "unknown");
+    assert_eq!(status["data"]["observation"]["cause"], "unrecognized_status");
 }
 
 #[test]
@@ -740,8 +760,10 @@ fn claude_resume_waits_for_fresh_evidence() {
             fs::write(f.dir(&id).join("final2.md"), "stale").unwrap();
         }
         let started = std::time::Instant::now();
-        f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+        let out = f.cmd().args(["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()]).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
         assert!(started.elapsed() >= std::time::Duration::from_secs(1), "gate accepted stale evidence");
+        assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id} attempt 2: running\n"));
         assert_eq!(f.record(&id)["attempt"], 2);
     }
 }
