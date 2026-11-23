@@ -22,10 +22,22 @@ agent or person can use the same CLI.
    Status, report, stop, resume, verify and wait also accept a unique dispatch
    `--name`; existing IDs take precedence; ambiguous or unknown names list matches or similar names.
    Dispatch defaults to `--mode direct`; use `--mode review` for read-only briefs.
+   Dispatch and handoff accept `--effort <LEVEL>` for Codex and Claude. Use `low`, `medium`, `high`,
+   `xhigh`, `max` or `ultra`, subject to executor and model support. The executor's configured
+   default applies when both herder's `--effort` and native effort arguments are omitted. With
+   the herder flag omitted, native effort arguments after `--` are forwarded and `requested_effort`
+   remains empty. Vibe takes effort from the selected model alias's `thinking` setting.
+   Use medium effort for bounded direct-mode Codex work orders.
+
+   ```sh
+   herder dispatch --executor codex --effort medium --brief /tmp/work-order.md --repo .
+   ```
+
    Vibe/Codex resume replays the recorded model and extra arguments after `--`.
+   Codex also replays the requested effort.
 Claude resume stops a settled live session, then wakes the same identity with its
 saved options under the recorded profile; copies are stopped and rejected.
-4. Follow progress with `herder ls` (models and executor state tallies) and `herder status`.
+4. Follow progress with `herder ls` (models, requested effort and executor state tallies) and `herder status`.
    Use `herder status <run> --tail <N>` (1–1000) for the current launch attempt's last N stream lines capped at 500 characters each (`data.tail` in JSON), with a message for missing streams or Claude runs.
    Vibe/Codex status evidence carries `stream_age_s` (seconds since the stream last
    changed) and, for a live Codex run, `running_command:`.
@@ -59,7 +71,11 @@ prints every run ID. It is refused outside `--mode review` and for handoffs, bec
 one worktree has one writer, and when a model repeats, because both runs would share
 one name. If a later launch fails, the runs already started stay listed beside the
 error. Wait on all printed run IDs, then read every report.
-`--mode` selects brief linting only; the brief must enforce read-only behavior.
+Herder launches Codex review runs read-only and replays the saved sandbox flag when
+resuming reviews recorded by this version. Older review records without a saved sandbox
+flag resume with the launcher's default. Start a fresh review when you need read-only
+enforcement for an older run. Claude and Vibe review runs rely on the brief's read-only
+instruction alone. Vibe runs with `--auto-approve`.
 
 ## Handing off to another agent
 
@@ -74,9 +90,9 @@ brief, so later edits to the file cannot change what the worker receives. It
 launches a continuation only: it does not transfer hidden conversation, stop
 another writer, or prove the context was understood, and
 the launch result is launch evidence only. Invalid documents fail before launch
-with no run record. `--mode review` instructs the receiver to stay read-only; it does not add an OS
-sandbox. No delegation or publication unless the document or the user expressly
-authorized it.
+with no run record. `--mode review` instructs the receiver to stay read-only and
+applies the same Codex sandbox as review dispatch. Delegate or publish only when
+the document or the user expressly authorizes it.
 
 ## Rules
 

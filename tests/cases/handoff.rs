@@ -170,10 +170,29 @@ fn handoff_review_mode_instructs_read_only_and_profile_rule_holds() {
     let f = Fixture::new();
     let brief = doc(&f, "review the handoff diff\n");
     let result = f.call(
-        &["handoff", "--executor", "codex", "--mode", "review", "--brief", brief.to_str().unwrap(), "--repo", "."],
+        &[
+            "handoff",
+            "--executor",
+            "codex",
+            "--mode",
+            "review",
+            "--brief",
+            brief.to_str().unwrap(),
+            "--repo",
+            ".",
+            "--effort",
+            "high",
+        ],
         0,
     );
     let id = result["data"]["run_id"].as_str().unwrap();
+    assert_eq!(f.record(id)["requested_effort"], "high");
+    assert_eq!(f.record(id)["extra"], json!(["--sandbox", "read-only"]));
+    assert!(
+        fs::read_to_string(f.state.join("launch-args"))
+            .unwrap()
+            .ends_with("\n-c\nmodel_reasoning_effort=high\n--sandbox\nread-only\n")
+    );
     let input = fs::read_to_string(f.dir(id).join("input.md")).unwrap();
     assert!(input.contains("read-only"), "{input}");
     assert!(input.contains("review the handoff diff"));

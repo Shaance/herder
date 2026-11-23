@@ -4,6 +4,15 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+### Added
+
+- **`--effort <LEVEL>` on `dispatch` and `handoff`** sets reasoning effort for Codex and Claude runs (`low`, `medium`, `high`, `xhigh`, `max`, `ultra`). Codex receives it on every launch and resume; Claude receives it at launch and keeps it on resume. Vibe rejects the flag with exit 2, and so does a dispatch that also sets native effort after `--`. The level is saved as `requested_effort` in `run.json` and shown by `status` and `ls`.
+
+### Changed
+
+- **Codex review runs are read-only.** `--mode review` on a Codex dispatch or handoff saves `--sandbox read-only` with the executor arguments and replays it on every resume. Arguments that would widen the sandbox (`--sandbox` or `sandbox_mode` with another value, bypass or auto-approve flags) exit 2 before a run is recorded. Review runs recorded by earlier versions without a saved sandbox flag resume with the launcher's default sandbox.
+- **`herder ls` has an `EFFORT` column** after `MODEL`, and piped run rows end with an effort field (`-` when unset). Scripts that split piped `ls` rows by position need updating.
+
 ## 0.2.0 (2026-11-18)
 
 ### Changed

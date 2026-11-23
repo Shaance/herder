@@ -134,7 +134,7 @@ enum Action {
 }
 #[derive(Args, Clone)]
 struct Dispatch {
-    /// Brief lint mode
+    /// Brief lint mode (review also selects a read-only sandbox for Codex)
     #[arg(long, default_value = "direct", value_parser = ["direct", "review"])]
     mode: String,
     /// Executor to use
@@ -149,6 +149,9 @@ struct Dispatch {
     /// Executor model name (passed through unchecked); repeat with --mode review to launch one run per model
     #[arg(long)]
     model: Vec<String>,
+    /// Requested reasoning effort for Codex or Claude (defaults to the executor's configuration)
+    #[arg(long, value_name = "LEVEL", value_parser = ["low", "medium", "high", "xhigh", "max", "ultra"])]
+    effort: Option<String>,
     /// Optional goal string; ls --goal matches it exactly
     #[arg(long)]
     goal: Option<String>,

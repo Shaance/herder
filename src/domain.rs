@@ -180,6 +180,8 @@ pub struct Run {
     pub id: String,
     pub model: Option<String>,
     #[serde(default)]
+    pub requested_effort: Option<String>,
+    #[serde(default)]
     pub extra: Vec<String>,
     pub repo: PathBuf,
     pub baseline_commit: Option<String>,

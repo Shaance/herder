@@ -1,5 +1,5 @@
 use crate::{
-    domain::{LaunchPhase, Native, Observation, Run, State, UnknownCause, UnknownError},
+    domain::{LaunchPhase, Native, Observation, Run, State, Target, UnknownCause, UnknownError},
     process::{Script, checked, output, query, script},
 };
 use anyhow::{Result, ensure};
@@ -59,6 +59,9 @@ impl ScriptExecutor {
         cmd.env_remove("REX_SESSION").env_remove("REX_BLOCK").env_remove("REX_SERVER");
         if let Some(model) = &run.model {
             cmd.arg("--model").arg(model);
+        }
+        if let (Target::Codex, Some(effort)) = (run.launch.target(), &run.requested_effort) {
+            cmd.arg("-c").arg(format!("model_reasoning_effort={effort}"));
         }
         cmd.args(&run.extra);
         let (code, text) = output(&mut cmd)?;

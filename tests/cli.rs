@@ -277,7 +277,17 @@ fn claude_dispatch_records_identity_profile_and_prompt_first() {
     fs::write(f.skills.join("idle-once"), "").unwrap();
     let result = f.dispatch(
         "claude",
-        &["--profile", "/tmp/explicit-profile", "--model", "model-x", "--goal", "goal-1", "--pane"],
+        &[
+            "--profile",
+            "/tmp/explicit-profile",
+            "--model",
+            "model-x",
+            "--goal",
+            "goal-1",
+            "--pane",
+            "--",
+            "--effort=low",
+        ],
         0,
     );
     let id = result["data"]["run_id"].as_str().unwrap();
@@ -286,10 +296,12 @@ fn claude_dispatch_records_identity_profile_and_prompt_first() {
     assert_eq!(record["launch"]["native"]["session_id"], "native-session");
     assert_eq!(record["launch"]["native"]["profile"], "/tmp/explicit-profile");
     assert_eq!(record["goal"], "goal-1");
+    assert_eq!(record["requested_effort"], Value::Null);
+    assert_eq!(record["extra"], json!(["--effort=low"]));
     let args = fs::read_to_string(f.state.join("claude-args")).unwrap();
     assert!(args.starts_with("--bg\nimplement this task"));
     assert!(args.contains(&format!("Write your final report to {}/final.md", f.dir(id).display())));
-    assert!(args.contains("--model\nmodel-x"));
+    assert!(args.ends_with("--model\nmodel-x\n--effort=low\n"), "{args}");
     let pane = fs::read_to_string(f.state.join("rex-args")).unwrap();
     assert!(pane.contains("CLAUDE_CONFIG_DIR=/tmp/explicit-profile\nclaude\nattach\nabc123"));
     let status = f.call(&["status", id], 0);
@@ -510,9 +522,14 @@ fn resume_selects_current_attempt_report_and_retains_native_session() {
 #[test]
 fn claude_resume_stops_idle_and_wakes_same_identity() {
     let f = Fixture::new();
-    let result =
-        f.dispatch("claude", &["--profile", "/tmp/resume-profile", "--model", "saved-model", "--", "--verbose"], 0);
+    let result = f.dispatch(
+        "claude",
+        &["--profile", "/tmp/resume-profile", "--model", "saved-model", "--effort", "low", "--", "--verbose"],
+        0,
+    );
     let id = result["data"]["run_id"].as_str().unwrap();
+    let args = fs::read_to_string(f.state.join("claude-args")).unwrap();
+    assert!(args.contains("--model\nsaved-model\n--effort\nlow\n--verbose\n"), "{args}");
     let native = f.record(id)["launch"]["native"].clone();
     f.agents("idle", "done", "native-session");
     fs::write(f.state.join("resume-repo"), f.repo.to_str().unwrap()).unwrap();
@@ -520,6 +537,7 @@ fn claude_resume_stops_idle_and_wakes_same_identity() {
     let brief = f.root.join("brief.md");
     f.call(&["resume", id, "--brief", brief.to_str().unwrap(), "--request-id", "delta"], 0);
     assert_eq!(f.record(id)["attempt"], 2);
+    assert_eq!(f.record(id)["requested_effort"], "low");
     assert_eq!(f.record(id)["launch"]["native"], native);
     for operation in ["stop-profile", "resume-profile"] {
         assert_eq!(fs::read_to_string(f.state.join(operation)).unwrap(), "/tmp/resume-profile\n");
@@ -1217,22 +1235,145 @@ fn non_claude_profile_is_a_usage_error() {
 }
 
 #[test]
-fn review_dispatch_launches_one_named_run_per_model() {
+fn invalid_effort_requests_are_rejected_before_recording() {
     let f = Fixture::new();
-    let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev", "--goal", "g"];
-    let runs = f.dispatch("vibe", &args, 0)["data"]["runs"].as_array().unwrap().clone();
-    let recorded: Vec<_> = runs
-        .iter()
-        .map(|launch| {
-            let record = f.record(launch["run_id"].as_str().unwrap());
-            (record["name"].clone(), record["model"].clone(), record["goal"].clone())
-        })
-        .collect();
-    assert_eq!(
-        recorded,
-        [(json!("rev-model-a"), json!("model-a"), json!("g")), (json!("rev-model-b"), json!("model-b"), json!("g"))]
-    );
-    assert_eq!(f.call(&["ls", "--goal", "g"], 0)["data"]["runs"].as_array().unwrap().len(), 2);
+    for (executor, args, diagnostic) in [
+        ("codex", &["--effort", "High"][..], "invalid value 'High'"),
+        ("claude", &["--effort", "hgh"][..], "invalid value 'hgh'"),
+        (
+            "vibe",
+            &["--effort", "high"][..],
+            "Vibe has no per-run effort; effort comes from the model alias's `thinking` setting in Vibe's config.toml, choose an alias with --model",
+        ),
+        ("codex", &["--effort", "high", "--", "-c", "model_reasoning_effort=low"][..], "conflicts"),
+        ("codex", &["--effort", "high", "--", "-cmodel_reasoning_effort=low"][..], "conflicts"),
+        ("codex", &["--effort", "high", "--", "-c=model_reasoning_effort=low"][..], "conflicts"),
+        ("codex", &["--effort", "high", "--", "--config", "model_reasoning_effort=low"][..], "conflicts"),
+        ("codex", &["--effort", "high", "--", "--config=model_reasoning_effort=low"][..], "conflicts"),
+        ("claude", &["--effort", "high", "--", "--effort", "low"][..], "conflicts"),
+        ("claude", &["--effort", "high", "--", "--effort=low"][..], "conflicts"),
+    ] {
+        let result = f.dispatch(executor, args, 2);
+        let message = result["error"].as_str().or_else(|| result["data"]["message"].as_str()).unwrap();
+        assert!(message.contains(diagnostic), "{result}");
+        assert!(!f.state.join("runs").exists());
+    }
+}
+
+#[test]
+fn codex_effort_conflicts_only_with_its_native_config_key() {
+    let f = Fixture::new();
+    let extra = ["--output-schema", "/tmp/model_reasoning_effort.json", "-c", "model=\"model_reasoning_effort\""];
+    let result = f.dispatch("codex", &[&["--effort", "high", "--"][..], &extra].concat(), 0);
+    let id = result["data"]["run_id"].as_str().unwrap();
+    assert_eq!(f.record(id)["requested_effort"], "high");
+    assert_eq!(f.record(id)["extra"], json!(extra));
+
+    let extra = ["-c", "model_reasoning_effort=low"];
+    let result = f.dispatch("codex", &[&["--"][..], &extra].concat(), 0);
+    let id = result["data"]["run_id"].as_str().unwrap();
+    assert_eq!(f.record(id)["requested_effort"], Value::Null);
+    assert_eq!(f.record(id)["extra"], json!(extra));
+    let args = fs::read_to_string(f.state.join("launch-args")).unwrap();
+    assert!(args.ends_with("\n-c\nmodel_reasoning_effort=low\n"), "{args}");
+}
+
+#[test]
+fn review_dispatch_launches_one_named_run_per_model() {
+    for (executor, effort_args, effort) in
+        [("vibe", &[][..], Value::Null), ("codex", &["--effort", "xhigh"][..], json!("xhigh"))]
+    {
+        let f = Fixture::new();
+        let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev", "--goal", "g"];
+        let result = f.dispatch(executor, &[&args[..], effort_args].concat(), 0);
+        let runs = result["data"]["runs"].as_array().unwrap();
+        assert_eq!(runs.len(), 2);
+        for (child, model) in runs.iter().zip(["model-a", "model-b"]) {
+            let record = f.record(child["run_id"].as_str().unwrap());
+            assert_eq!(record["name"], format!("rev-{model}"));
+            assert_eq!(record["model"], model);
+            assert_eq!(record["goal"], "g");
+            assert_eq!(record["requested_effort"], effort);
+            assert_eq!(child["run"]["requested_effort"], effort);
+            let extra = if executor == "codex" { json!(["--sandbox", "read-only"]) } else { json!([]) };
+            assert_eq!(record["extra"], extra);
+        }
+        assert_eq!(f.call(&["ls", "--goal", "g"], 0)["data"]["runs"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[test]
+fn codex_review_rejects_sandbox_overrides_before_recording() {
+    let f = Fixture::new();
+    for extra in [
+        &["--sandbox", "workspace-write"][..],
+        &["-s", "danger-full-access"],
+        &["--sandbox=danger-full-access"],
+        &["-s=workspace-write"],
+        &["-sworkspace-write"],
+        &["--sandbox"],
+        &["--sandbox=read-only", "--sandbox=workspace-write"],
+        &["--sandbox", "read-only", "-s", "read-only"],
+        &["--dangerously-bypass-approvals-and-sandbox"],
+        &["--yolo"],
+        &["--full-auto"],
+        &["--approve-for-me"],
+        &["--not-so-yolo"],
+        &["-c", "sandbox_mode=\"workspace-write\""],
+        &["-csandbox_mode=\"workspace-write\""],
+        &["-c=sandbox_mode=\"workspace-write\""],
+        &["--config", "sandbox_mode=\"workspace-write\""],
+        &["--config=sandbox_mode=\"workspace-write\""],
+        &["--", "--sandbox", "read-only"],
+    ] {
+        let result = f.dispatch("codex", &[&["--mode", "review", "--"], extra].concat(), 2);
+        assert!(result["data"]["message"].as_str().unwrap().contains("Codex review"), "{result}");
+        assert!(!f.state.join("runs").exists());
+        assert!(!f.state.join("launch-args").exists());
+    }
+}
+
+#[test]
+fn codex_review_uses_explicit_read_only_sandbox_once() {
+    let f = Fixture::new();
+    for (extra, recorded) in [
+        (&["--sandbox", "read-only"][..], &["--sandbox", "read-only"][..]),
+        (&["--sandbox=read-only"][..], &["--sandbox=read-only"][..]),
+        (&["-s", "read-only"][..], &["-s", "read-only"][..]),
+        (&["-s=read-only"][..], &["--sandbox=read-only"][..]),
+        (&["-sread-only"][..], &["--sandbox=read-only"][..]),
+    ] {
+        let result = f.dispatch("codex", &[&["--mode", "review", "--"], extra].concat(), 0);
+        let id = result["data"]["run_id"].as_str().unwrap();
+        assert_eq!(f.record(id)["extra"], json!(recorded));
+        let args = fs::read_to_string(f.state.join("launch-args")).unwrap();
+        assert_eq!(args.lines().skip(3).collect::<Vec<_>>(), recorded);
+    }
+}
+
+#[test]
+fn codex_review_accepts_read_only_config_assignments() {
+    let f = Fixture::new();
+    for extra in [
+        &["-c", "sandbox_mode=read-only"][..],
+        &["--config=sandbox_mode=\"read-only\""],
+        &["--config", "sandbox_mode = 'read-only'"],
+    ] {
+        let result = f.dispatch("codex", &[&["--mode", "review", "--"], extra].concat(), 0);
+        let id = result["data"]["run_id"].as_str().unwrap();
+        assert_eq!(f.record(id)["extra"], json!([extra, &["--sandbox", "read-only"]].concat()));
+    }
+}
+
+#[test]
+fn claude_review_passes_native_args_without_a_sandbox() {
+    let f = Fixture::new();
+    let result = f.dispatch("claude", &["--mode", "review", "--", "--verbose"], 0);
+    let id = result["data"]["run_id"].as_str().unwrap();
+    assert_eq!(f.record(id)["extra"], json!(["--verbose"]));
+    let args = fs::read_to_string(f.state.join("claude-args")).unwrap();
+    assert!(args.ends_with("\n--verbose\n"), "{args}");
+    assert!(!args.contains("--sandbox"), "{args}");
 }
 
 #[test]
@@ -1240,11 +1381,12 @@ fn a_failed_later_launch_still_reports_the_runs_already_started() {
     let f = Fixture::new();
     // The first launch deletes the dispatched brief, so copying it for the second run fails.
     fs::write(f.skills.join("drop-brief"), "").unwrap();
-    let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev"];
-    let data = f.dispatch("vibe", &args, 1)["data"].clone();
+    let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev", "--effort", "max"];
+    let data = f.dispatch("codex", &args, 1)["data"].clone();
     let runs = data["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 1, "{data}");
     assert_eq!(f.record(runs[0]["run_id"].as_str().unwrap())["name"], "rev-model-a");
+    assert_eq!(runs[0]["run"]["requested_effort"], "max");
     assert!(data["error"].as_str().unwrap().starts_with("model-b: "), "{data}");
 }
 
@@ -1342,7 +1484,7 @@ fn human_actions_and_multiline_evidence() {
     let out = f.cmd().arg("ls").output().unwrap();
     assert_eq!(
         String::from_utf8(out.stdout).unwrap(),
-        format!("{id}\tworker\\nname\tpolish\tcodex\trunning\t1\t-\ncodex: 1 runs (running 1)\n")
+        format!("{id}\tworker\\nname\tpolish\tcodex\trunning\t1\t-\t-\ncodex: 1 runs (running 1)\n")
     );
     f.status("exited", "COMPLETED");
     let check = "echo first; echo second; exit 1";
@@ -1391,7 +1533,7 @@ fn human_actions_and_multiline_evidence() {
 #[test]
 fn terminal_lists_and_verification_honor_no_color() {
     let f = Fixture::new();
-    let id = f.dispatch("codex", &["--name", "terminal", "--path", "src/"], 0)["data"]["run_id"]
+    let id = f.dispatch("codex", &["--name", "terminal", "--path", "src/", "--effort", "ultra"], 0)["data"]["run_id"]
         .as_str()
         .unwrap()
         .to_owned();
@@ -1417,16 +1559,28 @@ fn terminal_lists_and_verification_honor_no_color() {
     };
     let (code, colored) = run(&["ls"], None);
     assert_eq!(code, Some(0));
-    let header = format!("{:<width$}  NAME      GOAL  EXECUTOR  STATE     ATTEMPT  MODEL\n", "ID", width = id.len());
-    assert!(colored.contains(&header), "{colored:?}");
+    let header = colored
+        .lines()
+        .map(|line| line.trim_start_matches("^D\x08\x08"))
+        .find(|line| line.starts_with("ID "))
+        .unwrap_or_else(|| panic!("{colored:?}"));
+    assert_eq!(
+        header.split_whitespace().collect::<Vec<_>>(),
+        ["ID", "NAME", "GOAL", "EXECUTOR", "STATE", "ATTEMPT", "MODEL", "EFFORT"]
+    );
     assert!(colored.contains("\x1b[32mfinished\x1b[0m"), "{colored:?}");
     assert!(colored.contains("\x1b[31mbroken\x1b[0m"), "{colored:?}");
     assert!(colored.contains("\x1b[2m-\x1b[0m"), "{colored:?}");
     assert!(colored.contains("\n\ncodex: 1 runs (finished 1)\n"), "{colored:?}");
     let (_, uncolored) = run(&["ls"], Some("1"));
     assert!(!uncolored.contains('\x1b'), "{uncolored:?}");
-    assert!(uncolored.contains(&format!("{id}  terminal  -     codex     finished  1        -\n")), "{uncolored:?}");
-    assert!(uncolored.contains("broken  ") && uncolored.contains("run.json"), "{uncolored:?}");
+    let row = uncolored.lines().find(|line| line.starts_with(&id)).unwrap();
+    assert_eq!(
+        row.split_whitespace().collect::<Vec<_>>(),
+        [&id, "terminal", "-", "codex", "finished", "1", "-", "ultra"]
+    );
+    let broken = uncolored.lines().find(|line| line.starts_with("broken ")).unwrap();
+    assert!(broken.contains("run.json") && broken.ends_with("  -"), "{uncolored:?}");
     assert!(run(&["ls"], Some("")).1.contains("\x1b[32mfinished\x1b[0m"));
 
     let (code, colored) = run(&["verify", &id, "--check", "echo problem; exit 7"], None);

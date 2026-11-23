@@ -99,16 +99,9 @@ fn human(output: &Output) {
                             "broken".into(),
                             "-".into(),
                             error.escape_debug().to_string(),
+                            "-".into(),
                         ],
-                        ListEntry::Run { run, observation } => [
-                            run.id.escape_debug().to_string(),
-                            if run.name == run.id { "-" } else { &run.name }.escape_debug().to_string(),
-                            run.goal.as_deref().unwrap_or("-").escape_debug().to_string(),
-                            run.launch.target().executor().as_str().into(),
-                            observation.state().as_str().into(),
-                            run.attempt.to_string(),
-                            run.model.as_deref().unwrap_or("-").escape_debug().to_string(),
-                        ],
+                        ListEntry::Run { run, observation } => terminal_run_row(run, observation.state()),
                     })
                     .collect::<Vec<_>>();
                 println!("{}", table(&rows, color));
@@ -119,14 +112,15 @@ fn human(output: &Output) {
                             println!("{}\tbroken\t{}", run_id.escape_debug(), error.escape_debug());
                         }
                         ListEntry::Run { run, observation } => println!(
-                            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             run.id,
                             if run.name == run.id { "-" } else { &run.name }.escape_debug(),
                             run.goal.as_deref().unwrap_or("-").escape_debug(),
                             run.launch.target().executor().as_str(),
                             observation.state().as_str(),
                             run.attempt,
-                            run.model.as_deref().unwrap_or("-").escape_debug()
+                            run.model.as_deref().unwrap_or("-").escape_debug(),
+                            run.requested_effort.as_deref().unwrap_or("-").escape_debug()
                         ),
                     }
                 }
@@ -177,7 +171,7 @@ fn human(output: &Output) {
                     println!("  {line}");
                 }
                 println!(
-                    "executor: {}\nattempt: {}\nrun dir: {}\nreport path: {}\nlatest verdict: {}",
+                    "executor: {}\nattempt: {}\nrun dir: {}\nreport path: {}\nlatest verdict: {}\nrequested effort: {}",
                     run.launch.target().executor().as_str(),
                     run.attempt,
                     dir.display(),
@@ -187,7 +181,8 @@ fn human(output: &Output) {
                         .rev()
                         .find(|v| v.attempt == run.attempt)
                         .map(|v| v.verdict.as_str())
-                        .unwrap_or("none")
+                        .unwrap_or("none"),
+                    run.requested_effort.as_deref().unwrap_or("-").escape_debug()
                 );
                 match tail {
                     Some(Tail::Unavailable(_, message) | Tail::NoStream(message)) => println!("{message}"),
@@ -231,8 +226,21 @@ fn paint(text: &str, code: &str, enabled: bool) -> String {
     if enabled && !code.is_empty() { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_owned() }
 }
 
-fn table(rows: &[[String; 7]], color: bool) -> String {
-    let header = ["ID", "NAME", "GOAL", "EXECUTOR", "STATE", "ATTEMPT", "MODEL"];
+fn terminal_run_row(run: &Run, state: State) -> [String; 8] {
+    [
+        run.id.escape_debug().to_string(),
+        if run.name == run.id { "-" } else { &run.name }.escape_debug().to_string(),
+        run.goal.as_deref().unwrap_or("-").escape_debug().to_string(),
+        run.launch.target().executor().as_str().into(),
+        state.as_str().into(),
+        run.attempt.to_string(),
+        run.model.as_deref().unwrap_or("-").escape_debug().to_string(),
+        run.requested_effort.as_deref().unwrap_or("-").escape_debug().to_string(),
+    ]
+}
+
+fn table(rows: &[[String; 8]], color: bool) -> String {
+    let header = ["ID", "NAME", "GOAL", "EXECUTOR", "STATE", "ATTEMPT", "MODEL", "EFFORT"];
     let mut widths = header.map(str::len);
     for row in rows {
         for (width, value) in widths.iter_mut().zip(row) {
@@ -336,19 +344,31 @@ mod tests {
     use std::num::NonZeroU32;
 
     #[test]
+    fn terminal_run_row_shows_requested_effort() {
+        let run: Run = serde_json::from_value(json!({
+            "id": "1", "name": "review", "repo": ".", "brief": "brief.md",
+            "launch": {"state": "starting", "target": {"executor": "codex"}},
+            "attempt": 1, "requested_effort": "xhigh", "authorized_paths": [],
+            "verifications": [], "created_at": "2026-11-23"
+        }))
+        .unwrap();
+        assert_eq!(terminal_run_row(&run, State::Starting)[7], "xhigh");
+    }
+
+    #[test]
     fn table_aligns_header_and_rows_before_coloring() {
         let rows = [
-            ["1", "alpha", "-", "codex", "finished", "1", "-"].map(str::to_owned),
-            ["broken", "-", "-", "-", "broken", "-", "bad record"].map(str::to_owned),
+            ["1", "alpha", "-", "codex", "finished", "1", "-", "high"].map(str::to_owned),
+            ["broken", "-", "-", "-", "broken", "-", "bad record", "-"].map(str::to_owned),
         ];
         assert_eq!(
             table(&rows, false),
-            "ID      NAME   GOAL  EXECUTOR  STATE     ATTEMPT  MODEL\n\
-             1       alpha  -     codex     finished  1        -\n\
-             broken  -      -     -         broken    -        bad record\n"
+            "ID      NAME   GOAL  EXECUTOR  STATE     ATTEMPT  MODEL       EFFORT\n\
+             1       alpha  -     codex     finished  1        -           high\n\
+             broken  -      -     -         broken    -        bad record  -\n"
         );
         let colored = table(&rows, true);
-        assert!(colored.contains("codex     \x1b[32mfinished\x1b[0m  1        \x1b[2m-\x1b[0m\n"));
+        assert!(colored.contains("codex     \x1b[32mfinished\x1b[0m  1        \x1b[2m-\x1b[0m           high\n"));
         assert!(colored.contains("\x1b[31mbroken\x1b[0m    \x1b[2m-\x1b[0m"));
         assert!(!table(&rows, false).contains('\x1b'));
     }
@@ -356,7 +376,7 @@ mod tests {
     #[test]
     fn table_colors_each_state_without_coloring_other_values() {
         let rows = ["starting", "running", "blocked", "failed", "unknown", "stopped"]
-            .map(|state| ["id", "name", "goal", "codex", state, "1", "model"].map(str::to_owned));
+            .map(|state| ["id", "name", "goal", "codex", state, "1", "model", "-"].map(str::to_owned));
         let output = table(&rows, true);
         for state in ["starting", "running", "blocked"] {
             assert!(output.contains(&format!("\x1b[33m{state}\x1b[0m")));

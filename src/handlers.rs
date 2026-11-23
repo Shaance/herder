@@ -216,11 +216,86 @@ enum Models {
     Review(Vec<String>),
 }
 
+fn codex_config_assignments(extra: &[String]) -> impl Iterator<Item = (&str, &str)> {
+    let mut args = extra.iter().map(String::as_str);
+    std::iter::from_fn(move || {
+        while let Some(arg) = args.next() {
+            let assignment = match arg {
+                "--" => break,
+                "-c" | "--config" => args.next(),
+                _ => arg
+                    .strip_prefix("--config=")
+                    .or_else(|| arg.strip_prefix("-c").map(|value| value.strip_prefix('=').unwrap_or(value))),
+            };
+            if let Some((key, value)) = assignment.and_then(|value| value.split_once('=')) {
+                return Some((key.trim(), value.trim()));
+            }
+        }
+        None
+    })
+}
+
 fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32)> {
-    let Dispatch { mode, executor, brief, repo, mut model, goal, name, profile, pane, paths, extra } = args;
+    let Dispatch { mode, executor, brief, repo, mut model, effort, goal, name, profile, pane, paths, mut extra } = args;
     let reject = |message: String| Ok((Output::Rejection(message), 2));
     if executor != Executor::Claude && profile.is_some() {
         return reject("--profile applies only to Claude".into());
+    }
+    if effort.is_some() {
+        let conflict = match executor {
+            Executor::Vibe => {
+                return reject(
+                    "Vibe has no per-run effort; effort comes from the model alias's `thinking` setting in Vibe's config.toml, choose an alias with --model"
+                        .into(),
+                );
+            }
+            Executor::Codex => codex_config_assignments(&extra).any(|(key, _)| key == "model_reasoning_effort"),
+            Executor::Claude => extra.iter().any(|arg| arg == "--effort" || arg.starts_with("--effort=")),
+        };
+        if conflict {
+            return reject("--effort conflicts with native effort arguments after --".into());
+        }
+    }
+    if executor == Executor::Codex && mode == "review" {
+        if codex_config_assignments(&extra).any(|(key, value)| {
+            key == "sandbox_mode" && !matches!(value, "read-only" | r#""read-only""# | "'read-only'")
+        }) {
+            return reject("Codex review requires sandbox_mode to be read-only".into());
+        }
+        let mut sandbox_specified = false;
+        let mut args = extra.iter_mut();
+        while let Some(arg) = args.next() {
+            let value = match arg.as_str() {
+                "--" => return reject("Codex review extras cannot include a second -- separator".into()),
+                "--dangerously-bypass-approvals-and-sandbox"
+                | "--yolo"
+                | "--full-auto"
+                | "--approve-for-me"
+                | "--not-so-yolo" => {
+                    return reject(format!("Codex review requires a read-only sandbox and cannot use {arg}"));
+                }
+                "--sandbox" | "-s" => args.next().map(|value| value.as_str()),
+                flag if flag.starts_with("--sandbox=") => flag.strip_prefix("--sandbox="),
+                flag if flag.starts_with("-s") => {
+                    flag.strip_prefix("-s").map(|value| value.strip_prefix('=').unwrap_or(value))
+                }
+                _ => continue,
+            };
+            if sandbox_specified {
+                return reject("Codex review accepts only one explicit sandbox flag".into());
+            }
+            if value != Some("read-only") {
+                return reject("Codex review requires --sandbox read-only".into());
+            }
+            if arg.starts_with("-s") && arg != "-s" {
+                // The launchers only recognize the split short flag or the long flag.
+                *arg = "--sandbox=read-only".into();
+            }
+            sandbox_specified = true;
+        }
+        if !sandbox_specified {
+            extra.extend(["--sandbox".into(), "read-only".into()]);
+        }
     }
     let models = match model.as_slice() {
         [] | [_] => Models::Single(model.pop()),
@@ -284,6 +359,7 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
             name: name.unwrap_or_else(|| id.clone()),
             id,
             model,
+            requested_effort: effort.clone(),
             extra: extra.clone(),
             repo: repo.clone(),
             baseline_commit,
