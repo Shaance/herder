@@ -101,16 +101,7 @@ fn human(output: &Output) {
                             error.escape_debug().to_string(),
                             "-".into(),
                         ],
-                        ListEntry::Run { run, observation } => [
-                            run.id.escape_debug().to_string(),
-                            if run.name == run.id { "-" } else { &run.name }.escape_debug().to_string(),
-                            run.goal.as_deref().unwrap_or("-").escape_debug().to_string(),
-                            run.launch.target().executor().as_str().into(),
-                            observation.state().as_str().into(),
-                            run.attempt.to_string(),
-                            run.model.as_deref().unwrap_or("-").escape_debug().to_string(),
-                            run.requested_effort.as_deref().unwrap_or("-").escape_debug().to_string(),
-                        ],
+                        ListEntry::Run { run, observation } => terminal_run_row(run, observation.state()),
                     })
                     .collect::<Vec<_>>();
                 println!("{}", table(&rows, color));
@@ -235,6 +226,19 @@ fn paint(text: &str, code: &str, enabled: bool) -> String {
     if enabled && !code.is_empty() { format!("\x1b[{code}m{text}\x1b[0m") } else { text.to_owned() }
 }
 
+fn terminal_run_row(run: &Run, state: State) -> [String; 8] {
+    [
+        run.id.escape_debug().to_string(),
+        if run.name == run.id { "-" } else { &run.name }.escape_debug().to_string(),
+        run.goal.as_deref().unwrap_or("-").escape_debug().to_string(),
+        run.launch.target().executor().as_str().into(),
+        state.as_str().into(),
+        run.attempt.to_string(),
+        run.model.as_deref().unwrap_or("-").escape_debug().to_string(),
+        run.requested_effort.as_deref().unwrap_or("-").escape_debug().to_string(),
+    ]
+}
+
 fn table(rows: &[[String; 8]], color: bool) -> String {
     let header = ["ID", "NAME", "GOAL", "EXECUTOR", "STATE", "ATTEMPT", "MODEL", "EFFORT"];
     let mut widths = header.map(str::len);
@@ -338,6 +342,18 @@ mod tests {
     use super::*;
     use crate::domain::Check;
     use std::num::NonZeroU32;
+
+    #[test]
+    fn terminal_run_row_shows_requested_effort() {
+        let run: Run = serde_json::from_value(json!({
+            "id": "1", "name": "review", "repo": ".", "brief": "brief.md",
+            "launch": {"state": "starting", "target": {"executor": "codex"}},
+            "attempt": 1, "requested_effort": "xhigh", "authorized_paths": [],
+            "verifications": [], "created_at": "2026-11-23"
+        }))
+        .unwrap();
+        assert_eq!(terminal_run_row(&run, State::Starting)[7], "xhigh");
+    }
 
     #[test]
     fn table_aligns_header_and_rows_before_coloring() {

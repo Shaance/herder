@@ -1318,11 +1318,12 @@ fn codex_review_rejects_sandbox_overrides_before_recording() {
         &["--yolo"],
         &["--full-auto"],
         &["--approve-for-me"],
+        &["--not-so-yolo"],
         &["-c", "sandbox_mode=\"workspace-write\""],
         &["-csandbox_mode=\"workspace-write\""],
         &["-c=sandbox_mode=\"workspace-write\""],
         &["--config", "sandbox_mode=\"workspace-write\""],
-        &["--config=sandbox_mode=\"read-only\""],
+        &["--config=sandbox_mode=\"workspace-write\""],
         &["--", "--sandbox", "read-only"],
     ] {
         let result = f.dispatch("codex", &[&["--mode", "review", "--"], extra].concat(), 2);
@@ -1347,6 +1348,20 @@ fn codex_review_uses_explicit_read_only_sandbox_once() {
         assert_eq!(f.record(id)["extra"], json!(recorded));
         let args = fs::read_to_string(f.state.join("launch-args")).unwrap();
         assert_eq!(args.lines().skip(3).collect::<Vec<_>>(), recorded);
+    }
+}
+
+#[test]
+fn codex_review_accepts_read_only_config_assignments() {
+    let f = Fixture::new();
+    for extra in [
+        &["-c", "sandbox_mode=read-only"][..],
+        &["--config=sandbox_mode=\"read-only\""],
+        &["--config", "sandbox_mode = 'read-only'"],
+    ] {
+        let result = f.dispatch("codex", &[&["--mode", "review", "--"], extra].concat(), 0);
+        let id = result["data"]["run_id"].as_str().unwrap();
+        assert_eq!(f.record(id)["extra"], json!([extra, &["--sandbox", "read-only"]].concat()));
     }
 }
 

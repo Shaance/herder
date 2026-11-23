@@ -23,9 +23,9 @@ FAIL  outside-src  attempt 1
   check  true  ok
 
 $ herder ls
-ID                    NAME         GOAL  EXECUTOR  STATE     ATTEMPT  MODEL
-20261118-164821-c473  outside-src  -     codex     finished  1        -
-20261118-164822-5804  crashed      -     codex     failed    1        -
+ID                    NAME         GOAL  EXECUTOR  STATE     ATTEMPT  MODEL  EFFORT
+20261118-164821-c473  outside-src  -     codex     finished  1        -      -
+20261118-164822-5804  crashed      -     codex     failed    1        -      -
 
 codex: 2 runs (failed 1, finished 1)
 ```

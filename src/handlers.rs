@@ -216,7 +216,7 @@ enum Models {
     Review(Vec<String>),
 }
 
-fn codex_config_keys(extra: &[String]) -> impl Iterator<Item = &str> {
+fn codex_config_assignments(extra: &[String]) -> impl Iterator<Item = (&str, &str)> {
     let mut args = extra.iter().map(String::as_str);
     std::iter::from_fn(move || {
         while let Some(arg) = args.next() {
@@ -227,8 +227,8 @@ fn codex_config_keys(extra: &[String]) -> impl Iterator<Item = &str> {
                     .strip_prefix("--config=")
                     .or_else(|| arg.strip_prefix("-c").map(|value| value.strip_prefix('=').unwrap_or(value))),
             };
-            if let Some((key, _)) = assignment.and_then(|value| value.split_once('=')) {
-                return Some(key.trim());
+            if let Some((key, value)) = assignment.and_then(|value| value.split_once('=')) {
+                return Some((key.trim(), value.trim()));
             }
         }
         None
@@ -249,7 +249,7 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
                         .into(),
                 );
             }
-            Executor::Codex => codex_config_keys(&extra).any(|key| key == "model_reasoning_effort"),
+            Executor::Codex => codex_config_assignments(&extra).any(|(key, _)| key == "model_reasoning_effort"),
             Executor::Claude => extra.iter().any(|arg| arg == "--effort" || arg.starts_with("--effort=")),
         };
         if conflict {
@@ -257,15 +257,21 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
         }
     }
     if executor == Executor::Codex && mode == "review" {
-        if codex_config_keys(&extra).any(|key| key == "sandbox_mode") {
-            return reject("Codex review cannot set sandbox_mode through config".into());
+        if codex_config_assignments(&extra).any(|(key, value)| {
+            key == "sandbox_mode" && !matches!(value, "read-only" | r#""read-only""# | "'read-only'")
+        }) {
+            return reject("Codex review requires sandbox_mode to be read-only".into());
         }
         let mut sandbox_specified = false;
         let mut args = extra.iter_mut();
         while let Some(arg) = args.next() {
             let value = match arg.as_str() {
                 "--" => return reject("Codex review extras cannot include a second -- separator".into()),
-                "--dangerously-bypass-approvals-and-sandbox" | "--yolo" | "--full-auto" | "--approve-for-me" => {
+                "--dangerously-bypass-approvals-and-sandbox"
+                | "--yolo"
+                | "--full-auto"
+                | "--approve-for-me"
+                | "--not-so-yolo" => {
                     return reject(format!("Codex review requires a read-only sandbox and cannot use {arg}"));
                 }
                 "--sandbox" | "-s" => args.next().map(|value| value.as_str()),
