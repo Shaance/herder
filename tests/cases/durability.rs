@@ -134,5 +134,9 @@ fn a6_listing_isolates_broken_runs_and_dispatch_publishes_atomically() {
         }
     }
     let human = f.cmd().arg("ls").output().unwrap();
-    assert!(String::from_utf8_lossy(&human.stdout).contains("broken\tbroken"));
+    let human = String::from_utf8_lossy(&human.stdout);
+    let row = human.lines().find(|line| line.starts_with("broken\tbroken\t")).unwrap();
+    let columns: Vec<_> = row.split('\t').collect();
+    assert_eq!(columns.len(), 3);
+    assert!(columns[2].contains("run.json"), "{row}");
 }

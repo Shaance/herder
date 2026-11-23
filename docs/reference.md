@@ -36,13 +36,15 @@ Scripts are embedded in the binary. Set `HERDER_SKILLS_DIR` to an ai-skills-shap
 
 ## List runs
 
-`herder ls` includes models and a per-executor state tally, available as `data.summary` in JSON. `--goal` scopes the list and tally to the supplied goal. Broken entries remain errors outside the tally.
+`herder ls` shows the effort requested through herder's `--effort` in `EFFORT` immediately after `MODEL`. A dash indicates that the herder flag was omitted. JSON includes `run.requested_effort` and a per-executor state tally in `data.summary`. `--goal` scopes the list and tally to the supplied goal. Broken entries remain errors outside the tally.
 
 ## Dispatch and executor arguments
 
 Prefer briefs outside `--repo`. Files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. A direct-mode brief requires `<task>`, `<workstream_contract>`, `<implementation_authority>`, `<action_safety>`, `<default_follow_through_policy>`, `<verification_loop>`, `<economy_contract>` and `<structured_output_contract>` blocks. Name authorized paths and rejected alternatives in the brief.
 
 Extra dispatch arguments after `--` go to the executor, including Vibe arguments past its launcher's separator. They are recorded and replayed with `--model` on Vibe and Codex resume. Herder Vibe runs are auto-approve only. Launcher gate exit 3 preserves `starting` or `pending_resume`; herder returns 0.
+
+Dispatch and handoff accept `--effort <LEVEL>` for Codex and Claude. Accepted levels are `low`, `medium`, `high`, `xhigh`, `max` and `ultra`. The executor determines which levels a model supports. Its configured default applies when both herder's `--effort` and native effort arguments are omitted. With the herder flag omitted, native effort arguments after `--` are forwarded and `requested_effort` remains empty. Vibe uses the selected model alias's `thinking` setting in `config.toml`. Herder rejects a request that also sets native effort after `--`. Codex receives the requested effort on each launch and resume. Claude receives it at launch and resumes with the saved session options.
 
 ## Resume, retry and request IDs
 
@@ -93,7 +95,9 @@ herder dispatch --mode review --executor vibe --model <vibe-model-1> --model <vi
 herder wait <id1> <id2> <id3> --all
 ```
 
-Repeated `--model` launches one recorded run per model and prints every run ID. With `--name`, each run is named `<name>-<model>`; otherwise it uses its generated ID. Repeating `--model` is allowed only with `--mode review`, is refused for handoffs, and requires distinct model values. This limits each direct-mode dispatch to one worker in the worktree. If a later launch fails, runs already started stay listed beside the error. Wait on all printed run IDs, then read every report. For dispatch, `--mode` selects brief linting only; the brief must enforce read-only behavior.
+Repeated `--model` launches one recorded run per model and prints every run ID. A supplied `--effort` applies to every run. With `--name`, each run is named `<name>-<model>`; otherwise it uses its generated ID. Repeating `--model` is allowed only with `--mode review`, is refused for handoffs, and requires distinct model values. This limits each direct-mode dispatch to one worker in the worktree. If a later launch fails, runs already started stay listed beside the error. Wait on all printed run IDs, then read every report.
+
+Herder sandboxes Codex review dispatches and handoffs read-only. For reviews recorded by this version, herder saves the read-only sandbox flag in the executor arguments and replays it on each resume. Older review records without a saved sandbox flag resume with the launcher's default. Start a fresh review when you need read-only enforcement for an older run. Herder accepts a single explicit read-only sandbox and rejects sandbox config overrides and bypass flags before recording the run. Claude and Vibe review runs rely on the brief's read-only instruction alone. Vibe runs with `--auto-approve`.
 
 ## Handoff
 
@@ -105,7 +109,7 @@ herder handoff --executor claude --brief /tmp/HANDOFF.md --repo . --path src/
 
 Handoff reuses dispatch's options, launch, store and `--pane`, but accepts a plain continuation document instead of a structured implementer brief. It snapshots the document's full bytes into the run's `input.md` behind a standard continuation contract and sends that durable input to the worker. The generated prompt still passes the same brief linter as dispatch. Missing, empty, whitespace-only or non-UTF-8 documents fail before launch and leave no run record. Later edits or deletion of the original cannot change what the worker receives, and the document is never printed to stdout.
 
-Handoff launches a continuation only: it does not transfer hidden conversation, stop another writer or prove the context was understood. The launch result is launch evidence only. Use `--pane` for Claude attach in Rex. `--mode review` instructs the receiver to stay read-only; it does not add an OS sandbox. The generated prompt tells the receiver not to delegate or publish unless the continuation document or the user expressly authorized it; herder does not enforce this as an OS restriction.
+Handoff launches a continuation only: it does not transfer hidden conversation, stop another writer or prove the context was understood. The launch result is launch evidence only. Use `--pane` for Claude attach in Rex. `--mode review` instructs the receiver to stay read-only and applies the same Codex sandbox as review dispatch. The generated prompt tells the receiver not to delegate or publish unless the continuation document or the user expressly authorized it; herder does not enforce this as an OS restriction.
 
 ## Rex panes and environment
 

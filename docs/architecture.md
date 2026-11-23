@@ -107,8 +107,9 @@ unknown evidence. It neither freezes the worktree nor approves the result.
 
 `herder handoff` accepts a nonempty UTF-8 continuation document. It adds a standard
 contract, stores the document's bytes in `input.md`, lints the result and uses
-the dispatch launch path. Review mode instructs the receiver to stay read-only;
-mode selects brief linting and does not add an OS sandbox. Invalid input fails
+the dispatch launch path. Review mode instructs the receiver to stay read-only.
+For Codex, dispatch also records the read-only sandbox flag in `extra`, which the
+launcher replays on resume. Invalid input fails
 before launch. The coordinator supplies the context and stops its own edits;
 launch alone cannot transfer hidden conversation or prove understanding. See
 [`src/handoff.rs`](../src/handoff.rs) and [`src/handlers.rs`](../src/handlers.rs).

@@ -271,25 +271,38 @@ fn script_launch_and_resume_do_not_inherit_rex_environment() {
 }
 
 #[test]
-fn ls_models_and_summary_count_observed_states_with_goal_filter() {
+fn ls_models_effort_and_summary_count_observed_states_with_goal_filter() {
     let f = Fixture::new();
-    let first = f.dispatch("vibe", &["--goal", "goal-1", "--model", "model-x"], 0);
+    let first = f.dispatch("codex", &["--goal", "goal-1", "--model", "model-x", "--effort", "high"], 0);
+    let id = first["data"]["run_id"].as_str().unwrap();
     f.dispatch("vibe", &["--goal", "goal-1"], 0);
     f.dispatch("codex", &["--goal", "other"], 0);
     f.launch("claude");
     f.status("exited", "COMPLETED");
     let list = f.call(&["ls"], 0);
-    assert_eq!(list["data"]["summary"], json!({"vibe":{"finished":2},"codex":{"finished":1},"claude":{"running":1}}));
-    assert_eq!(f.call(&["ls", "--goal", "goal-1"], 0)["data"]["summary"], json!({"vibe":{"finished":2}}));
+    assert_eq!(list["data"]["summary"], json!({"vibe":{"finished":1},"codex":{"finished":2},"claude":{"running":1}}));
+    let run = list["data"]["runs"].as_array().unwrap().iter().find(|entry| entry["run"]["id"] == id).unwrap();
+    assert_eq!(run["run"]["requested_effort"], "high");
+    assert_eq!(
+        f.call(&["ls", "--goal", "goal-1"], 0)["data"]["summary"],
+        json!({"vibe":{"finished":1},"codex":{"finished":1}})
+    );
     let out = f.cmd().args(["ls", "--goal", "goal-1"]).output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8(out.stdout).unwrap();
-    let id = first["data"]["run_id"].as_str().unwrap();
-    assert!(text.contains(&format!("{id}\t-\tgoal-1\tvibe\tfinished\t1\tmodel-x\n")), "{text}");
-    assert_eq!(text.matches("\tfinished\t1\t-\n").count(), 1);
-    assert!(text.ends_with("vibe: 2 runs (finished 2)\n"), "{text}");
+    let row = format!("{id}\t-\tgoal-1\tcodex\tfinished\t1\tmodel-x\thigh");
+    assert!(text.lines().any(|line| line == row), "{text}");
+    assert_eq!(text.matches("\tfinished\t1\t-\t-\n").count(), 1);
+    assert!(text.ends_with("vibe: 1 runs (finished 1)\n"), "{text}");
+    assert!(!text.contains("EFFORT"), "{text}");
+    let out = f.cmd().args(["status", id]).output().unwrap();
+    assert!(out.status.success());
+    assert!(String::from_utf8_lossy(&out.stdout).contains("\nrequested effort: high\n"));
     fs::write(f.skills.join("query-fail"), "").unwrap();
-    assert_eq!(f.call(&["ls", "--goal", "goal-1"], 0)["data"]["summary"], json!({"vibe":{"unknown":2}}));
+    assert_eq!(
+        f.call(&["ls", "--goal", "goal-1"], 0)["data"]["summary"],
+        json!({"vibe":{"unknown":1},"codex":{"unknown":1}})
+    );
     assert_eq!(f.call(&["ls", "--goal", "missing"], 0)["data"]["summary"], json!({}));
 }
 
@@ -301,6 +314,24 @@ fn old_run_without_extra_loads() {
     record.as_object_mut().unwrap().remove("extra");
     fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
     assert_eq!(f.call(&["status", &id], 0)["data"]["run"]["extra"], json!([]));
+}
+
+#[test]
+fn old_run_without_requested_effort_replays_raw_effort_on_resume() {
+    let f = Fixture::new();
+    let config = "model_reasoning_effort=low";
+    let result = f.dispatch("codex", &["--", "-c", config], 0);
+    let id = result["data"]["run_id"].as_str().unwrap();
+    let mut record = f.record(id);
+    assert_eq!(record.as_object_mut().unwrap().remove("requested_effort"), Some(Value::Null));
+    fs::write(f.dir(id).join("run.json"), record.to_string()).unwrap();
+    f.status("exited", "COMPLETED");
+    let resumed = f.call(&["resume", id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+    assert_eq!(resumed["data"]["run"]["attempt"], 2);
+    assert_eq!(resumed["data"]["run"]["requested_effort"], Value::Null);
+    assert_eq!(f.record(id)["extra"], json!(["-c", config]));
+    let args = fs::read_to_string(f.state.join("resume-args")).unwrap();
+    assert!(args.ends_with(&format!("\n--\n-c\n{config}\n")), "{args}");
 }
 
 #[test]

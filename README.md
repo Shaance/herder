@@ -161,7 +161,7 @@ The arrows show common observations; `unknown` can occur whenever evidence is un
 | `doctor` | Check executors, profiles and Rex. |
 | `dispatch` | Lint a brief and launch a recorded worker. |
 | `handoff` | Launch a worker with a plain continuation document. |
-| `ls` | List runs with fresh executor status. |
+| `ls` | List runs with fresh executor status and requested effort after the model. |
 | `wait` | Wait for any or all runs to settle. Exit 0 if every settled run at return is finished, or 1 if any failed, stopped, or blocked, or the wait times out. |
 | `status` | Query a run's current executor status. |
 | `report` | Read the current attempt's report. |
@@ -169,7 +169,7 @@ The arrows show common observations; `unknown` can occur whenever evidence is un
 | `resume` | Resume a recorded session with a delta brief. |
 | `verify` | Record scope and command verification. |
 
-Use `herder <command> --help` for flags and examples. All commands accept `--json` with an `{ok, data, error}` envelope; exit codes are 0 for success, 1 for operational failure and 2 for usage error. See [JSON and exit codes](docs/reference.md#json-output-and-exit-codes) for details.
+Use `--effort <LEVEL>` on `dispatch` or `handoff` to request reasoning effort for Codex or Claude. Use `herder <command> --help` for flags and examples. All commands accept `--json` with an `{ok, data, error}` envelope; exit codes are 0 for success, 1 for operational failure and 2 for usage error. See [JSON and exit codes](docs/reference.md#json-output-and-exit-codes) for details.
 
 ## Configuration
 

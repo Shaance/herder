@@ -46,7 +46,8 @@ fn embedded_scripts_run_dispatch_lint_launch_status_and_verify() {
     fs::create_dir(&home).unwrap();
     f.executable(
         &f.bin.join("codex"),
-        r#"while [ "$#" -gt 0 ]; do
+        r#"printf '%s\n' "$@" > "$HERDER_STATE_DIR/worker-args"
+while [ "$#" -gt 0 ]; do
     if [ "$1" = -o ]; then shift; echo 'stub report' > "$1"; break; fi
     shift
 done
@@ -65,11 +66,32 @@ echo '{"type":"turn.completed"}'"#,
     assert!(rejected["error"].as_str().unwrap().contains("missing required blocks"), "{rejected}");
 
     let brief = f.root.join("brief.md");
-    let (code, dispatch) =
-        call(&["dispatch", "--executor", "codex", "--repo", ".", "--brief", brief.to_str().unwrap(), "--path", "."]);
+    let (code, dispatch) = call(&[
+        "dispatch",
+        "--executor",
+        "codex",
+        "--mode",
+        "review",
+        "--repo",
+        ".",
+        "--brief",
+        brief.to_str().unwrap(),
+        "--path",
+        ".",
+        "--model",
+        "stub-model",
+        "--effort",
+        "medium",
+    ]);
     assert_eq!(code, 0, "{dispatch}");
     assert_eq!(dispatch["data"]["launch_error"], Value::Null, "{dispatch}");
     let id = dispatch["data"]["run_id"].as_str().unwrap();
+    let worker_args = || fs::read_to_string(f.state.join("worker-args")).unwrap();
+    assert_eq!(f.record(id)["extra"], json!(["--sandbox", "read-only"]));
+    let settings = "--model\nstub-model\n-c\nmodel_reasoning_effort=medium\n--sandbox\nread-only\n";
+    let args = worker_args();
+    assert!(args.contains(settings), "{args}");
+    assert_eq!(args.lines().filter(|arg| *arg == "--sandbox").count(), 1, "{args}");
     let (code, report) = call(&["report", id]);
     assert_eq!(code, 0, "{report}");
     assert_eq!(report["data"]["observation"]["state"], "finished", "{report}");
@@ -80,6 +102,33 @@ echo '{"type":"turn.completed"}'"#,
     assert_eq!(check["command"], "collect_evidence.sh");
     assert_eq!(check["exit_code"], 0);
     assert!(check["output"].as_str().unwrap().contains("worktree status"));
+
+    for attempt in [2, 3] {
+        let (code, resumed) = call(&["resume", id, "--brief", brief.to_str().unwrap()]);
+        assert_eq!(code, 0, "{resumed}");
+        assert_eq!(resumed["data"]["run"]["attempt"], attempt);
+        assert_eq!(f.record(id)["requested_effort"], "medium");
+        assert_eq!(f.record(id)["extra"], json!(["--sandbox", "read-only"]));
+        let args = worker_args();
+        assert!(
+            args.contains(&format!(
+                "{settings}-o\n{}/final{attempt}.md\nresume\nstub-thread\n-\n",
+                f.dir(id).display()
+            )),
+            "{args}"
+        );
+        assert_eq!(args.lines().filter(|arg| *arg == "--sandbox").count(), 1, "{args}");
+    }
+
+    // Older Codex review records lack a sandbox in their saved extras.
+    let mut legacy = f.record(id);
+    legacy["extra"] = json!([]);
+    legacy.as_object_mut().unwrap().remove("requested_effort");
+    fs::write(f.dir(id).join("run.json"), serde_json::to_vec(&legacy).unwrap()).unwrap();
+    let (code, resumed) = call(&["resume", id, "--brief", brief.to_str().unwrap()]);
+    assert_eq!(code, 0, "{resumed}");
+    let args = worker_args();
+    assert!(args.contains("\n--sandbox\nworkspace-write\n"), "{args}");
 }
 
 #[test]
@@ -87,26 +136,36 @@ fn real_launch_and_status_scripts_accept_stub_executors() {
     for executor in ["codex", "vibe"] {
         let (f, skills) = setup();
         let body = if executor == "codex" {
-            r#"import sys,pathlib
+            r#"import os,sys,pathlib
 args=sys.argv
+pathlib.Path(os.environ['HERDER_STATE_DIR'], 'worker-args').write_text('\n'.join(args))
 pathlib.Path(args[args.index('-o')+1]).write_text('stub report')
 print('{"type":"thread.started","thread_id":"stub-thread"}')
 print('{"type":"turn.completed"}')"#
         } else {
-            r#"import sys,pathlib,json
+            r#"import os,sys,pathlib,json
 args=sys.argv; out=pathlib.Path(args[args.index('--output-dir')+1]); out.mkdir()
+pathlib.Path(os.environ['HERDER_STATE_DIR'], 'worker-args').write_text('\n'.join(args))
 (out/'export.json').write_text(json.dumps({'outcome':'finished','config':{'active_model':'stub','models':{'stub':{'name':'stub','thinking':'high'}}}}))
 print('{"sessionId":"stub-session"}')
 print('{"type":"message","role":"assistant","content":[{"type":"text","text":"stub report"}]}')"#
         };
         fs::write(stub_body(&f.bin.join(executor)), format!("#!/usr/bin/python3\n{body}\n")).unwrap();
-        let (code, dispatch) = call(
-            &f,
-            &skills,
-            &["dispatch", "--executor", executor, "--repo", ".", "--brief", f.root.join("brief.md").to_str().unwrap()],
-        );
+        let mode = if executor == "codex" { "direct" } else { "review" };
+        let brief = f.root.join("brief.md");
+        let args =
+            ["dispatch", "--executor", executor, "--mode", mode, "--repo", ".", "--brief", brief.to_str().unwrap()];
+        let (code, dispatch) = call(&f, &skills, &args);
         assert_eq!(code, 0, "{dispatch}");
         let id = dispatch["data"]["run_id"].as_str().unwrap();
+        assert_eq!(f.record(id)["extra"], json!([]));
+        let args = fs::read_to_string(f.state.join("worker-args")).unwrap();
+        if executor == "codex" {
+            assert!(args.contains("\n--sandbox\nworkspace-write\n"), "{args}");
+        } else {
+            assert!(args.lines().any(|arg| arg == "--auto-approve"), "{args}");
+            assert!(!args.contains("--sandbox"), "{args}");
+        }
         let (code, report) = call(&f, &skills, &["report", id]);
         assert_eq!(code, 0, "{report}");
         assert_eq!(report["data"]["observation"]["state"], "finished");

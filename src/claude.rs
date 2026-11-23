@@ -94,6 +94,9 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
         if let Some(m) = &run.model {
             cmd.arg("--model").arg(m);
         }
+        if let Some(effort) = &run.requested_effort {
+            cmd.arg("--effort").arg(effort);
+        }
         cmd.args(&run.extra);
     }
     let report_before = fs::metadata(&report).and_then(|m| m.modified()).ok();
