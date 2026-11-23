@@ -137,7 +137,7 @@ impl Store {
         Ok(runs.into_iter().map(|name| RunId::parse(&name).ok_or(name)).collect())
     }
 }
-fn load(dir: &Path) -> Result<Run> {
+pub fn load(dir: &Path) -> Result<Run> {
     let path = dir.join("run.json");
     let run: Run = serde_json::from_slice(&fs::read(&path).with_context(|| path.display().to_string())?)
         .with_context(|| path.display().to_string())?;

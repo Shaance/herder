@@ -82,6 +82,12 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
         Ok((id, locked, run))
     };
     let (run, observation, detail, code) = match action {
+        Action::ClaudeStopHook { dir } => {
+            if let Err(error) = crate::claude::stop_hook(&dir) {
+                eprintln!("Claude report hook: {error:#}");
+            }
+            std::process::exit(0);
+        }
         Action::Doctor { executor, profile } => {
             return crate::doctor::run(executor, profile).map(|(doctor, code)| (Output::Doctor(doctor), code));
         }

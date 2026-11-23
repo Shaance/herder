@@ -79,6 +79,8 @@ Claude uses its CLI directly through [`src/claude.rs`](../src/claude.rs):
 and `claude stop` stops it. The chosen profile is recorded and reused. Claude
 resume uses the saved session options and rejects an unexpected copied session.
 
+The launch settings register a Stop hook that calls herder with the run directory. Herder reads the latest reply from the hook payload and atomically replaces the attempt report when the reply is nonempty. During a pending resume, the hook writes the new attempt’s file so the launch gate can detect it while readers still see the previous accepted report.
+
 Set `HERDER_SKILLS_DIR` to an ai-skills-shaped directory to replace the embedded
 scripts with executable `<owner>/scripts/<name>.sh` files. The override applies
 to both shared and executor scripts. `herder doctor` checks the required files

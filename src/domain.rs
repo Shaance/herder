@@ -208,6 +208,12 @@ impl Run {
     pub fn suffix(&self) -> String {
         if self.attempt.get() == 1 { String::new() } else { self.attempt.to_string() }
     }
+    pub fn launch_report_name(&self) -> String {
+        match self.launch {
+            Launch::PendingResume { attempt, .. } => format!("final{attempt}.md"),
+            _ => self.report_name(),
+        }
+    }
     pub fn report_name(&self) -> String {
         format!("final{}.md", self.suffix())
     }
