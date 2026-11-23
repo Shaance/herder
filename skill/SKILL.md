@@ -104,7 +104,32 @@ the document or the user expressly authorizes it.
   `record_disagrees`, `unrecognized_status`, and `unconfirmed`; other states omit the cause.
 - Preserve recorded identities and profiles. Consult command help for stop,
   resume, dispatch's `--pane` flag and executor limitations.
-- When something surprises you, file it with `gh issue create -R Shaance/herder` and continue with work that
-  remains safe and understood. Do not paper over an executor disagreement.
+- When something surprises you, file it with `gh issue create -R Shaance/herder` only if the issue text contains no private setup details
+  (local paths, hostnames, account or model routing). Otherwise, record the surprise in a local note outside any repository
+  and mention the note in your own report or handoff. Continue with work that remains safe and understood. Do not paper over an executor disagreement.
 
 All flag details and examples live in `herder <command> --help`.
+
+## Codex runs from a background coordinator
+
+Run the following as one background shell command, for example in a Claude Code background Bash call.
+
+```sh
+herder wait "$run" --timeout 3600; herder report "$run"
+```
+
+The host wakes the coordinator when the command exits, and the output ends with the final report if available.
+Use `;` because `wait` exits 1 if the run failed, stopped or blocked, or the wait timed out. Using `&&` would skip the report.
+Never write `sleep` or `kill -0` waiter loops. After context compaction, run `herder ls` and start a waiter only for runs that are `starting` or `running` and have no live waiter. An older waiter ends at its own timeout.
+
+`herder wait` lists each report path. `herder report <run>` prints the path and then the contents of the current attempt's `final.md` (`final2.md` after one resume, and so on)
+from `$HERDER_STATE_DIR/runs/<id>/`. The state directory defaults to `~/.local/state/herder`. For Codex, the launcher writes the run's last agent message there with `codex exec -o`.
+
+Put Codex options after `--`. Herder replays them on resume.
+
+- Attach an image with `-- --image=/abs/path/shot.png`. Use the `=` form. The short `-i <file>` accepts several values and consumes `resume <thread> -`, so the resume silently starts a new session.
+  Keep attachments outside `--repo`, like briefs: new files inside it outside the authorized paths fail verify scope.
+- Select a named Codex config profile with `-- -p <name>`. Codex layers settings from `$CODEX_HOME/<name>.config.toml`, such as the model and `model_reasoning_effort`, over its base configuration. Keep model IDs in that host file and out of briefs and skills.
+- The Codex `workspace-write` sandbox blocks network access, so checks that bind local ports, such as test servers or emulators, can fail.
+  Prefer running those checks yourself with `herder verify <run> --check '<cmd>'`, which runs outside the worker sandbox.
+  If the worker must run them, `-- -c sandbox_workspace_write.network_access=true` opens all network access for that run, including connections beyond loopback. Use it only in direct mode and say so in the brief.

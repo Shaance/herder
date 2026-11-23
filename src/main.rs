@@ -41,7 +41,7 @@ enum Action {
     },
     #[command(
         about = "Lint a brief and launch a recorded worker",
-        after_help = "Example: herder dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nLauncher gate exit 3 leaves the run starting; herder returns 0. Use herder wait to await settlement or status to follow progress."
+        after_help = "Example: herder dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nCodex extras: --image=<file> (not -i) and -p <profile> after --; extras are replayed on resume.\nLauncher gate exit 3 leaves the run starting; herder returns 0. Use herder wait to await settlement or status to follow progress."
     )]
     Dispatch(Dispatch),
     #[command(
@@ -86,7 +86,7 @@ enum Action {
     },
     #[command(
         about = "Read the current attempt's report",
-        after_help = "Example: herder report 20261101-120000-abcd\nReads final.md (attempt 1), final2.md, etc. from the run directory.\nThe current attempt is the latest accepted attempt; a pending resume keeps the previous report current."
+        after_help = "Example: herder report 20261101-120000-abcd\nReads final.md (attempt 1), final2.md, etc. from $HERDER_STATE_DIR/runs/<id>.\nFor Codex, final.md contains the last agent message (codex exec -o).\nThe current attempt is the latest accepted attempt; a pending resume keeps the previous report current."
     )]
     Report {
         /// Run id or unique dispatch name
