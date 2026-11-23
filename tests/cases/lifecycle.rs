@@ -98,7 +98,7 @@ fn a9_claude_report_does_not_establish_terminal_success() {
     let f = Fixture::new();
     let id = f.launch("claude");
     fs::write(f.dir(&id).join("final.md"), "partial report").unwrap();
-    for (state, expected) in [("working", "blocked"), ("failed", "failed"), ("done", "finished")] {
+    for (state, expected) in [("working", "running"), ("failed", "failed"), ("done", "finished")] {
         f.agents("idle", state, "native-session");
         let report = f.call(&["report", &id], 0);
         assert_eq!(report["data"]["observation"]["state"], expected);

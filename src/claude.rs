@@ -251,13 +251,12 @@ pub fn query(run: &mut Run, profile: Option<&Path>) -> Result<Observation> {
     let (_, a) = identity(run, None, profile)?;
     let Agent { id, session_id, status, state, .. } = a;
     let evidence = format!("id={id} session={session_id} status={} state={state}", status.as_deref().unwrap_or("none"));
-    let state = match (status.as_deref().unwrap_or(""), state.as_str()) {
+    let state = match (status.as_deref(), state.as_str()) {
         (_, "failed") => State::Failed,
         (_, "done") => State::Finished,
         (_, "stopped" | "exited") => State::Stopped,
         (_, "blocked" | "waiting_for_permission") => State::Blocked,
-        ("busy", _) => State::Running,
-        ("idle", _) => State::Blocked,
+        (Some("busy"), _) | (Some("idle") | None, "working") => State::Running,
         _ => return Ok(Observation::unknown(UnknownCause::UnrecognizedStatus, evidence)),
     };
     Ok(Observation::known(state, evidence))

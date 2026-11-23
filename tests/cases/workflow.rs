@@ -127,6 +127,23 @@ fn wait_requires_every_satisfying_run_to_be_finished() {
 }
 
 #[test]
+fn wait_polls_past_claude_startup_until_finished() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    f.agents("idle", "done", "native-session");
+    fs::rename(f.skills.join("agents.json"), f.skills.join("finished.json")).unwrap();
+    f.agents("idle", "working", "native-session");
+    f.executable(
+        &f.bin.join("claude"),
+        r#"test "$1" = agents
+cat "$HERDER_SKILLS_DIR/agents.json"
+cp "$HERDER_SKILLS_DIR/finished.json" "$HERDER_SKILLS_DIR/agents.json""#,
+    );
+    let result = f.call(&["wait", &id, "--timeout", "1"], 0);
+    assert_eq!(result["data"]["runs"][0]["state"], "finished");
+}
+
+#[test]
 fn wait_unknown_and_timeout_are_operational_failures() {
     let f = Fixture::new();
     let id = f.launch("codex");
@@ -151,8 +168,13 @@ fn wait_unknown_and_timeout_are_operational_failures() {
     assert_eq!(unknown["data"]["runs"][0]["state"], "finished");
     assert_eq!(unknown["data"]["runs"][1]["state"], "unknown");
     fs::remove_file(f.skills.join("query-fail")).unwrap();
-    f.agents("idle", "blocked", "native-session");
-    assert_eq!(f.call(&["wait", &settled, "--all", "--timeout", "0"], 1)["data"]["runs"][0]["state"], "blocked");
+    fs::write(f.dir(&settled).join("final.md"), "fresh reply").unwrap();
+    for status in ["waiting", "idle"] {
+        f.agents(status, "blocked", "native-session");
+        let blocked = f.call(&["wait", &settled, "--all", "--timeout", "0"], 1);
+        assert_eq!(blocked["data"]["runs"][0]["state"], "blocked");
+        assert_eq!(blocked["data"]["message"], Value::Null);
+    }
     f.call(&["wait"], 2);
     f.call(&["wait", &id, "--timeout", "-1"], 2);
 }
