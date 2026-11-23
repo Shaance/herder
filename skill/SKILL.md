@@ -129,7 +129,7 @@ Put Codex options after `--`. Herder replays them on resume.
 
 - Attach an image with `-- --image=/abs/path/shot.png`. Use the `=` form. The short `-i <file>` accepts several values and consumes `resume <thread> -`, so the resume silently starts a new session.
   Keep attachments outside `--repo`, like briefs: new files inside it outside the authorized paths fail verify scope.
-- Select a named Codex config profile with `-- -p <name>`. Codex layers settings from `$CODEX_HOME/<name>.config.toml`, such as the model and `model_reasoning_effort`, over its base configuration. Keep model IDs in that host file and out of briefs and skills.
+- Select a named Codex config profile with `-- -p <name>`. Codex layers settings from `$CODEX_HOME/<name>.config.toml`, such as the model and `model_reasoning_effort`, over its base configuration. Keep model IDs in that host file and out of briefs and skills. Codex silently ignores a missing profile and runs on its defaults, so check the file exists.
 - The Codex `workspace-write` sandbox blocks network access, so checks that bind local ports, such as test servers or emulators, can fail.
   Prefer running those checks yourself with `herder verify <run> --check '<cmd>'`, which runs outside the worker sandbox.
   If the worker must run them, `-- -c sandbox_workspace_write.network_access=true` opens all network access for that run, including connections beyond loopback. Use it only in direct mode and say so in the brief.
