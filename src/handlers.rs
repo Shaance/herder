@@ -1,12 +1,17 @@
 use crate::{
-    Action, Dispatch,
+    Action, DispatchArgs,
     domain::*,
     process, runs,
     store::{self, RunId, Store},
 };
 use anyhow::Result;
 use serde::Serialize;
-use std::{collections::BTreeMap, num::NonZeroU32, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    num::NonZeroU32,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 pub enum Output {
     Doctor(crate::doctor::Doctor),
@@ -19,6 +24,10 @@ pub enum Output {
         message: Option<&'static str>,
     },
     Launch(Launched),
+    CheckedLaunch {
+        launched: Launched,
+        verification: CheckedLaunchVerification,
+    },
     /// One review dispatch fanned out to several models; `error` stopped the remaining launches.
     Launches {
         runs: Vec<Launched>,
@@ -36,6 +45,11 @@ pub enum Output {
 pub struct Launched {
     pub run: Box<Run>,
     pub outcome: LaunchOutcome,
+}
+
+pub enum CheckedLaunchVerification {
+    Verified(FreshVerification),
+    Skipped { attempt: NonZeroU32, message: String },
 }
 
 pub enum LaunchOutcome {
@@ -71,6 +85,8 @@ pub struct WaitEntry {
     pub name: String,
     pub state: State,
     pub report_path: PathBuf,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::progress::Progress>,
 }
 
 pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
@@ -91,8 +107,10 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
         Action::Doctor { executor, profile } => {
             return crate::doctor::run(executor, profile).map(|(doctor, code)| (Output::Doctor(doctor), code));
         }
-        Action::Dispatch(args) => return dispatch(args, &store, false),
-        Action::Handoff(args) => return dispatch(args, &store, true),
+        Action::Dispatch { args, checks, check_timeout } => {
+            return dispatch(args, &store, false, checks, check_timeout);
+        }
+        Action::Handoff(args) => return dispatch(args, &store, true, vec![], None),
         Action::Wait { runs, all, timeout } => {
             let ids = runs.iter().map(|id| store.resolve(id)).collect::<Result<Vec<_>>>()?;
             return wait(&store, &ids, all, timeout, json_output);
@@ -135,9 +153,7 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
                 if run.launch.target().executor() == Executor::Claude {
                     return Tail::NoStream("tail: none (Claude runs have no herder-recorded event stream)".into());
                 }
-                let attempt = run.launch_attempt().get();
-                let suffix = if attempt == 1 { String::new() } else { attempt.to_string() };
-                let path = dir.join(format!("events{suffix}.jsonl"));
+                let path = dir.join(run.launch_events_name());
                 match std::fs::read_to_string(&path) {
                     Ok(content) => {
                         let mut lines: Vec<_> = content
@@ -207,7 +223,7 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
                 return Ok((Output::Message("verify requires --path when none were recorded at dispatch".into()), 2));
             }
             drop(locked);
-            let verification = crate::verify::run(&mut run, paths, checks, baseline, &store, &id)?;
+            let verification = crate::verify::run(&mut run, paths, checks, baseline, &store, &id, None)?;
             let code = i32::from(matches!(verification.verdict, Verdict::Fail));
             let locked = store.try_lock(&id)?;
             let mut run = store.load(&id)?;
@@ -241,9 +257,22 @@ fn codex_config_assignments(extra: &[String]) -> impl Iterator<Item = (&str, &st
     })
 }
 
-fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32)> {
-    let Dispatch { mode, executor, brief, repo, mut model, effort, goal, name, profile, pane, paths, mut extra } = args;
+fn dispatch(
+    args: DispatchArgs,
+    store: &Store,
+    handoff: bool,
+    checks: Vec<String>,
+    check_timeout: Option<u32>,
+) -> Result<(Output, i32)> {
+    let DispatchArgs { mode, executor, brief, repo, mut model, effort, goal, name, profile, pane, paths, mut extra } =
+        args;
     let reject = |message: String| Ok((Output::Rejection(message), 2));
+    if !checks.is_empty() && model.len() > 1 {
+        return reject("--check requires a single dispatch".into());
+    }
+    if checks.iter().any(|check| check.trim().is_empty()) {
+        return reject("--check requires a nonempty shell command".into());
+    }
     if executor != Executor::Claude && profile.is_some() {
         return reject("--profile applies only to Claude".into());
     }
@@ -334,8 +363,8 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
                 .map(|s| s.trim().to_owned());
         let mut dispatch_dirty = std::collections::BTreeMap::new();
         if baseline_commit.is_some() {
-            for path in crate::verify::dirty_paths(&repo)? {
-                let hash = crate::verify::content_hash(&repo, &path)?;
+            for path in crate::verify::dirty_paths(&repo, None)? {
+                let hash = crate::verify::content_hash(&repo, &path, None)?;
                 dispatch_dirty.insert(path, hash);
             }
         }
@@ -360,10 +389,9 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
             Executor::Vibe => Target::Vibe,
             Executor::Codex => Target::Codex,
         };
-        let id = id.to_string();
         let mut run = Run {
-            name: name.unwrap_or_else(|| id.clone()),
-            id,
+            name: name.unwrap_or_else(|| id.to_string()),
+            id: id.to_string(),
             model,
             requested_effort: effort.clone(),
             extra: extra.clone(),
@@ -389,11 +417,29 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
             Ok(()) => LaunchOutcome::Started,
         };
         let code = i32::from(!matches!(outcome, LaunchOutcome::Started));
-        Ok((Launched { run: Box::new(run), outcome }, code))
+        Ok((id, Launched { run: Box::new(run), outcome }, code))
     };
     let models = match models {
         Models::Single(model) => {
-            return launch_run(name, model).map(|(launched, code)| (Output::Launch(launched), code));
+            let (id, mut launched, code) = launch_run(name, model)?;
+            if checks.is_empty() {
+                return Ok((Output::Launch(launched), code));
+            }
+            let attempt = launched.run.attempt;
+            let result = if matches!(launched.outcome, LaunchOutcome::LaunchFailed(_)) {
+                Err(anyhow::anyhow!("worker launch failed"))
+            } else {
+                let deadline = Instant::now() + Duration::from_secs(check_timeout.unwrap_or(3600).into());
+                verify_launched_attempt(store, &id, &mut launched.run, checks, deadline)
+            };
+            let (verification, check_code) = match result {
+                Ok(verification) => {
+                    let code = i32::from(matches!(verification.verdict, Verdict::Fail));
+                    (CheckedLaunchVerification::Verified(verification), code)
+                }
+                Err(error) => (CheckedLaunchVerification::Skipped { attempt, message: format!("{error:#}") }, 1),
+            };
+            return Ok((Output::CheckedLaunch { launched, verification }, code.max(check_code)));
         }
         Models::Review(models) => models,
     };
@@ -401,7 +447,7 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
     for model in models {
         let name = name.as_ref().map(|name| format!("{name}-{model}"));
         match launch_run(name, Some(model.clone())) {
-            Ok((launched, one_code)) => {
+            Ok((_, launched, one_code)) => {
                 runs.push(launched);
                 code = code.max(one_code);
             }
@@ -416,6 +462,50 @@ fn dispatch(args: Dispatch, store: &Store, handoff: bool) -> Result<(Output, i32
     Ok((Output::Launches { runs, error }, code))
 }
 
+fn verify_launched_attempt(
+    store: &Store,
+    id: &RunId,
+    dispatched: &mut Run,
+    checks: Vec<String>,
+    deadline: Instant,
+) -> Result<FreshVerification> {
+    let poll_interval = Duration::from_secs(5).min(deadline.saturating_duration_since(Instant::now()) / 3);
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        anyhow::ensure!(!remaining.is_zero(), "timed out waiting for the dispatched attempt to finish");
+        {
+            let lock = store.try_lock(id)?;
+            let mut run = store.load(id)?;
+            let require_attempt = |run: &Run| {
+                anyhow::ensure!(run.launch_attempt() == dispatched.attempt, "the dispatched attempt was superseded");
+                Ok(())
+            };
+            require_attempt(&run)?;
+            let observation = runs::observe_until(&mut run, lock.as_ref(), Some(deadline));
+            require_attempt(&run)?;
+            let state = observation.state();
+            match state {
+                State::Finished => {
+                    if run.launch.target().executor() == Executor::Codex {
+                        let events = store.dir(id).join(run.launch_events_name());
+                        anyhow::ensure!(
+                            crate::progress::codex_turn_completed(&events),
+                            "Codex completion requires a turn.completed event for the dispatched attempt"
+                        );
+                    }
+                    drop(lock);
+                    return crate::verify::run(dispatched, vec![], checks, None, store, id, Some(deadline));
+                }
+                State::Failed | State::Stopped | State::Blocked => {
+                    anyhow::bail!("worker settled in state {}", state.as_str());
+                }
+                _ => {}
+            }
+        }
+        std::thread::sleep(poll_interval.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
 enum Input {
     /// Dispatch byte-copies the already linted brief file into the run staging directory.
     Brief(PathBuf),
@@ -424,7 +514,6 @@ enum Input {
 }
 
 fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool) -> Result<(Output, i32)> {
-    use std::time::{Duration, Instant};
     let started = Instant::now();
     let timeout = Duration::from_secs(timeout);
     let mut previous = vec![None; ids.len()];
@@ -446,8 +535,7 @@ fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool
             settled += usize::from(matches!(state, State::Finished | State::Failed | State::Stopped | State::Blocked));
             finished += usize::from(state == State::Finished);
             unknown |= state == State::Unknown;
-            let report_path = store.dir(id).join(run.report_name());
-            data.push(WaitEntry { id: run.id, name: run.name, state, report_path });
+            data.push((run, observation, store.dir(id), locked.is_some()));
         }
         let met = if all { settled == ids.len() } else { settled > 0 };
         // A status query can time out under load; only an unknown that outlasts the wait is reported.
@@ -459,6 +547,16 @@ fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool
             std::thread::sleep(Duration::from_secs(5).min(timeout.saturating_sub(started.elapsed())));
             continue;
         };
-        return Ok((Output::Wait { runs: data, message }, i32::from(!met || finished != settled)));
+        let runs = data
+            .into_iter()
+            .map(|(run, observation, dir, refreshed)| {
+                let state = observation.state();
+                let progress = (!met && matches!(state, State::Starting | State::Running | State::Unknown))
+                    .then(|| crate::progress::last(&run, &observation, &dir, refreshed));
+                let report_path = dir.join(run.report_name());
+                WaitEntry { id: run.id, name: run.name, state, report_path, progress }
+            })
+            .collect();
+        return Ok((Output::Wait { runs, message }, i32::from(!met || finished != settled)));
     }
 }

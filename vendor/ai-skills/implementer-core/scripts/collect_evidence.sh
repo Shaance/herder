@@ -13,7 +13,7 @@ echo "--- final.md: $([[ -s "$RUN_DIR/final.md" ]] && wc -c <"$RUN_DIR/final.md"
 
 cd "$REPO"
 echo "--- worktree status (incl. untracked):"
-git status --short --untracked-files=all | head -40
+git status --short --untracked-files=all | sed -n '1,40p'
 echo "--- diff stat:"
 git diff --stat | tail -5
 

@@ -232,7 +232,14 @@ fn real_status_scripts_report_stream_age_and_running_command() {
         assert_eq!(code, 0, "{dispatch}");
         let id = dispatch["data"]["run_id"].as_str().unwrap();
         let (code, status) = call(&f, &skills, &["status", id]);
+        let (wait_code, wait) = call(&f, &skills, &["wait", id, "--timeout", "0"]);
         fs::remove_file(f.state.join("hold-worker")).unwrap();
+        assert_eq!(wait_code, 1, "{wait}");
+        let entry = &wait["data"]["runs"][0];
+        assert_eq!(entry["state"], "running");
+        assert_eq!(entry["progress"]["kind"], if executor == "codex" { "command_started" } else { "session_opened" });
+        assert!(entry["progress"]["age_seconds"].as_u64().is_some());
+        assert!(!wait.to_string().contains("stub-long-command"));
         assert_eq!(code, 0, "{status}");
         assert_eq!(status["data"]["observation"]["state"], "running", "{status}");
         let evidence = status["data"]["observation"]["evidence"].as_str().unwrap();
@@ -333,4 +340,116 @@ print('{"type":"turn.completed"}')"#,
     assert_eq!(code, 1, "{rejected}");
     assert!(rejected["error"].as_str().unwrap().contains("missing required blocks"), "{rejected}");
     assert_eq!(f.call(&["ls"], 0)["data"]["runs"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn checked_dispatch_waits_for_a_live_stub_worker_and_verifies_through_vendored_scripts() {
+    let (f, skills) = setup();
+    f.write("state/hold", "");
+    f.executable(
+        &f.bin.join("codex"),
+        r#"while [ "$1" != -o ]; do shift; done
+report=$2
+printf '%s\n' '{"type":"thread.started","thread_id":"stub-thread"}' '{"type":"turn.started"}'
+touch "$HERDER_STATE_DIR/worker-entered"
+while test -f "$HERDER_STATE_DIR/hold"; do sleep 0.02; done
+printf '%s\n' 'stub report' > "$report"
+printf '%s\n' '{"type":"turn.completed"}'"#,
+    );
+    let child = f
+        .cmd()
+        .env("HERDER_SKILLS_DIR", &skills)
+        .args(["dispatch", "--executor", "codex", "--name", "checked", "--repo", ".", "--brief"])
+        .arg(f.root.join("brief.md"))
+        .args([
+            "--path",
+            "generated/",
+            "--check",
+            "test -s \"$HERDER_STATE_DIR\"/runs/*/final.md && touch \"$HERDER_STATE_DIR/checked\"",
+            "--check-timeout",
+            "10",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    wait_file(&f.state.join("worker-entered"));
+    let (wait_code, wait) = call(&f, &skills, &["wait", "checked", "--timeout", "1"]);
+    assert_eq!(wait_code, 1, "{wait}");
+    assert_eq!(wait["data"]["runs"][0]["state"], "running");
+    assert_eq!(wait["data"]["runs"][0]["progress"]["kind"], "turn_started");
+    assert!(!f.state.join("checked").exists());
+    // A real Git status stream must exceed the pipe buffer to cover the previous SIGPIPE.
+    fs::create_dir(f.repo.join("generated")).unwrap();
+    for index in 0..1600 {
+        fs::write(f.repo.join(format!("generated/changed-worker-output-{index:04}.txt")), "").unwrap();
+    }
+    fs::remove_file(f.state.join("hold")).unwrap();
+
+    let out = child.wait_with_output().unwrap();
+    let id = wait["data"]["runs"][0]["id"].as_str().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}\tchecked\n"));
+    assert!(String::from_utf8(out.stderr).unwrap().contains("PASS  checked  attempt 1"));
+    assert!(f.state.join("checked").exists());
+    let record = f.record(id);
+    assert_eq!(record["verifications"][0]["verdict"], "pass");
+    let collector = record["verifications"][0]["checks"][1]["output"].as_str().unwrap();
+    assert_eq!(collector.lines().filter(|line| line.starts_with("?? generated/")).count(), 40);
+}
+
+#[test]
+fn checked_codex_requires_the_latest_complete_turn_event_even_with_a_report() {
+    for (events, checked_code, legacy_state) in [
+        ("", 1, "finished"),
+        (r#"printf '%s\n' '{"type":"turn.completed"}' '{"type":"turn.started"}'"#, 1, "finished"),
+        (r#"printf '%s\n' '{"type":"turn.completed"}' '{"type":"turn.failed"}'"#, 1, "failed"),
+        (
+            r#"printf '%s\n' '{"type":"turn.started"}' '{"type":"turn.completed"}'; printf '%s' '{"type":"turn.failed"'"#,
+            0,
+            "finished",
+        ),
+    ] {
+        let (f, skills) = setup();
+        f.executable(
+            &f.bin.join("codex"),
+            &format!(
+                r#"while [ "$1" != -o ]; do shift; done
+echo 'stub report' > "$2"
+printf '%s\n' '{{"type":"thread.started","thread_id":"stub-thread"}}'
+{events}
+sleep 0.05
+exit {worker_code}"#,
+                worker_code = if checked_code == 0 { 0 } else { 9 },
+            ),
+        );
+        let (code, result) = call(
+            &f,
+            &skills,
+            &[
+                "dispatch",
+                "--executor",
+                "codex",
+                "--repo",
+                ".",
+                "--brief",
+                f.root.join("brief.md").to_str().unwrap(),
+                "--check",
+                "touch \"$HERDER_STATE_DIR/checked\"",
+                "--check-timeout",
+                "3",
+            ],
+        );
+        assert_eq!(code, checked_code, "{result}");
+        let id = result["data"]["run_id"].as_str().unwrap();
+        let (_, status) = call(&f, &skills, &["status", id]);
+        assert_eq!(status["data"]["observation"]["state"], legacy_state, "{status}");
+        let verified = result["data"]["verification"]["verdict"] == "pass";
+        assert_eq!(checked_code == 0, verified);
+        assert_eq!(f.state.join("checked").exists(), verified);
+        if checked_code != 0 && legacy_state == "finished" {
+            assert!(result["data"]["verification"]["message"].as_str().unwrap().contains("turn.completed"));
+        }
+        assert_eq!(f.record(id)["verifications"].as_array().unwrap().len(), usize::from(verified));
+    }
 }

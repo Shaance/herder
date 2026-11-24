@@ -6,6 +6,9 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ### Added
 
+- **`herder wait` reports the last available progress when it times out.** Human diagnostics go to stderr and JSON adds per-run progress for unsettled attempts.
+- **`herder dispatch --check` waits for one worker to finish and verifies its dispatched attempt.** The coordinator supplies the commands at launch, and `--check-timeout` bounds post-launch supervision and verification.
+
 - **`--effort <LEVEL>` on `dispatch` and `handoff`** sets reasoning effort for Codex and Claude runs (`low`, `medium`, `high`, `xhigh`, `max`, `ultra`). Codex receives it on every launch and resume; Claude receives it at launch and keeps it on resume. Vibe rejects the flag with exit 2, and so does a dispatch that also sets native effort after `--`. The level is saved as `requested_effort` in `run.json` and shown by `status` and `ls`.
 
 ### Changed

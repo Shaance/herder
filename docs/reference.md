@@ -34,6 +34,8 @@ Scripts are embedded in the binary. Set `HERDER_SKILLS_DIR` to an ai-skills-shap
 
 `herder wait <run>...` polls every five seconds and returns when any run settles; `--all` waits for every listed run. Finished, failed, stopped and blocked count as settled. When the wait condition is met, the command exits 0 if every settled run at return is finished and 1 if any is failed, stopped or blocked. An unknown observation can clear during polling and does not itself end the wait. Without `--all`, a settled run can satisfy the wait while another remains unknown. If the wait condition is not met at timeout, the command exits 1. The default timeout is 3600 seconds. Human output shows state changes; final human and JSON output includes every run's ID, name, state and current report path.
 
+On timeout, human stderr reports the last available progress for each unsettled attempt. JSON adds `data.runs[].progress` for those runs, with `attempt`, `kind` and, when available, `updated_at`, `age_seconds` or an unknown-state `cause`. A script executor can report `session_opened` when the session or thread opening is the only recorded activity. Timestamps and ages describe the event stream or Claude report file's last modification. Claude can also report that the executor says it is working without a timestamp. Wait omits command contents and event text from these diagnostics. An old or silent stream leaves the executor's current state intact.
+
 ## List runs
 
 `herder ls` shows the effort requested through herder's `--effort` in `EFFORT` immediately after `MODEL`. A dash indicates that the herder flag was omitted. JSON includes `run.requested_effort` and a per-executor state tally in `data.summary`. `--goal` scopes the list and tally to the supplied goal. Broken entries remain errors outside the tally.
@@ -45,6 +47,18 @@ Prefer briefs outside `--repo`. Files already dirty at dispatch are excluded fro
 Extra dispatch arguments after `--` go to the executor, including Vibe arguments past its launcher's separator. They are recorded and replayed with `--model` on Vibe and Codex resume. Herder Vibe runs are auto-approve only. Launcher gate exit 3 preserves `starting` or `pending_resume`; herder returns 0.
 
 Dispatch and handoff accept `--effort <LEVEL>` for Codex and Claude. Accepted levels are `low`, `medium`, `high`, `xhigh`, `max` and `ultra`. The executor determines which levels a model supports. Its configured default applies when both herder's `--effort` and native effort arguments are omitted. With the herder flag omitted, native effort arguments after `--` are forwarded and `requested_effort` remains empty. Vibe uses the selected model alias's `thinking` setting in `config.toml`. Herder rejects a request that also sets native effort after `--`. Codex receives the requested effort on each launch and resume. Claude receives it at launch and resumes with the saved session options.
+
+## Dispatch with verification
+
+```sh
+herder dispatch --executor codex --repo . --brief /tmp/task.md --path src/ --check 'cargo test --locked'
+```
+
+Repeat `--check` in execution order to arm coordinator-supplied shell commands for the dispatched attempt. After the launch returns, the same foreground invocation waits for the worker to finish, checks the recorded dispatch scope and runs the evidence collector and supplied commands from `--repo` with stdin closed. The coordinator can run this invocation as a background job. Use `--name` to look up the already recorded worker while dispatch is still running. With no `--path`, the scope check allows no new changes. Repeated `--model` cannot be combined with `--check`. A `--pane` remains a separate view of the worker.
+
+`--check-timeout <SECONDS>` gives the supervisor and checks one deadline after the normal launch returns. It defaults to 3600 seconds. On timeout during a command, herder terminates the command's process group. Checks must run in the foreground and return an exit status. Keep the supervisor alive to enforce the deadline. The timeout leaves the worker under its executor's control. Launch failure, failed or blocked worker, timeout, scope violation, failed check or a superseded attempt all make checked dispatch exit 1. Exit 0 requires a finished worker and passing verification. For Codex, herder also requires the latest complete turn event in the dispatched attempt's stream tail to be `turn.completed`.
+
+Checked dispatch retains the normal launch output and adds `data.verification` in JSON with the original `attempt`, `verdict`, and scope and command results. A skipped verification has a null verdict and a brief message. Human verification results go to stderr. The verdict uses the normal attempt-scoped verification record. Wait, status and ls only observe; resuming a worker starts an attempt without an armed check. Supply read-only, repeatable commands from the coordinator's own trusted instructions. A concurrent resume rejects a stale verification result. A check that has already started can still have side effects.
 
 ## Resume, retry and request IDs
 

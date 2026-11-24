@@ -1,7 +1,7 @@
 use crate::{
     doctor::CheckStatus,
     domain::{Executor, FreshVerification, Run, State, Verdict},
-    handlers::{LaunchOutcome, Launched, ListEntry, Output, RunDetail, Tail},
+    handlers::{CheckedLaunchVerification, LaunchOutcome, Launched, ListEntry, Output, RunDetail, Tail},
 };
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -30,6 +30,18 @@ fn data(output: &Output) -> Value {
         Output::Ls { runs, summary } => json!({"runs":runs,"summary":summary}),
         Output::Wait { runs, message } => json!({"runs":runs,"message":message}),
         Output::Launch(launched) => launch_data(launched),
+        Output::CheckedLaunch { launched, verification } => {
+            let mut data = launch_data(launched);
+            data["verification"] = match verification {
+                CheckedLaunchVerification::Verified(result) => json!({
+                    "attempt":result.attempt, "verdict":result.verdict, "scope":result.scope, "commands":result.commands
+                }),
+                CheckedLaunchVerification::Skipped { attempt, message } => {
+                    json!({"attempt":attempt,"verdict":null,"message":message})
+                }
+            };
+            data
+        }
         Output::Launches { runs, error } => {
             json!({"runs":runs.iter().map(launch_data).collect::<Vec<_>>(),"error":error})
         }
@@ -145,8 +157,32 @@ fn human(output: &Output) {
             if let Some(message) = message {
                 eprintln!("{message}");
             }
+            for run in runs {
+                if let Some(progress) = &run.progress {
+                    let label = progress.kind.replace('_', " ");
+                    eprint!("{} attempt {}: {label}", run.id.escape_debug(), progress.attempt);
+                    if let (Some(at), Some(age)) = (&progress.updated_at, progress.age_seconds) {
+                        eprint!(" (evidence updated {at}, {age}s ago)");
+                    }
+                    if let Some(cause) = progress.cause {
+                        eprint!(" ({})", cause.as_str());
+                    }
+                    eprintln!();
+                }
+            }
         }
         Output::Launch(launched) => print_launch(launched),
+        Output::CheckedLaunch { launched, verification } => {
+            print_launch(launched);
+            match verification {
+                CheckedLaunchVerification::Verified(result) => {
+                    eprint!("{}", verification_text(&launched.run.name, result, color));
+                }
+                CheckedLaunchVerification::Skipped { attempt, message } => {
+                    eprintln!("{} attempt {attempt}: verification skipped: {message}", launched.run.id.escape_debug());
+                }
+            }
+        }
         Output::Launches { runs, error } => {
             runs.iter().for_each(print_launch);
             if let Some(error) = error {

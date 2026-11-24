@@ -58,7 +58,7 @@ include a cause ([`src/domain.rs`](../src/domain.rs)):
 - `unrecognized_status`: the executor returned a state herder does not recognize.
 - `unconfirmed`: launch or resume evidence has not confirmed the expected state.
 
-Queries have a two-second timeout. `herder wait` polls until any run settles, or
+Executor queries have a ten-second timeout. `herder wait` polls until any run settles, or
 all runs with `--all`; unknown at timeout is an error. Stop checks identity
 before signaling and may report that the stop was sent without confirming exit.
 Resume records a pending attempt before launch and advances the accepted attempt
@@ -104,6 +104,15 @@ The verdict is attached to the attempt that was current when checks began;
 checks run without the run lock, then the record is reloaded and updated.
 Verification refuses starting, running and blocked workers, but can run with
 unknown evidence. It neither freezes the worktree nor approves the result.
+
+With `dispatch --check`, the dispatch process keeps the check commands and original
+checkout, baseline and attempt in memory. It owns the post-launch deadline
+and starts verification only after that attempt finishes. Codex also requires
+`turn.completed` from the dispatched attempt's own event stream. The check processes
+run outside the run lock. Herder checks that the attempt is still current between
+commands and under the lock before saving a verdict. The remaining deadline
+bounds lock acquisition for the verdict. Plain observation never runs
+verification commands.
 
 ## Handoff
 

@@ -4,7 +4,7 @@ use std::{
     io::{Read, Seek},
     os::unix::process::CommandExt,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
 
@@ -21,32 +21,50 @@ pub fn checked(cmd: &mut Command) -> Result<String> {
     ensure!(out.status.success(), "exit {:?}: {}{}", out.status.code(), stdout, String::from_utf8_lossy(&out.stderr));
     Ok(stdout.into_owned())
 }
-pub fn query(cmd: &mut Command) -> Result<String> {
-    // Unlinked capture avoids pipe-reader hangs when a query leaves descendants behind.
-    let mut capture = tempfile::tempfile()?;
+pub fn checked_until(cmd: &mut Command, deadline: Option<Instant>) -> Result<String> {
+    let Some(deadline) = deadline else { return checked(cmd) };
+    let (status, stdout, stderr) = bounded_output(cmd, deadline)?;
+    let status = status.context("command timed out")?;
+    ensure!(status.success(), "exit {:?}: {stdout}{stderr}", status.code());
+    Ok(stdout)
+}
+
+pub fn query(cmd: &mut Command, deadline: Option<Instant>) -> Result<String> {
+    let limit = Instant::now() + EXECUTOR_QUERY_TIMEOUT;
+    let (status, stdout, stderr) = bounded_output(cmd, deadline.map_or(limit, |end| end.min(limit)))?;
+    let status = status.ok_or_else(|| anyhow::anyhow!("executor query timed out: {stdout}{stderr}"))?;
+    ensure!(status.success(), "exit {:?}: {stdout}{stderr}", status.code());
+    Ok(stdout + &stderr)
+}
+
+pub fn bounded_output(cmd: &mut Command, deadline: Instant) -> Result<(Option<ExitStatus>, String, String)> {
+    ensure!(Instant::now() < deadline, "command deadline elapsed");
+    // Unlinked capture avoids pipe-reader hangs when a command leaves descendants behind.
+    let mut stdout = tempfile::tempfile()?;
+    let mut stderr = tempfile::tempfile()?;
     let mut child =
-        cmd.stdin(Stdio::null()).stdout(capture.try_clone()?).stderr(capture.try_clone()?).process_group(0).spawn()?;
-    let deadline = Instant::now() + EXECUTOR_QUERY_TIMEOUT;
+        cmd.stdin(Stdio::null()).stdout(stdout.try_clone()?).stderr(stderr.try_clone()?).process_group(0).spawn()?;
     let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break Some(status);
-        }
-        if Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{}", child.id())]).status();
             let _ = child.kill();
             child.wait()?;
             break None;
         }
-        std::thread::sleep(Duration::from_millis(20));
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        std::thread::sleep(Duration::from_millis(20).min(remaining));
     };
-    capture.rewind()?;
-    let mut text = String::new();
-    capture.read_to_string(&mut text)?;
-    let status = status.ok_or_else(|| {
-        anyhow::anyhow!("executor query timed out after {}s: {text}", EXECUTOR_QUERY_TIMEOUT.as_secs())
-    })?;
-    ensure!(status.success(), "exit {:?}: {text}", status.code());
-    Ok(text)
+    let read_capture = |file: &mut std::fs::File| -> Result<String> {
+        let size = file.metadata()?.len();
+        file.rewind()?;
+        let mut bytes = Vec::new();
+        file.take(size).read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    };
+    Ok((status, read_capture(&mut stdout)?, read_capture(&mut stderr)?))
 }
 pub fn home() -> PathBuf {
     env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
@@ -111,7 +129,7 @@ mod tests {
     #[test]
     fn query_returns_when_descendant_inherits_output() {
         let started = Instant::now();
-        let result = query(Command::new("/bin/sh").args(["-c", "sleep 6 & printf stdout; printf stderr >&2"]));
+        let result = query(Command::new("/bin/sh").args(["-c", "sleep 6 & printf stdout; printf stderr >&2"]), None);
         assert_eq!(result.unwrap(), "stdoutstderr");
         assert!(started.elapsed() < Duration::from_secs(4), "query waited for its descendant");
     }

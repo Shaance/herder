@@ -41,9 +41,11 @@ struct Agent {
     pid: Option<u32>,
     state: String,
 }
-fn agents(profile: Option<&Path>, repo: &Path) -> Result<Vec<Agent>> {
-    let listed: Vec<Listed> =
-        serde_json::from_str(&process::query(command(profile).current_dir(repo).args(["agents", "--json", "--all"]))?)?;
+fn agents(profile: Option<&Path>, repo: &Path, deadline: Option<Instant>) -> Result<Vec<Agent>> {
+    let listed: Vec<Listed> = serde_json::from_str(&process::query(
+        command(profile).current_dir(repo).args(["agents", "--json", "--all"]),
+        deadline,
+    )?)?;
     Ok(listed.into_iter().filter_map(|l| if let Listed::Background(a) = l { Some(a) } else { None }).collect())
 }
 pub fn stop_hook(dir: &Path) -> Result<()> {
@@ -73,7 +75,7 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
     let mut cmd = command(profile);
     cmd.current_dir(&run.repo).arg("--bg");
     if let Some(Native::Claude { id, session_id, .. }) = previous {
-        let (_, a) = identity(run, previous, profile)?;
+        let (_, a) = identity(run, previous, profile, None)?;
         ensure!(
             matches!(a.state.as_str(), "done" | "failed" | "stopped" | "exited"),
             "cannot resume active Claude session"
@@ -97,7 +99,7 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
         }
         if a.status.is_some() {
             ensure!(
-                identity(run, previous, profile)?.1.status.is_none(),
+                identity(run, previous, profile, None)?.1.status.is_none(),
                 "Claude session {id} is still live after stop"
             );
         }
@@ -182,7 +184,7 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut confirmed = previous.cloned();
     loop {
-        let (native, a) = identity(run, confirmed.as_ref(), profile)?;
+        let (native, a) = identity(run, confirmed.as_ref(), profile, None)?;
         let started = if previous.is_some() {
             a.status.as_deref() == Some("busy")
                 || a.state == "working"
@@ -205,7 +207,12 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
     }
 }
 // Resolve acceptance once; all later observations must match the full recorded identity.
-fn identity(run: &mut Run, previous: Option<&Native>, profile: Option<&Path>) -> Result<(Native, Agent)> {
+fn identity(
+    run: &mut Run,
+    previous: Option<&Native>,
+    profile: Option<&Path>,
+    deadline: Option<Instant>,
+) -> Result<(Native, Agent)> {
     let recorded = match (previous, &run.launch) {
         (Some(native), _)
         | (None, Launch::Launched { native, .. } | Launch::PendingResume { previous: native, .. }) => Some(native),
@@ -215,14 +222,14 @@ fn identity(run: &mut Run, previous: Option<&Native>, profile: Option<&Path>) ->
         (Some(Native::Claude { id, session_id, profile }), _) => (id, profile, Some(session_id)),
         (_, Launch::Accepted { id, profile, .. }) => (id, profile, None),
         _ => {
-            process::query(command(profile).current_dir(&run.repo).args(["agents", "--json", "--all"]))?;
+            process::query(command(profile).current_dir(&run.repo).args(["agents", "--json", "--all"]), deadline)?;
             bail!(UnknownError(
                 UnknownCause::IdentityMismatch,
                 "no recorded Claude identity; inspect launch facts before attaching".into()
             ));
         }
     };
-    let a = agents(profile.as_deref(), &run.repo)?.into_iter().find(|a| &a.id == id).ok_or_else(|| {
+    let a = agents(profile.as_deref(), &run.repo, deadline)?.into_iter().find(|a| &a.id == id).ok_or_else(|| {
         UnknownError(UnknownCause::IdentityMismatch, format!("recorded Claude id {id} absent from agents"))
     })?;
     ensure!(
@@ -247,8 +254,8 @@ fn identity(run: &mut Run, previous: Option<&Native>, profile: Option<&Path>) ->
     }
     Ok((native, a))
 }
-pub fn query(run: &mut Run, profile: Option<&Path>) -> Result<Observation> {
-    let (_, a) = identity(run, None, profile)?;
+pub fn query(run: &mut Run, profile: Option<&Path>, deadline: Option<Instant>) -> Result<Observation> {
+    let (_, a) = identity(run, None, profile, deadline)?;
     let Agent { id, session_id, status, state, .. } = a;
     let evidence = format!("id={id} session={session_id} status={} state={state}", status.as_deref().unwrap_or("none"));
     let state = match (status.as_deref(), state.as_str()) {

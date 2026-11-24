@@ -106,13 +106,21 @@ impl Store {
         Ok(())
     }
     pub fn lock(&self, id: &RunId) -> Result<LockedRun> {
-        let deadline = Instant::now() + Duration::from_secs(2);
+        self.lock_until(id, None)
+    }
+    pub fn lock_until(&self, id: &RunId, deadline: Option<Instant>) -> Result<LockedRun> {
+        let lock_limit = Instant::now() + Duration::from_secs(2);
+        let (deadline, timeout) = match deadline {
+            Some(end) if end <= lock_limit => (end, "verification deadline elapsed"),
+            _ => (lock_limit, "timed out after 2s"),
+        };
         loop {
             if let Some(locked) = self.try_lock(id)? {
                 return Ok(locked);
             }
-            ensure!(Instant::now() < deadline, "run {id} busy: timed out after 2s waiting for run.lock");
-            std::thread::sleep(Duration::from_millis(20));
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            ensure!(!remaining.is_zero(), "run {id} busy: {timeout} waiting for run.lock");
+            std::thread::sleep(Duration::from_millis(20).min(remaining));
         }
     }
     pub fn try_lock(&self, id: &RunId) -> Result<Option<LockedRun>> {
@@ -151,7 +159,10 @@ pub fn atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 pub fn timestamp() -> String {
-    let (y, mo, d, h, mi, s) = utc(SystemTime::now());
+    timestamp_at(SystemTime::now())
+}
+pub fn timestamp_at(clock: SystemTime) -> String {
+    let (y, mo, d, h, mi, s) = utc(clock);
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
 }
 fn utc(clock: SystemTime) -> (i32, u8, u8, u8, u8, u8) {
