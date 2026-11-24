@@ -36,7 +36,10 @@ fn output_envelopes_and_escaped_wait_and_report_text_are_stable() {
             f.dir(id).join("final.md").to_str().unwrap().escape_debug()
         )
     );
-    assert_eq!(String::from_utf8(out.stderr).unwrap(), "wait timed out\n");
+    assert_eq!(
+        String::from_utf8(out.stderr).unwrap(),
+        format!("wait timed out\n{id} attempt 1: no progress observed\n")
+    );
 
     let path = f.dir(id).join("final.md");
     let report = f.call(&["report", id], 1);
@@ -450,4 +453,40 @@ fn review_mode_is_explicit_and_direct_remains_default() {
     assert_eq!(fs::read_to_string(f.state.join("lint-mode")).unwrap(), "review\n");
     assert!(f.record(result["data"]["run_id"].as_str().unwrap()).get("mode").is_none());
     f.dispatch("codex", &["--mode", "lead"], 2);
+}
+
+#[test]
+fn wait_timeout_reports_only_current_attempt_progress_and_safe_metadata() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    let stream = f.dir(&id).join("events.jsonl");
+    fs::write(&stream, r#"{"type":"thread.started","thread_id":"fake thread SECRET"}"#.to_owned() + "\n").unwrap();
+    let first = f.call(&["wait", &id, "--timeout", "0"], 1);
+    assert_eq!(first["data"]["runs"][0]["state"], "running");
+    let progress = &first["data"]["runs"][0]["progress"];
+    assert_eq!(progress["attempt"], 1);
+    assert_eq!(progress["kind"], "session_opened");
+    assert!(progress["updated_at"].as_str().unwrap().ends_with('Z'));
+    assert!(progress["age_seconds"].as_u64().is_some());
+
+    f.status("exited", "COMPLETED");
+    f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+    let second = f.call(&["wait", &id, "--timeout", "0"], 1);
+    assert_eq!(second["data"]["runs"][0]["progress"], json!({"attempt":2,"kind":"no_progress_observed"}));
+    fs::write(
+        f.dir(&id).join("events2.jsonl"),
+        concat!(
+            r#"{"type":"item.started","item":{"type":"command_execution","command":"SECRET\nmore SECRET"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":"partial"#,
+        ),
+    )
+    .unwrap();
+    let progress = f.call(&["wait", &id, "--timeout", "0"], 1);
+    assert_eq!(progress["data"]["runs"][0]["progress"]["kind"], "command_started");
+    assert!(!progress.to_string().contains("SECRET"));
+    let human = f.cmd().args(["wait", &id, "--timeout", "0"]).output().unwrap();
+    let stderr = String::from_utf8(human.stderr).unwrap();
+    assert!(stderr.contains("attempt 2: command started (evidence updated"));
+    assert!(!stderr.contains("SECRET"));
 }

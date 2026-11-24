@@ -208,6 +208,11 @@ impl Run {
     pub fn suffix(&self) -> String {
         if self.attempt.get() == 1 { String::new() } else { self.attempt.to_string() }
     }
+    pub fn launch_events_name(&self) -> String {
+        let attempt = self.launch_attempt();
+        let suffix = if attempt == NonZeroU32::MIN { String::new() } else { attempt.to_string() };
+        format!("events{suffix}.jsonl")
+    }
     pub fn launch_report_name(&self) -> String {
         match self.launch {
             Launch::PendingResume { attempt, .. } => format!("final{attempt}.md"),

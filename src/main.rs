@@ -4,6 +4,7 @@ mod domain;
 mod handlers;
 mod handoff;
 mod process;
+mod progress;
 mod render;
 mod runs;
 mod scripts;
@@ -43,14 +44,23 @@ enum Action {
     },
     #[command(
         about = "Lint a brief and launch a recorded worker",
-        after_help = "Example: herder dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nCodex extras: --image=<file> (not -i) and -p <profile> after --; extras are replayed on resume.\nLauncher gate exit 3 leaves the run starting; herder returns 0. Use herder wait to await settlement or status to follow progress."
+        after_help = "Example: herder dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nCodex extras: --image=<file> (not -i) and -p <profile> after --; extras are replayed on resume.\nLauncher gate exit 3 leaves the run starting; herder returns 0. Use herder wait to await settlement or status to follow progress. Use --check to keep dispatch running through worker completion and verification."
     )]
-    Dispatch(Dispatch),
+    Dispatch {
+        #[command(flatten)]
+        args: DispatchArgs,
+        /// Run this coordinator command in --repo after a single dispatch finishes (repeatable)
+        #[arg(long = "check")]
+        checks: Vec<String>,
+        /// Seconds to wait and verify after launch returns (default: 3600 with --check)
+        #[arg(long, requires = "checks", value_parser = clap::value_parser!(u32).range(1..))]
+        check_timeout: Option<u32>,
+    },
     #[command(
         about = "Hand a plain continuation document to a worker and launch it",
         after_help = "Example: herder handoff --executor claude --brief /tmp/HANDOFF.md --repo . --path src/\nAccepts a plain UTF-8 continuation document instead of a structured brief: its full bytes are snapshotted into the run's input.md behind the standard continuation contract, linted like any brief, and sent to the worker. Missing, empty, whitespace-only or non-UTF-8 documents fail before launch and leave no run record; later edits to the original file cannot change the stored input.\nThis launches a continuation only: it does not transfer hidden conversation, stop another writer, or prove the context was understood. The launch result is launch evidence only. Use --pane for the existing Claude attach functionality when in Rex."
     )]
-    Handoff(Dispatch),
+    Handoff(DispatchArgs),
     #[command(
         about = "List runs with fresh executor status",
         after_help = "Example: herder ls --goal feature-1 --json"
@@ -62,7 +72,7 @@ enum Action {
     },
     #[command(
         about = "Wait for any or all runs to settle",
-        after_help = "Example: herder wait 20261101-120000-abcd 20261101-120001-ef01 --all --timeout 60\nSettled states: finished, failed, stopped, blocked. Exits 0 if all settled runs at return are finished.\nExits 1 if a settled run failed, stopped or blocked, or if the wait times out.\nPolls every 5 seconds; final output includes every run and its report path."
+        after_help = "Example: herder wait 20261101-120000-abcd 20261101-120001-ef01 --all --timeout 60\nSettled states: finished, failed, stopped, blocked. Exits 0 if all settled runs at return are finished.\nExits 1 if a settled run failed, stopped or blocked, or if the wait times out.\nPolls every 5 seconds; final output includes every run and its report path. At timeout, stderr (or JSON progress) shows the last available evidence for each unsettled attempt."
     )]
     Wait {
         /// Run ids or unique dispatch names to observe
@@ -135,7 +145,7 @@ enum Action {
     },
 }
 #[derive(Args, Clone)]
-struct Dispatch {
+struct DispatchArgs {
     /// Brief lint mode (review also selects a read-only sandbox for Codex)
     #[arg(long, default_value = "direct", value_parser = ["direct", "review"])]
     mode: String,

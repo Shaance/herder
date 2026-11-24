@@ -3,7 +3,7 @@ use crate::{
     process::{Script, checked, output, query, script},
 };
 use anyhow::{Result, ensure};
-use std::{fs, num::NonZeroU32, path::Path, process::Command};
+use std::{fs, num::NonZeroU32, path::Path, process::Command, time::Instant};
 
 pub struct ScriptExecutor {
     pub scripts: [Script; 3],
@@ -80,9 +80,9 @@ impl ScriptExecutor {
         }
         Ok(Some(native))
     }
-    pub fn query(&self, run: &Run, dir: &Path) -> Result<(Observation, Result<Native>)> {
+    pub fn query(&self, run: &Run, dir: &Path, deadline: Option<Instant>) -> Result<(Observation, Result<Native>)> {
         let [_, status, _] = self.scripts;
-        let text = query(script(status).arg(dir).args(self.status_args(run)))?;
+        let text = query(script(status).arg(dir).args(self.status_args(run)), deadline)?;
         let identity = run.launch.native().cloned().map_or_else(|| self.identity(dir), Ok);
         if let Ok(native) = &identity {
             confirm(native, dir)?;
@@ -91,11 +91,14 @@ impl ScriptExecutor {
                 UnknownError(UnknownCause::IdentityMismatch, format!("status pid disagrees with record: {text}"))
             );
         }
-        let state = match field(&text, "state")? {
-            "alive" => State::Running,
-            "exited" if text.contains("verdict: COMPLETED") => State::Finished,
-            "exited" if text.contains("verdict: STOPPED") => State::Stopped,
-            "exited" if text.contains("verdict: DIED") || text.contains("verdict: FAILED") => State::Failed,
+        // Vibe can print worker stderr after reporting a terminal verdict.
+        let verdict =
+            text.lines().find_map(|line| line.strip_prefix("verdict: ").and_then(|v| v.split_whitespace().next()));
+        let state = match (field(&text, "state")?, verdict) {
+            ("alive", _) => State::Running,
+            ("exited", Some("COMPLETED")) => State::Finished,
+            ("exited", Some("STOPPED")) => State::Stopped,
+            ("exited", Some("DIED" | "FAILED")) => State::Failed,
             _ => return Ok((Observation::unknown(UnknownCause::UnrecognizedStatus, text), identity)),
         };
         Ok((Observation::known(state, text), identity))

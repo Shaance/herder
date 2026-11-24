@@ -33,6 +33,22 @@ agent or person can use the same CLI.
    herder dispatch --executor codex --effort medium --brief /tmp/work-order.md --repo .
    ```
 
+   When you know how to verify the outcome, use checked dispatch for a single worker.
+   Confirm that `herder dispatch --help` lists `--check`. Pass the scope with
+   `--path`, repeat `--check '<command>'` for coordinator-owned commands, and
+   choose a post-launch budget with `--check-timeout <secs>`. Omit `--path` when
+   the worker is expected to leave the checkout untouched. Keep checks read-only
+   and safe to repeat. Run the dispatch as a background shell command when the host
+   can wake you on exit. Use a unique `--name` to inspect the worker while it runs.
+
+   ```sh
+   herder dispatch --executor codex --effort medium --brief /tmp/work-order.md --repo . \
+     --name checked-work --path src/ --check 'cargo test --locked' --check-timeout 1800 --json
+   ```
+
+   Exit 0 and `data.verification.verdict == "pass"` confirm verification for the
+   dispatched attempt. Use ordinary dispatch, wait and explicit verify on older installs.
+
    Vibe/Codex resume replays the recorded model and extra arguments after `--`.
    Codex also replays the requested effort.
 Claude resume stops a settled live session, then wakes the same identity with its
@@ -47,10 +63,13 @@ saved options under the recorded profile; copies are stopped and rejected.
    condition is met, it exits 0 if every settled run is finished, or 1 if any
    failed, stopped or blocked. A timeout also exits 1. Unknown observations can
    clear during polling. Without `--all`, another settled run can satisfy the wait. Final output
-   lists every run and report path. Example: `herder wait run-id --timeout 60`.
+   lists every run and report path. Current versions add safe last-evidence
+   diagnostics at timeout. Example: `herder wait run-id --timeout 60`.
    When Rex is available, `--pane` opens a pane; Vibe/Codex panes use `herder wait`
    and close on exit. Read `herder report`.
-5. Inspect the actual changes and run `herder verify` with scope paths and checks.
+5. Inspect the actual changes and the attempt's recorded verdict. If checked
+   dispatch was unavailable, or the run resumed, run `herder verify` with scope
+   paths and coordinator-chosen checks for the current attempt.
    After rebasing, use `herder verify <run> --baseline <new-upstream-rev>` to replace
    the recorded scope baseline. Invalid commit revisions leave the run unchanged.
    Resolve each review finding or record its approved deferral.
@@ -113,7 +132,9 @@ All flag details and examples live in `herder <command> --help`.
 
 ## Codex runs from a background coordinator
 
-Run the following as one background shell command, for example in a Claude Code background Bash call.
+Run checked dispatch itself in the background when verification is known at launch.
+For an ordinary dispatch, use this background shell command, for example in a
+Claude Code background Bash call.
 
 ```sh
 herder wait "$run" --timeout 3600; herder report "$run"

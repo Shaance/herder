@@ -1,7 +1,7 @@
 use crate::scripts::ScriptExecutor;
 use crate::{claude, domain::*, process, scripts, store::LockedRun};
 use anyhow::{Result, bail, ensure};
-use std::{path::Path, process::Command};
+use std::{path::Path, process::Command, time::Instant};
 
 pub fn launch(run: &mut Run, phase: LaunchPhase<'_>, store: &LockedRun) -> Result<()> {
     let target = run.launch.target();
@@ -45,6 +45,10 @@ pub fn launch(run: &mut Run, phase: LaunchPhase<'_>, store: &LockedRun) -> Resul
     result
 }
 pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
+    observe_until(run, store, None)
+}
+
+pub fn observe_until(run: &mut Run, store: Option<&LockedRun>, deadline: Option<Instant>) -> Observation {
     let Some(store) = store else {
         let evidence = "run busy: another herder command holds the lock".into();
         return match run.launch.state() {
@@ -60,7 +64,7 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
         let mut observed = match run.launch.target() {
             Target::Claude { profile } => {
                 let accepted = matches!(run.launch, Launch::Accepted { .. });
-                let observed = claude::query(run, profile.as_deref())?;
+                let observed = claude::query(run, profile.as_deref(), deadline)?;
                 if matches!(run.launch, Launch::PendingResume { .. }) {
                     return Ok(observed);
                 }
@@ -74,7 +78,7 @@ pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
                     Target::Vibe => ScriptExecutor::VIBE,
                     _ => ScriptExecutor::CODEX,
                 };
-                let (observed, identity) = executor.query(run, dir)?;
+                let (observed, identity) = executor.query(run, dir, deadline)?;
                 if matches!(run.launch, Launch::Starting { .. } | Launch::PendingResume { .. })
                     && let Ok(native) = identity
                 {
@@ -176,11 +180,11 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
             );
         }
         let (observed, identity) = match &previous {
-            Native::Claude { profile, .. } => (claude::query(run, profile.as_deref())?, None),
+            Native::Claude { profile, .. } => (claude::query(run, profile.as_deref(), None)?, None),
             native => {
                 let executor =
                     if matches!(native, Native::Vibe { .. }) { ScriptExecutor::VIBE } else { ScriptExecutor::CODEX };
-                let (observed, identity) = executor.query(run, dir)?;
+                let (observed, identity) = executor.query(run, dir, None)?;
                 (observed, Some(identity))
             }
         };

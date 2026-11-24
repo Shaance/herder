@@ -5,6 +5,8 @@ use std::{
     process::Command,
 };
 use tempfile::TempDir;
+#[path = "cases/checked_dispatch.rs"]
+mod checked_dispatch;
 #[path = "cases/contracts.rs"]
 mod contracts;
 #[path = "cases/corrections.rs"]
