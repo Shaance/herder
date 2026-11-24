@@ -1,5 +1,9 @@
 use super::durability::wait_file;
 use super::*;
+use std::{
+    thread,
+    time::{Duration, Instant},
+};
 
 fn setup() -> (Fixture, PathBuf) {
     let f = Fixture::new();
@@ -374,11 +378,16 @@ printf '%s\n' '{"type":"turn.completed"}'"#,
         .spawn()
         .unwrap();
     wait_file(&f.state.join("worker-entered"));
+    // The worker emits events before the launch gate records its accepted identity.
+    let run_dir = fs::read_dir(f.state.join("runs")).unwrap().next().unwrap().unwrap();
+    let id = run_dir.file_name();
+    let id = id.to_str().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while f.record(id)["launch"]["state"] == "starting" && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
     let (wait_code, wait) = call(&f, &skills, &["wait", "checked", "--timeout", "1"]);
-    assert_eq!(wait_code, 1, "{wait}");
-    assert_eq!(wait["data"]["runs"][0]["state"], "running");
-    assert_eq!(wait["data"]["runs"][0]["progress"]["kind"], "turn_started");
-    assert!(!f.state.join("checked").exists());
+    let checked_while_running = f.state.join("checked").exists();
     // A real Git status stream must exceed the pipe buffer to cover the previous SIGPIPE.
     fs::create_dir(f.repo.join("generated")).unwrap();
     for index in 0..1600 {
@@ -387,7 +396,11 @@ printf '%s\n' '{"type":"turn.completed"}'"#,
     fs::remove_file(f.state.join("hold")).unwrap();
 
     let out = child.wait_with_output().unwrap();
-    let id = wait["data"]["runs"][0]["id"].as_str().unwrap();
+    assert_eq!(wait_code, 1, "{wait}");
+    assert_eq!(wait["data"]["runs"][0]["id"], id, "{wait}");
+    assert_eq!(wait["data"]["runs"][0]["state"], "running", "{wait}");
+    assert_eq!(wait["data"]["runs"][0]["progress"]["kind"], "turn_started", "{wait}");
+    assert!(!checked_while_running);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id}\tchecked\n"));
     assert!(String::from_utf8(out.stderr).unwrap().contains("PASS  checked  attempt 1"));
