@@ -130,7 +130,7 @@ fn human(output: &Output) {
                             run.goal.as_deref().unwrap_or("-").escape_debug(),
                             run.launch.target().executor().as_str(),
                             observation.state().as_str(),
-                            run.attempt,
+                            run.launch_attempt(),
                             run.model.as_deref().unwrap_or("-").escape_debug(),
                             run.requested_effort.as_deref().unwrap_or("-").escape_debug()
                         ),
@@ -209,7 +209,7 @@ fn human(output: &Output) {
                 println!(
                     "executor: {}\nattempt: {}\nrun dir: {}\nreport path: {}\nlatest verdict: {}\nrequested effort: {}",
                     run.launch.target().executor().as_str(),
-                    run.attempt,
+                    run.launch_attempt(),
                     dir.display(),
                     dir.join(run.report_name()).display(),
                     run.verifications
@@ -240,7 +240,12 @@ fn human(output: &Output) {
                 }
             }
             RunDetail::Resume => {
-                println!("{} attempt {}: {}", run.id.escape_debug(), run.attempt, observation.state().as_str());
+                println!(
+                    "{} attempt {}: {}",
+                    run.id.escape_debug(),
+                    run.launch_attempt(),
+                    observation.state().as_str()
+                );
             }
             RunDetail::Verify(verification) => {
                 if let Some(id) = &verification.reused_from {
@@ -269,7 +274,7 @@ fn terminal_run_row(run: &Run, state: State) -> [String; 8] {
         run.goal.as_deref().unwrap_or("-").escape_debug().to_string(),
         run.launch.target().executor().as_str().into(),
         state.as_str().into(),
-        run.attempt.to_string(),
+        run.launch_attempt().to_string(),
         run.model.as_deref().unwrap_or("-").escape_debug().to_string(),
         run.requested_effort.as_deref().unwrap_or("-").escape_debug().to_string(),
     ]

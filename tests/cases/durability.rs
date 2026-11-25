@@ -358,3 +358,23 @@ fn a6_listing_isolates_broken_runs_and_dispatch_publishes_atomically() {
     assert_eq!(columns.len(), 3);
     assert!(columns[2].contains("run.json"), "{row}");
 }
+
+#[test]
+fn codex_resume_shows_the_pending_attempt_beside_its_state() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    f.status("exited", "COMPLETED");
+    f.script(
+        "codex-implementer",
+        "resume_classic",
+        "echo 43211 > \"$1/run.pid\"\necho 'state=alive pid=43211' > \"$HERDER_SKILLS_DIR/status\"\nexit 3",
+    );
+    let out = f.cmd().args(["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), format!("{id} attempt 2: starting\n"));
+    let ls = String::from_utf8(f.cmd().arg("ls").output().unwrap().stdout).unwrap();
+    assert!(ls.contains(&format!("{id}\t-\t-\tcodex\tstarting\t2\t")), "{ls}");
+    let status = String::from_utf8(f.cmd().args(["status", &id]).output().unwrap().stdout).unwrap();
+    // The state belongs to the pending attempt; the report is still the accepted attempt's.
+    assert!(status.contains("attempt: 2\n") && status.contains("/final.md\n"), "{status}");
+}
