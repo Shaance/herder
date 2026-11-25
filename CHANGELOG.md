@@ -2,6 +2,12 @@
 
 All notable changes to herder are listed here. herder follows [Semantic Versioning](https://semver.org/); before 1.0, a minor version can change behavior that scripts depend on.
 
+## Unreleased
+
+### Added
+
+- **Homebrew install.** `brew install shaance/tap/herder` installs the signed universal binary. Each release tag updates the formula in the tap.
+
 ## 0.3.0 (2026-11-25)
 
 ### Added

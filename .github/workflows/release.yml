@@ -8,6 +8,7 @@ name: macOS release
 #   APPLE_API_KEY_ID            that key's ID
 #   APPLE_API_ISSUER_ID         its issuer ID
 # crates.io publishing uses Trusted Publishing (no secret) via the crates-io environment.
+# The Homebrew job pushes the formula with TAP_DEPLOY_KEY, a write deploy key on Shaance/homebrew-tap.
 
 on:
   push:
@@ -175,6 +176,52 @@ jobs:
           gh release create "$GITHUB_REF_NAME" \
             dist/herder-macos-universal.tar.gz dist/herder-macos-universal.tar.gz.sha256 \
             --title "herder ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/release-notes.md"
+
+  homebrew:
+    name: Publish Homebrew formula
+    needs: macos
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: herder-macos-universal
+          path: dist
+
+      - name: Render the formula from the released archive's checksum
+        run: |
+          (cd dist && sha256sum --check --strict herder-macos-universal.tar.gz.sha256)
+          sh packaging/homebrew/render-formula.sh "${GITHUB_REF_NAME#v}" dist > "$RUNNER_TEMP/herder.rb"
+          ruby -c "$RUNNER_TEMP/herder.rb"
+
+      # TAP_DEPLOY_KEY: private half of a write deploy key on Shaance/homebrew-tap.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Shaance/homebrew-tap
+          ref: main
+          path: tap
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
+
+      - name: Push the formula to the tap
+        working-directory: tap
+        run: |
+          cp "$RUNNER_TEMP/herder.rb" Formula/herder.rb
+          git add -- Formula/herder.rb
+          # A rerun with an unchanged formula succeeds without a commit.
+          if git diff --cached --quiet -- Formula/herder.rb; then
+            echo "Formula already matches $GITHUB_REF_NAME."
+            exit 0
+          fi
+          git -c user.name='github-actions[bot]' \
+            -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "herder ${GITHUB_REF_NAME#v}"
+          git push origin HEAD:main
 
   publish-crate:
     name: Publish to crates.io
