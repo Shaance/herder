@@ -2,7 +2,7 @@
 
 All notable changes to herder are listed here. herder follows [Semantic Versioning](https://semver.org/); before 1.0, a minor version can change behavior that scripts depend on.
 
-## Unreleased
+## 0.3.0 (2026-11-25)
 
 ### Added
 
