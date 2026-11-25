@@ -38,14 +38,15 @@ fi
 cp "$DELTA" "$RUN_DIR/delta${SUFFIX}.md"
 
 # Keep the recorded pid across exec, outside the coordinator's process group.
-nohup perl -MPOSIX -e 'POSIX::setsid() >= 0 or die "setsid: $!"; exec @ARGV or die "exec: $!";' -- \
+# The wrapper records its own pid, which exec keeps, before Codex starts, so a
+# launcher killed right after the fork cannot leave a live worker unrecorded.
+nohup perl -MPOSIX -e 'my $pid_file = shift; POSIX::setsid() >= 0 or die "setsid: $!"; open(my $f, ">", $pid_file) or die "run.pid: $!"; print $f "$$\n" or die "run.pid: $!"; close($f) or die "run.pid: $!"; exec @ARGV or die "exec: $!";' -- "$RUN_DIR/run.pid" \
 	codex exec -C "$REPO" --json \
 	"$@" \
 	-o "$RUN_DIR/final${SUFFIX}.md" \
 	resume "$THREAD_ID" - <"$RUN_DIR/delta${SUFFIX}.md" \
 	>"$RUN_DIR/events${SUFFIX}.jsonl" 2>"$RUN_DIR/stderr${SUFFIX}.log" &
 PID=$!
-printf '%s\n' "$PID" >"$RUN_DIR/run.pid"
 
 for _ in $(seq 1 90); do
 	[[ -s "$RUN_DIR/events${SUFFIX}.jsonl" ]] && {
