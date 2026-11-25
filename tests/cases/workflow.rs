@@ -472,7 +472,8 @@ fn wait_timeout_reports_only_current_attempt_progress_and_safe_metadata() {
     f.status("exited", "COMPLETED");
     f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
     let second = f.call(&["wait", &id, "--timeout", "0"], 1);
-    assert_eq!(second["data"]["runs"][0]["progress"], json!({"attempt":2,"kind":"no_progress_observed"}));
+    assert_eq!(second["data"]["runs"][0]["progress"]["attempt"], 2);
+    assert_eq!(second["data"]["runs"][0]["progress"]["kind"], "session_opened");
     fs::write(
         f.dir(&id).join("events2.jsonl"),
         concat!(

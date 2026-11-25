@@ -199,8 +199,7 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
         Action::Resume { run, brief, request_id } => {
             let locked = store.lock(&store.resolve(&run)?)?;
             let mut run = locked.load()?;
-            runs::resume(&mut run, &brief, request_id.as_deref(), &locked)?;
-            let observation = runs::observe(&mut run, Some(&locked));
+            let observation = runs::resume(&mut run, &brief, request_id.as_deref(), &locked)?;
             (run, observation, RunDetail::Resume, 0)
         }
         Action::Verify { run, paths, checks, baseline } => {

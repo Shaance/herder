@@ -210,6 +210,28 @@ if hold.parent.is_dir():
     assert_eq!(code, 0, "{report}");
     assert_eq!(report["data"]["observation"]["state"], "failed");
     assert_eq!(report["data"]["report"]["content"], "partial report");
+
+    let recipe = include_str!("../../skill/SKILL.md")
+        .split("\n## ")
+        .find(|section| section.starts_with("Codex runs from a background coordinator\n"))
+        .and_then(|section| section.split_once("\n```sh\n"))
+        .and_then(|(_, fenced)| fenced.split_once("\n```\n"))
+        .map(|(recipe, _)| recipe)
+        .expect("background coordinator shell recipe");
+    let herder_dir = Path::new(env!("CARGO_BIN_EXE_herder")).parent().unwrap();
+    let path = std::env::join_paths([herder_dir, &f.bin, Path::new("/usr/bin"), Path::new("/bin")]).unwrap();
+    let out = Command::new("sh")
+        .args(["-ec", recipe])
+        .current_dir(&f.repo)
+        .env("HERDER_STATE_DIR", &f.state)
+        .env("HERDER_SKILLS_DIR", &skills)
+        .env("PATH", path)
+        .env("run", id)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(1), "{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.contains("partial report"), "{stdout}");
 }
 
 #[test]

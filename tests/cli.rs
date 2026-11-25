@@ -138,6 +138,7 @@ agents)
   if test -f "$HERDER_SKILLS_DIR/awake"; then sed 's/"status":null/"status":"idle"/; s/"stopped"/"working"/' "$HERDER_SKILLS_DIR/agents.json"; exit 0; fi
   test ! -f "$HERDER_SKILLS_DIR/query-fail"
   if test -f "$HERDER_SKILLS_DIR/idle-once"; then rm "$HERDER_SKILLS_DIR/idle-once"; if test -f "$HERDER_SKILLS_DIR/fail-after-identity"; then touch "$HERDER_SKILLS_DIR/query-fail"; fi; sed 's/"busy"/"idle"/' "$HERDER_SKILLS_DIR/agents.json"; exit 0; fi
+  if test -f "$HERDER_SKILLS_DIR/agents-stderr"; then cat "$HERDER_SKILLS_DIR/agents-stderr" >&2; fi
   cat "$HERDER_SKILLS_DIR/agents.json";;
 stop)
   printf '%s\n' "${CLAUDE_CONFIG_DIR:-none}" > "$HERDER_STATE_DIR/stop-profile"
@@ -154,6 +155,11 @@ esac"#,
             ("vibe-implementer", "vibe", "SESSION_ID", "session-id"),
             ("codex-implementer", "classic", "THREAD_ID", "thread-id"),
         ] {
+            let resume_event = if suffix == "classic" {
+                r#"echo '{"type":"thread.started","thread_id":"native-1"}' > "$1/events$4.jsonl""#
+            } else {
+                ""
+            };
             f.script(
                 owner,
                 &format!("launch_{suffix}"),
@@ -185,6 +191,7 @@ cat "$HERDER_SKILLS_DIR/status""#,
 grep -Eq '"state": "(starting|pending_resume)"' "$1/run.json"
 printf '%s\n' "$@" > "$HERDER_STATE_DIR/resume-args"
 echo 43211 > "$1/run.pid"
+{resume_event}
 echo "attempt $4" > "$1/final$4.md"
 echo 'state=alive pid=43211' > "$HERDER_SKILLS_DIR/status"
 echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
@@ -319,6 +326,18 @@ fn claude_dispatch_records_identity_profile_and_prompt_first() {
     f.agents("idle", "waiting_for_permission", "native-session");
     assert_eq!(f.call(&["status", id], 0)["data"]["observation"]["state"], "blocked");
     assert_eq!(f.call(&["ls", "--goal", "other"], 0)["data"]["runs"], json!([]));
+}
+
+#[test]
+fn claude_status_parses_agents_json_with_stderr_warning() {
+    let f = Fixture::new();
+    fs::write(f.skills.join("agents-stderr"), "warning: example Claude diagnostic\n").unwrap();
+    let id = f.launch("claude");
+    assert_eq!(f.record(&id)["launch"]["native"]["session_id"], "native-session");
+
+    let status = f.call(&["status", &id], 0);
+    assert_eq!(status["data"]["observation"]["state"], "running", "{status}");
+    assert_eq!(status["data"]["run"]["launch"]["native"]["session_id"], "native-session");
 }
 
 #[test]

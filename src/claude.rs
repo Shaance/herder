@@ -42,10 +42,8 @@ struct Agent {
     state: String,
 }
 fn agents(profile: Option<&Path>, repo: &Path, deadline: Option<Instant>) -> Result<Vec<Agent>> {
-    let listed: Vec<Listed> = serde_json::from_str(&process::query(
-        command(profile).current_dir(repo).args(["agents", "--json", "--all"]),
-        deadline,
-    )?)?;
+    let (stdout, _) = process::query(command(profile).current_dir(repo).args(["agents", "--json", "--all"]), deadline)?;
+    let listed: Vec<Listed> = serde_json::from_str(&stdout)?;
     Ok(listed.into_iter().filter_map(|l| if let Listed::Background(a) = l { Some(a) } else { None }).collect())
 }
 pub fn stop_hook(dir: &Path) -> Result<()> {
