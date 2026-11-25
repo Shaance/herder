@@ -25,6 +25,7 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 - The skill's background recipe now attempts the report and returns `herder wait`'s exit status.
 - The skill and dispatch help no longer claim that `-i` swallows Codex resume arguments.
 - While a Codex resume waits for its thread to open, `resume`, `ls` and `status` show the new attempt number beside its state instead of the previous attempt's.
+- A resumed Codex worker records its own PID before it starts, so a launcher killed right after starting it can no longer leave a live worker unrecorded for a later resume to duplicate.
 
 ## 0.2.0 (2026-11-18)
 

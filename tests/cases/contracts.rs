@@ -488,3 +488,47 @@ exit {worker_code}"#,
         assert_eq!(f.record(id)["verifications"].as_array().unwrap().len(), usize::from(verified));
     }
 }
+
+#[test]
+fn embedded_codex_resume_worker_finds_its_own_pid_recorded_at_startup() {
+    let (f, _) = setup();
+    let home = f.root.join("home");
+    fs::create_dir(&home).unwrap();
+    f.executable(
+        &f.bin.join("codex"),
+        r#"while [ "$#" -gt 0 ]; do
+    if [ "$1" = -o ]; then shift; out=$1; echo 'stub report' > "$out"; break; fi
+    shift
+done
+dir=$(dirname "$out")
+echo "$$ $(cat "$dir/run.pid")" > "$dir/pid-seen-$(basename "$out")"
+echo '{"type":"thread.started","thread_id":"stub-thread"}'
+echo '{"type":"turn.completed"}'"#,
+    );
+    // An old launcher wrote run.pid from the shell after forking; disable that write so the
+    // test fails unless the worker side records the pid before the worker starts.
+    f.write("no-shell-printf.sh", "printf() { :; }\n");
+    let call = |args: &[&str], bash_env: bool| {
+        let mut cmd = f.cmd();
+        cmd.env_remove("HERDER_SKILLS_DIR").env("HOME", &home);
+        if bash_env {
+            cmd.env("BASH_ENV", f.root.join("no-shell-printf.sh"));
+        }
+        let out = cmd.args(args).arg("--json").output().unwrap();
+        (out.status.code().unwrap(), serde_json::from_slice::<Value>(&out.stdout).unwrap())
+    };
+    let brief = f.root.join("brief.md");
+    let (code, dispatch) = call(
+        &["dispatch", "--executor", "codex", "--mode", "review", "--repo", ".", "--brief", brief.to_str().unwrap()],
+        false,
+    );
+    assert_eq!(code, 0, "{dispatch}");
+    let id = dispatch["data"]["run_id"].as_str().unwrap();
+    let (code, resumed) = call(&["resume", id, "--brief", brief.to_str().unwrap()], true);
+    assert_eq!(code, 0, "{resumed}");
+    let seen = fs::read_to_string(f.dir(id).join("pid-seen-final2.md")).unwrap();
+    let mut pids = seen.split_whitespace();
+    let own = pids.next();
+    assert_eq!(pids.next(), own, "the resumed worker started before its pid was recorded: {seen:?}");
+    assert_eq!(f.record(id)["attempt"], 2, "{resumed}");
+}
