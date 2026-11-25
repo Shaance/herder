@@ -79,18 +79,37 @@ pub fn observe_until(run: &mut Run, store: Option<&LockedRun>, deadline: Option<
                     _ => ScriptExecutor::CODEX,
                 };
                 let (observed, identity) = executor.query(run, dir, deadline)?;
+                let identity = match &run.launch {
+                    Launch::PendingResume { previous: Native::Codex { .. }, .. } => Some(identity?),
+                    _ => identity.ok(),
+                };
                 if matches!(run.launch, Launch::Starting { .. } | Launch::PendingResume { .. })
-                    && let Ok(native) = identity
+                    && let Some(native) = identity
                 {
                     if let Launch::PendingResume { previous, .. } = &run.launch {
+                        let (pid, _, id) = native.process().unwrap();
+                        let (previous_pid, _, previous_id) = previous.process().unwrap();
+                        let started = match previous {
+                            Native::Codex { thread_id, .. } => scripts::codex_resume_started(run, dir, thread_id, pid)?,
+                            _ => true,
+                        };
                         ensure!(
-                            previous.process().map(|p| p.2) == native.process().map(|p| p.2),
+                            previous_id == id,
                             UnknownError(UnknownCause::IdentityMismatch, "resume identity changed".into())
                         );
                         ensure!(
-                            previous.process().map(|p| p.0) != native.process().map(|p| p.0),
+                            previous_pid != pid,
                             UnknownError(UnknownCause::Unconfirmed, "resume pending; no new pid recorded".into())
                         );
+                        if !started && observed.state() != State::Failed {
+                            let evidence =
+                                format!("resume pending; waiting for thread.started: {}", observed.evidence());
+                            return Ok(if observed.state() == State::Running {
+                                Observation::known(State::Starting, evidence)
+                            } else {
+                                Observation::unknown(UnknownCause::Unconfirmed, evidence)
+                            });
+                        }
                     }
                     run.attempt = run.launch_attempt();
                     run.launch = Launch::Launched { native, intent: Intent::Running };
@@ -151,7 +170,7 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
-pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &LockedRun) -> Result<()> {
+pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &LockedRun) -> Result<Observation> {
     if let Some(id) = request_id {
         ensure!(
             !id.is_empty() && id.len() <= 200 && !id.chars().any(char::is_control),
@@ -166,7 +185,7 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
             std::fs::read(&input).ok().as_deref() == Some(contents.as_slice()),
             "request id {request_id:?} already owns attempt {attempt} with different brief bytes"
         );
-        return Ok(());
+        return Ok(observe(run, Some(store)));
     }
     ensure!(!contents.is_empty(), "delta brief missing or empty");
     let dir = &store.dir;
@@ -198,6 +217,9 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
                 recorded.process().map(|p| p.2) == previous.process().map(|p| p.2),
                 UnknownError(UnknownCause::IdentityMismatch, "resume identity changed".into())
             );
+            if let Native::Codex { thread_id, .. } = &previous {
+                scripts::codex_resume_started(run, dir, thread_id, recorded.process().unwrap().0)?;
+            }
         }
         (previous, attempt)
     } else {
@@ -225,7 +247,16 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
     }
     run.launch = Launch::PendingResume { previous: native.clone(), attempt, error: None };
     store.save(run)?;
-    launch(run, LaunchPhase::Resume { previous: &native, delta: &delta }, store)
+    launch(run, LaunchPhase::Resume { previous: &native, delta: &delta }, store)?;
+    let observed = observe(run, Some(store));
+    // The stream can gain its opening event between the launch gate and observation.
+    if matches!(native, Native::Codex { .. })
+        && matches!(run.launch, Launch::PendingResume { .. })
+        && matches!(observed.cause(), Some(UnknownCause::IdentityMismatch))
+    {
+        return Err(UnknownError(UnknownCause::IdentityMismatch, observed.evidence().into()).into());
+    }
+    Ok(observed)
 }
 pub fn pane(run: &Run) -> Result<()> {
     let block = std::env::var("REX_BLOCK")?;

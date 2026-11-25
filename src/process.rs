@@ -29,12 +29,12 @@ pub fn checked_until(cmd: &mut Command, deadline: Option<Instant>) -> Result<Str
     Ok(stdout)
 }
 
-pub fn query(cmd: &mut Command, deadline: Option<Instant>) -> Result<String> {
+pub fn query(cmd: &mut Command, deadline: Option<Instant>) -> Result<(String, String)> {
     let limit = Instant::now() + EXECUTOR_QUERY_TIMEOUT;
     let (status, stdout, stderr) = bounded_output(cmd, deadline.map_or(limit, |end| end.min(limit)))?;
     let status = status.ok_or_else(|| anyhow::anyhow!("executor query timed out: {stdout}{stderr}"))?;
     ensure!(status.success(), "exit {:?}: {stdout}{stderr}", status.code());
-    Ok(stdout + &stderr)
+    Ok((stdout, stderr))
 }
 
 pub fn bounded_output(cmd: &mut Command, deadline: Instant) -> Result<(Option<ExitStatus>, String, String)> {
@@ -130,7 +130,9 @@ mod tests {
     fn query_returns_when_descendant_inherits_output() {
         let started = Instant::now();
         let result = query(Command::new("/bin/sh").args(["-c", "sleep 6 & printf stdout; printf stderr >&2"]), None);
-        assert_eq!(result.unwrap(), "stdoutstderr");
+        let (stdout, stderr) = result.unwrap();
+        assert_eq!(stdout, "stdout");
+        assert_eq!(stderr, "stderr");
         assert!(started.elapsed() < Duration::from_secs(4), "query waited for its descendant");
     }
 }

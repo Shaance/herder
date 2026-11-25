@@ -44,7 +44,7 @@ On timeout, human stderr reports the last available progress for each unsettled 
 
 Prefer briefs outside `--repo`. Files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. A direct-mode brief requires `<task>`, `<workstream_contract>`, `<implementation_authority>`, `<action_safety>`, `<default_follow_through_policy>`, `<verification_loop>`, `<economy_contract>` and `<structured_output_contract>` blocks. Name authorized paths and rejected alternatives in the brief.
 
-Extra dispatch arguments after `--` go to the executor, including Vibe arguments past its launcher's separator. They are recorded and replayed with `--model` on Vibe and Codex resume. Herder Vibe runs are auto-approve only. Launcher gate exit 3 preserves `starting` or `pending_resume`; herder returns 0.
+Extra dispatch arguments after `--` go to the executor, including Vibe arguments past its launcher's separator. They are recorded and replayed with `--model` on Vibe and Codex resume. Herder Vibe runs are auto-approve only. Launcher gate exit 3 leaves the launch pending for observation. Herder returns 0 unless immediate Codex resume observation detects an identity conflict, which exits 1.
 
 Dispatch and handoff accept `--effort <LEVEL>` for Codex and Claude. Accepted levels are `low`, `medium`, `high`, `xhigh`, `max` and `ultra`. The executor determines which levels a model supports. Its configured default applies when both herder's `--effort` and native effort arguments are omitted. With the herder flag omitted, native effort arguments after `--` are forwarded and `requested_effort` remains empty. Vibe uses the selected model alias's `thinking` setting in `config.toml`. Herder rejects a request that also sets native effort after `--`. Codex receives the requested effort on each launch and resume. Claude receives it at launch and resumes with the saved session options.
 
@@ -62,15 +62,17 @@ Checked dispatch retains the normal launch output and adds `data.verification` i
 
 ## Resume, retry and request IDs
 
-Resume requires a non-empty delta brief. The delta can use `<task>`, `<verification_loop>` and `<constraints>` without dispatch's full brief contract. The accepted attempt and report remain current until resume succeeds. Vibe and Codex require a new PID with the same executor identity.
+Resume requires a non-empty delta brief. The delta can use `<task>`, `<verification_loop>` and `<constraints>` without dispatch's full brief contract. The previous report stays current while the resume is pending. Vibe and Codex require a new PID with the same executor identity.
 
-After correcting a recorded pending-resume error, `herder resume` retries the same attempt using its previous identity when the executor confirms no live worker. Running or unknown executor states block retry. Executor rejection diagnostics still apply, including Vibe's refusal to reuse existing attempt evidence files. A late script identity can be recorded by status.
+For Codex, a new PID and a matching `thread.started` record in `events<N>.jsonl` confirm the resume. Before that event, a live candidate shows as `starting`. If the new worker dies before opening a thread, Herder records the attempt as `failed` so the next resume can use the next attempt number. The old PID or a reported completion without the event leaves the resume `unconfirmed`. A conflicting thread ID reports `identity_mismatch`.
+
+After correcting a recorded pending-resume error, `herder resume` retries the same attempt using its previous identity when the executor confirms no live worker. Running or unknown executor states block retry. Executor rejection diagnostics still apply, including Vibe's refusal to reuse existing attempt evidence files. A conflicting Codex thread event blocks retry.
 
 `herder resume --request-id KEY` makes a resume idempotent. KEY is 1 to 200 bytes with no control characters. Before launching, herder records the request ID and attempt in `run.json` under `request_attempts`, in the same saved mutation that marks the resume pending. Replaying a known KEY with byte-identical `--brief` content returns the recorded run and observation without another launch, whatever its state. The same KEY with different bytes is rejected.
 
 A new KEY never takes over a pending attempt reserved by another KEY. A resume without an ID cannot rewrite an input file reserved by a KEY with different content. A stored request means herder accepted it, not that the agent received it or succeeded. A failed or unknown launch is never automatically relaunched under a replayed key.
 
-Codex `status_classic.sh` inspects the newest resumed attempt itself. Herder passes no attempt suffix and checks the reported PID against the resumed worker.
+Codex `status_classic.sh` inspects the newest resumed attempt itself. Herder passes no attempt suffix and checks the reported PID against the resumed worker. Codex resume scripts supplied through `HERDER_SKILLS_DIR` must write the numbered `events<N>.jsonl` stream with the worker's `thread.started` event.
 
 ## Claude identity, profiles and resume
 
@@ -91,11 +93,13 @@ Claude resume stops a settled session if it is still live, then wakes the same s
 
 Stop requires a running or blocked worker with a matching recorded identity. Claude uses `claude stop`; Vibe and Codex receive TERM only after the PID's command matches the run. Stop waits briefly for exit. If exit is not confirmed, it reports `stop sent` with exit 0; use status to confirm.
 
+If Herder refuses to stop a live Codex candidate because its thread ID conflicts, inspect the process, stop it manually, and dispatch a fresh run.
+
 ## Verify, scope and baseline
 
 A report is never proof. Verification is separate from lifecycle and approval. Dispatch records the Git baseline commit. Verification checks committed, staged, unstaged and untracked paths against that baseline, then runs the evidence script and requested commands. Records without a baseline load, but scope verification fails explicitly. A verdict belongs to its attempt; a resumed attempt starts unverified.
 
-Pass one or more `--path` options to verify to use those paths for that check in place of the paths recorded at dispatch. If dispatch recorded no paths, verify requires at least one `--path`. Verification rejects starting, running and blocked workers; it can run when the observation is unknown, so inspect the evidence first.
+Pass one or more `--path` options to verify to use those paths for that check in place of the paths recorded at dispatch. If dispatch recorded no paths, verify requires at least one `--path`. Verification rejects starting, running and blocked workers. It remains available when the observation is `unknown`, so inspect the evidence first.
 
 Explicit `--check` commands take precedence. If omitted, verify reuses commands from the latest verification of this run that recorded any. If this run has no commands and has a goal, verify looks for the most recent verification with commands from another run in the same repository and goal. If no commands are found, verify runs only its built-in checks. Human output names the source run when commands are reused.
 

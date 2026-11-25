@@ -61,9 +61,16 @@ include a cause ([`src/domain.rs`](../src/domain.rs)):
 Executor queries have a ten-second timeout. `herder wait` polls until any run settles, or
 all runs with `--all`; unknown at timeout is an error. Stop checks identity
 before signaling and may report that the stop was sent without confirming exit.
-Resume records a pending attempt before launch and advances the accepted attempt
-only after confirming the identity. An optional request ID makes replay of the
-same input return the recorded request rather than launch again.
+Resume records a pending attempt before launch. Identity confirmation advances
+the attempt, as does a confirmed Codex worker failure before it opens a thread.
+An optional request ID makes replay of the same input return the recorded request.
+
+For a pending Codex resume, Herder reads the numbered `events<N>.jsonl` stream
+from the beginning and checks the first newline-terminated `thread.started`
+record against the previous thread ID. Acceptance also requires a new PID and
+agreement with executor files and the status PID. Without the event, a new live
+worker reports `starting`, and a new failed worker advances the attempt as
+`failed`. A conflicting event blocks retry.
 
 ## Executor adapters
 
@@ -83,9 +90,10 @@ The launch settings register a Stop hook that calls herder with the run director
 
 Set `HERDER_SKILLS_DIR` to an ai-skills-shaped directory to replace the embedded
 scripts with executable `<owner>/scripts/<name>.sh` files. The override applies
-to both shared and executor scripts. `herder doctor` checks the required files
-and tools; Rex is optional. In a Rex session, `--pane` adds a Claude attach
-pane or a Vibe/Codex wait pane.
+to both shared and executor scripts. Codex resume overrides must write the
+numbered `events<N>.jsonl` stream used to confirm the thread. `herder doctor`
+checks the required files and tools. In a Rex session, `--pane` adds a Claude
+attach pane or a Vibe/Codex wait pane. Rex is optional.
 
 ## Verification
 

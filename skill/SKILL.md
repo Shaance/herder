@@ -137,11 +137,16 @@ For an ordinary dispatch, use this background shell command, for example in a
 Claude Code background Bash call.
 
 ```sh
-herder wait "$run" --timeout 3600; herder report "$run"
+(
+  rc=0
+  herder wait "$run" --timeout 3600 || rc=$?
+  herder report "$run" || :
+  exit "$rc"
+)
 ```
 
 The host wakes the coordinator when the command exits, and the output ends with the final report if available.
-Use `;` because `wait` exits 1 if the run failed, stopped or blocked, or the wait timed out. Using `&&` would skip the report.
+The block always attempts `herder report` and exits with `herder wait`'s status, even with `set -e`.
 Never write `sleep` or `kill -0` waiter loops. After context compaction, run `herder ls` and start a waiter only for runs that are `starting` or `running` and have no live waiter. An older waiter ends at its own timeout.
 
 `herder wait` lists each report path. `herder report <run>` prints the path and then the contents of the current attempt's `final.md` (`final2.md` after one resume, and so on)

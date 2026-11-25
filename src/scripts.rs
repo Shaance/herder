@@ -2,8 +2,15 @@ use crate::{
     domain::{LaunchPhase, Native, Observation, Run, State, Target, UnknownCause, UnknownError},
     process::{Script, checked, output, query, script},
 };
-use anyhow::{Result, ensure};
-use std::{fs, num::NonZeroU32, path::Path, process::Command, time::Instant};
+use anyhow::{Context, Result, ensure};
+use std::{
+    fs,
+    io::{BufRead, BufReader, ErrorKind},
+    num::NonZeroU32,
+    path::Path,
+    process::Command,
+    time::Instant,
+};
 
 pub struct ScriptExecutor {
     pub scripts: [Script; 3],
@@ -70,6 +77,9 @@ impl ScriptExecutor {
             return Ok(None);
         }
         ensure!(code == Some(0), "{text}");
+        if matches!(previous, Some(Native::Codex { .. })) {
+            return Ok(None);
+        }
         let native = self.native(field(&text, "PID")?.parse()?, field(&text, self.identity.1)?.into())?;
         if let Some(old) = previous {
             ensure!(
@@ -82,7 +92,8 @@ impl ScriptExecutor {
     }
     pub fn query(&self, run: &Run, dir: &Path, deadline: Option<Instant>) -> Result<(Observation, Result<Native>)> {
         let [_, status, _] = self.scripts;
-        let text = query(script(status).arg(dir).args(self.status_args(run)), deadline)?;
+        let (stdout, stderr) = query(script(status).arg(dir).args(self.status_args(run)), deadline)?;
+        let text = stdout + &stderr;
         let identity = run.launch.native().cloned().map_or_else(|| self.identity(dir), Ok);
         if let Ok(native) = &identity {
             confirm(native, dir)?;
@@ -104,6 +115,46 @@ impl ScriptExecutor {
         Ok((Observation::known(state, text), identity))
     }
 }
+pub fn codex_resume_started(run: &Run, dir: &Path, thread_id: &str, pid: NonZeroU32) -> Result<bool> {
+    let path = dir.join(run.launch_events_name());
+    let Some(event) = codex_thread_started(&path).with_context(|| format!("read {}", path.display()))? else {
+        return Ok(false);
+    };
+    let observed = event["thread_id"].as_str();
+    ensure!(
+        observed == Some(thread_id),
+        UnknownError(
+            UnknownCause::IdentityMismatch,
+            format!(
+                "Codex resume pid {pid}: expected thread {thread_id:?}, observed {:?}",
+                observed.unwrap_or("<missing or invalid>")
+            )
+        )
+    );
+    Ok(true)
+}
+
+fn codex_thread_started(path: &Path) -> std::io::Result<Option<serde_json::Value>> {
+    let mut stream = match fs::File::open(path) {
+        Ok(file) => BufReader::new(file),
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let mut line = Vec::new();
+    loop {
+        stream.read_until(b'\n', &mut line)?;
+        if !line.ends_with(b"\n") {
+            return Ok(None);
+        }
+        if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line)
+            && event["type"] == "thread.started"
+        {
+            return Ok(Some(event));
+        }
+        line.clear();
+    }
+}
+
 fn field<'a>(text: &'a str, key: &str) -> Result<&'a str> {
     text.split_whitespace()
         .find_map(|s| s.strip_prefix(&format!("{key}=")))
