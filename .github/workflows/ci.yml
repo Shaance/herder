@@ -23,6 +23,16 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - name: Render the Homebrew formula
+        run: |
+          dir=$(mktemp -d)
+          sha=$(printf '%064d' 0)
+          printf '%s  herder-macos-universal.tar.gz\n' "$sha" > "$dir/herder-macos-universal.tar.gz.sha256"
+          sh packaging/homebrew/render-formula.sh 1.2.3 "$dir" > "$dir/herder.rb"
+          grep -qx '  url "https://github.com/Shaance/herder/releases/download/v1.2.3/herder-macos-universal.tar.gz"' "$dir/herder.rb"
+          grep -qx "  sha256 \"$sha\"" "$dir/herder.rb"
+          if grep -q @ "$dir/herder.rb"; then echo "unfilled placeholder" >&2; exit 1; fi
+          ruby -c "$dir/herder.rb"
 
   msrv:
     runs-on: ubuntu-latest

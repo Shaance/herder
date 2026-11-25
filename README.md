@@ -33,7 +33,13 @@ codex: 2 runs (failed 1, finished 1)
 
 ## Use it from your agent
 
-The universal macOS binary is signed with a Developer ID and notarized by Apple. You also need bash, jq, perl, git and your executor CLIs installed.
+Install herder with Homebrew on macOS (Apple Silicon or Intel):
+
+```sh
+brew install shaance/tap/herder
+```
+
+Or download the universal macOS binary, which is signed with a Developer ID and notarized by Apple, or build it with Rust. You also need bash, jq, perl, git and your executor CLIs installed.
 
 ```sh
 release=https://github.com/Shaance/herder/releases/latest/download
@@ -71,12 +77,10 @@ The skill teaches your agent the brief format and the dispatch, wait, report and
 
 ## Quick start
 
-You also need bash, jq, perl, git and the executor CLIs you use (`codex`, `vibe` and/or `claude`). This example checks Codex; change the executor if needed. To build from source instead, install Rust and run `cargo install herder`.
+You also need bash, jq, perl, git and the executor CLIs you use (`codex`, `vibe` and/or `claude`). This example checks Codex; change the executor if needed. To download the binary or build from source instead, see [Use it from your agent](#use-it-from-your-agent).
 
 ```sh
-release=https://github.com/Shaance/herder/releases/latest/download
-curl -fsSL "$release/herder-macos-universal.tar.gz" | tar -xz herder
-sudo mv herder /usr/local/bin/
+brew install shaance/tap/herder
 herder doctor --executor codex
 ```
 
