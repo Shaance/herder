@@ -23,6 +23,7 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 - Claude dispatch and status still identify the session when `claude agents` prints warnings to stderr.
 - Claude sessions that are just starting now show as running, so `herder wait` no longer exits early with a blocked result. Unrecognised idle states report as unknown.
 - The skill's background recipe now attempts the report and returns `herder wait`'s exit status.
+- The skill and dispatch help no longer claim that `-i` swallows Codex resume arguments.
 
 ## 0.2.0 (2026-11-18)
 

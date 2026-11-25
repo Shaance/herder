@@ -154,7 +154,7 @@ from `$HERDER_STATE_DIR/runs/<id>/`. The state directory defaults to `~/.local/s
 
 Put Codex options after `--`. Herder replays them on resume.
 
-- Attach an image with `-- --image=/abs/path/shot.png`. Use the `=` form. The short `-i <file>` accepts several values and consumes `resume <thread> -`, so the resume silently starts a new session.
+- Attach an image with `-- --image=/abs/path/shot.png`. The `=` form passes one image path as a single argument.
   Keep attachments outside `--repo`, like briefs: new files inside it outside the authorized paths fail verify scope.
 - Select a named Codex config profile with `-- -p <name>`. Codex layers settings from `$CODEX_HOME/<name>.config.toml`, such as the model and `model_reasoning_effort`, over its base configuration. Keep model IDs in that host file and out of briefs and skills. Codex silently ignores a missing profile and runs on its defaults, so check the file exists. Herder's `--effort` is passed as `-c model_reasoning_effort=<level>`, which overrides the profile's value.
 - The Codex `workspace-write` sandbox blocks network access, so checks that bind local ports, such as test servers or emulators, can fail.

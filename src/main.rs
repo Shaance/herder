@@ -44,7 +44,7 @@ enum Action {
     },
     #[command(
         about = "Lint a brief and launch a recorded worker",
-        after_help = "Example: herder dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nCodex extras: --image=<file> (not -i) and -p <profile> after --; extras are replayed on resume.\nLauncher gate exit 3 leaves the run starting; herder returns 0. Use herder wait to await settlement or status to follow progress. Use --check to keep dispatch running through worker completion and verification."
+        after_help = "Example: herder dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nCodex extras: --image=<file> and -p <profile> after --; extras are replayed on resume.\nLauncher gate exit 3 leaves the run starting; herder returns 0. Use herder wait to await settlement or status to follow progress. Use --check to keep dispatch running through worker completion and verification."
     )]
     Dispatch {
         #[command(flatten)]
