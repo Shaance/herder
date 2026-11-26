@@ -4,9 +4,13 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+## 0.4.0 (2026-11-26)
+
 ### Added
 
-- **Homebrew install.** `brew install shaance/tap/herder` installs the signed universal binary. Each release tag updates the formula in the tap.
+- **Local MCP reviews.** Claude Code and Codex can commission a read-only review and share its recorded status or report through `herder-mcp`.
+- **Homebrew install.** `brew install shaance/tap/herder` installs both signed, notarized universal executables from one archive. Each release tag updates the tap.
+- **Separate crates.io installs.** `cargo install --locked herder` installs the CLI on its own. Install `herder-mcp` separately for the MCP tools.
 
 ## 0.3.0 (2026-11-25)
 

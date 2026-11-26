@@ -5,8 +5,8 @@ herder is a Rust CLI that lets your coding agent delegate work to Codex, Vibe or
 Here a stub worker claimed success but edited `config.toml`, outside the `src/` path it was allowed to touch. `verify` catches it:
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/demo-dark.png">
-  <img alt="herder verify failing a run that edited config.toml outside src/, then herder ls listing a finished and a failed run" src="docs/assets/demo-light.png" width="800">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Shaance/herder/master/docs/assets/demo-dark.png">
+  <img alt="herder verify failing a run that edited config.toml outside src/, then herder ls listing a finished and a failed run" src="https://raw.githubusercontent.com/Shaance/herder/master/docs/assets/demo-light.png" width="800">
 </picture>
 
 <details>
@@ -39,18 +39,18 @@ Install herder with Homebrew on macOS (Apple Silicon or Intel):
 brew install shaance/tap/herder
 ```
 
-Or download the universal macOS binary, which is signed with a Developer ID and notarized by Apple, or build it with Rust. You also need bash, jq, perl, git and your executor CLIs installed.
+The tap and the signed, notarized macOS archive include `herder-mcp` starting with v0.4.0. You can also install the CLI alone from crates.io. Herder uses Bash, jq, Perl, Git and your executor CLIs.
 
 ```sh
 release=https://github.com/Shaance/herder/releases/latest/download
 curl -fsSL "$release/herder-macos-universal.tar.gz" | tar -xz herder
 sudo mv herder /usr/local/bin/   # or any directory on PATH
 
-# Or build from source with Rust:
-cargo install herder
+# Or build and install the CLI from crates.io:
+cargo install --locked herder
 ```
 
-Clone the repository and run the line for your host to link the [herder skill](skill/SKILL.md). Keep the clone in place; if a host already has a `herder` skill, inspect that entry before replacing it.
+Clone the repository and run the line for your host to link the [herder skill](https://github.com/Shaance/herder/blob/master/skill/SKILL.md). Keep the clone in place. If a host already has a `herder` skill, inspect that entry before replacing it.
 
 ```sh
 git clone https://github.com/Shaance/herder.git
@@ -74,6 +74,8 @@ Then ask your agent, for example:
 > Have Codex add a module comment to `src/lib.rs` with herder, then verify it with `cargo test`.
 
 The skill teaches your agent the brief format and the dispatch, wait, report and verify loop, so you never need to write a brief yourself. The agent inspects the changes and runs verification; you or the coordinating agent decide what to do with the evidence.
+
+Claude Code and Codex can also request independent, read-only reviews and retrieve their reports through the optional `herder-mcp` companion. See the [install and project configuration guide](https://github.com/Shaance/herder/blob/master/mcp/README.md).
 
 ## Quick start
 
@@ -147,7 +149,7 @@ stateDiagram-v2
     end note
 ```
 
-The arrows show common observations; `unknown` can occur whenever evidence is unresolved. A successful resume starts a new attempt on a recorded session, and verification records a verdict separately from the lifecycle; see the [reference](docs/reference.md) for the rules and [architecture](docs/architecture.md) for the implementation.
+The arrows show common observations. `unknown` can occur whenever evidence is unresolved. A successful resume starts a new attempt on a recorded session, and verification records a verdict separately from the lifecycle. See the [reference](https://github.com/Shaance/herder/blob/master/docs/reference.md) for the rules and [architecture](https://github.com/Shaance/herder/blob/master/docs/architecture.md) for the implementation.
 
 ## Concepts
 
@@ -175,15 +177,15 @@ The arrows show common observations; `unknown` can occur whenever evidence is un
 | `resume` | Resume a recorded session with a delta brief. |
 | `verify` | Record scope and command verification. |
 
-Use `--effort <LEVEL>` on `dispatch` or `handoff` to request reasoning effort for Codex or Claude. Use `herder <command> --help` for flags and examples. All commands accept `--json` with an `{ok, data, error}` envelope; exit codes are 0 for success, 1 for operational failure and 2 for usage error. See [JSON and exit codes](docs/reference.md#json-output-and-exit-codes) for details.
+Use `--effort <LEVEL>` on `dispatch` or `handoff` to request reasoning effort for Codex or Claude. Use `herder <command> --help` for flags and examples. All commands accept `--json` with an `{ok, data, error}` envelope. Exit codes are 0 for success, 1 for operational failure and 2 for usage error. See [JSON and exit codes](https://github.com/Shaance/herder/blob/master/docs/reference.md#json-output-and-exit-codes) for details.
 
 ## Configuration
 
-`HERDER_STATE_DIR` overrides the default `~/.local/state/herder`. `HERDER_SKILLS_DIR` replaces the embedded scripts with scripts from an ai-skills-shaped directory. For Claude, `--profile` takes precedence over `CLAUDE_CONFIG_DIR`, then Claude's default applies. See [storage](docs/reference.md#run-record-storage-and-locking) and [Claude profiles](docs/reference.md#claude-identity-profiles-and-resume).
+`HERDER_STATE_DIR` overrides the default `~/.local/state/herder`. `HERDER_SKILLS_DIR` replaces the embedded scripts with scripts from an ai-skills-shaped directory. For Claude, `--profile` takes precedence over `CLAUDE_CONFIG_DIR`, then Claude's default applies. See [storage](https://github.com/Shaance/herder/blob/master/docs/reference.md#run-record-storage-and-locking) and [Claude profiles](https://github.com/Shaance/herder/blob/master/docs/reference.md#claude-identity-profiles-and-resume).
 
 ## Optional: Rex
 
-[Rex](https://superlogical.com) is a macOS terminal in invite-only public beta. In Rex, `--pane` opens a pane to attach to a Claude worker or wait for a Vibe or Codex worker. See [Rex panes](docs/reference.md#rex-panes-and-environment).
+[Rex](https://superlogical.com) is a macOS terminal in invite-only public beta. In Rex, `--pane` opens a pane to attach to a Claude worker or wait for a Vibe or Codex worker. See [Rex panes](https://github.com/Shaance/herder/blob/master/docs/reference.md#rex-panes-and-environment).
 
 ## Platform support
 
@@ -191,7 +193,7 @@ macOS is supported and tested in CI; Linux is untested.
 
 ## Development
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and pull request guidance.
+See [CONTRIBUTING.md](https://github.com/Shaance/herder/blob/master/CONTRIBUTING.md) for setup and pull request guidance.
 
 ```sh
 cargo build --offline --locked
@@ -203,8 +205,22 @@ Tests use stub executors and temporary state, never real workers. Contract tests
 
 ## Releasing
 
-First, rename `## Unreleased` in `CHANGELOG.md` to `## X.Y.Z (YYYY-MM-DD)` for the GitHub Release notes, and add a new empty `## Unreleased` above it.
-Bump `version` in `Cargo.toml`, run `cargo build` so `Cargo.lock` picks it up, commit the changes, and push a matching `vX.Y.Z` tag. The workflow publishes the signed GitHub Release and then the crate. If the crate job fails after the release succeeds, re-run only that job.
+Move the release notes from `## Unreleased` to `## X.Y.Z (YYYY-MM-DD)` in `CHANGELOG.md`. Bump both package versions and refresh both lockfiles with `cargo check` and `cargo check --manifest-path mcp/Cargo.toml`. Commit the release and create a matching local `vX.Y.Z` tag.
+
+For **v0.4.0 only**, publish `herder-mcp` from the clean, tagged release commit before pushing the tag. crates.io requires an API token for a crate's first publish. Use a local token permitted to publish a new crate.
+
+```sh
+cargo login --registry crates-io
+git switch --detach v0.4.0 &&
+  test -z "$(git status --porcelain)" &&
+  cargo publish --locked --registry crates-io --manifest-path mcp/Cargo.toml -p herder-mcp@0.4.0
+```
+
+After bootstrapping, add a Trusted Publisher for `herder-mcp` on crates.io using repository `Shaance/herder`, workflow `release.yml`, and environment `crates-io`. Revoke the local bootstrap token. [crates.io Trusted Publishing](https://crates.io/docs/trusted-publishing)
+
+Push the matching release tag to start the workflow. After the macOS build, the GitHub release job publishes and verifies the archive before the tap and crate jobs start. A registry job accepts an existing version only when crates.io reports an unyanked archive whose SHA-256 matches the package built from that tag.
+
+Use **Re-run failed jobs** for publication retries while the signed build artifact is retained. If a draft remains, compare it with that artifact. Finish publishing it in GitHub if both assets match, or remove the unpublished draft after inspecting it and rerun the publication job. A public release with conflicting assets requires maintainer review.
 
 ## License
 
