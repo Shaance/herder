@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,8 +24,10 @@ concurrency:
 
 jobs:
   macos:
-    name: macOS universal binary
+    name: macOS universal executables
     runs-on: macos-15
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -52,17 +54,22 @@ jobs:
             exit 1
           fi
 
-      - name: Check the tag matches Cargo.toml
-        if: github.ref_type == 'tag'
+      - name: Check package and tag versions
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
-          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+          mcp_version=$(sed -n 's/^version = "\(.*\)"$/\1/p' mcp/Cargo.toml | head -1)
+          if [ "$version" != "$mcp_version" ]; then
+            echo "::error::Herder ($version) and herder-mcp ($mcp_version) versions must match."
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
             echo "::error::Tag $GITHUB_REF_NAME does not match Cargo.toml version $version."
             exit 1
           fi
 
       - name: Extract release notes from CHANGELOG.md
         run: |
+          mkdir -p dist
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           awk -v heading="## $version " '
             /^## / {
@@ -75,8 +82,8 @@ jobs:
               next
             }
             in_section { printf "%s%s\n", blanks, $0; blanks = ""; printed = 1 }
-          ' CHANGELOG.md > "$RUNNER_TEMP/release-notes.md"
-          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+          ' CHANGELOG.md > dist/release-notes.md
+          if [ ! -s dist/release-notes.md ]; then
             echo "::error::CHANGELOG.md has no section for $version"
             exit 1
           fi
@@ -85,19 +92,30 @@ jobs:
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Test
-        run: cargo test --locked
-
-      - name: Build universal binary
         run: |
-          cargo build --release --locked --target aarch64-apple-darwin
-          cargo build --release --locked --target x86_64-apple-darwin
-          mkdir -p dist
-          lipo -create -output dist/herder \
+          cargo test --locked
+          cargo test --locked --manifest-path mcp/Cargo.toml
+
+      - name: Stage universal executables and documentation
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --target "$target"
+            cargo build --release --locked --target "$target" --manifest-path mcp/Cargo.toml
+          done
+          mkdir -p dist/payload
+          lipo -create -output dist/payload/herder \
             target/aarch64-apple-darwin/release/herder \
             target/x86_64-apple-darwin/release/herder
-          lipo -archs dist/herder
-          lipo dist/herder -verify_arch arm64
-          lipo dist/herder -verify_arch x86_64
+          lipo -create -output dist/payload/herder-mcp \
+            mcp/target/aarch64-apple-darwin/release/herder-mcp \
+            mcp/target/x86_64-apple-darwin/release/herder-mcp
+          for binary in dist/payload/herder dist/payload/herder-mcp; do
+            lipo -archs "$binary"
+            lipo "$binary" -verify_arch arm64
+            lipo "$binary" -verify_arch x86_64
+          done
+          cp README.md LICENSE-MIT LICENSE-APACHE dist/payload/
+          cp mcp/README.md dist/payload/MCP-README.md
 
       - name: Sign
         env:
@@ -117,8 +135,10 @@ jobs:
           # shellcheck disable=SC2046 # Preserve the existing keychain list as separate arguments.
           security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
           rm "$RUNNER_TEMP/cert.p12"
-          codesign --force --options runtime --timestamp --sign "$IDENTITY" dist/herder
-          codesign --verify --strict --verbose=2 dist/herder
+          for binary in dist/payload/herder dist/payload/herder-mcp; do
+            codesign --force --options runtime --timestamp --sign "$IDENTITY" "$binary"
+            codesign --verify --strict --all-architectures --verbose=2 "$binary"
+          done
 
       - name: Notarize
         env:
@@ -128,7 +148,7 @@ jobs:
         run: |
           trap 'rm -f "$RUNNER_TEMP/notary.p8"' EXIT
           echo "$P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
-          ditto -c -k --keepParent dist/herder "$RUNNER_TEMP/herder-notarize.zip"
+          ditto -c -k --keepParent dist/payload "$RUNNER_TEMP/herder-notarize.zip"
           submit_exit=0
           xcrun notarytool submit "$RUNNER_TEMP/herder-notarize.zip" \
             --key "$RUNNER_TEMP/notary.p8" --key-id "$KEY_ID" --issuer "$ISSUER" \
@@ -145,7 +165,7 @@ jobs:
             fi
             exit 1
           fi
-          # Apple cannot staple a bare Mach-O binary.
+          # Apple cannot staple bare Mach-O executables.
 
       - name: Delete temporary keychain
         if: always()
@@ -156,30 +176,74 @@ jobs:
 
       - name: Package
         run: |
-          tar -czf dist/herder-macos-universal.tar.gz -C dist herder \
-            -C .. README.md LICENSE-MIT LICENSE-APACHE
+          tar -czf dist/herder-macos-universal.tar.gz -C dist/payload \
+            herder herder-mcp README.md MCP-README.md LICENSE-MIT LICENSE-APACHE
           (cd dist && shasum -a 256 herder-macos-universal.tar.gz > herder-macos-universal.tar.gz.sha256)
 
       - uses: actions/upload-artifact@v7
+        id: upload
         with:
-          name: herder-macos-universal
+          name: herder-macos-universal-${{ github.run_attempt }}
           path: |
             dist/herder-macos-universal.tar.gz
             dist/herder-macos-universal.tar.gz.sha256
+            dist/release-notes.md
           if-no-files-found: error
 
-      - name: Publish release
-        if: github.event_name == 'push' && github.ref_type == 'tag'
+  publish-release:
+    name: Publish GitHub release
+    needs: macos
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.macos.outputs.artifact-id }}
+          path: dist
+
+      - name: Publish or verify the signed archive
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            dist/herder-macos-universal.tar.gz dist/herder-macos-universal.tar.gz.sha256 \
-            --title "herder ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/release-notes.md"
+          set -euo pipefail
+          archive=herder-macos-universal.tar.gz
+          endpoint="repos/$GITHUB_REPOSITORY/releases"
+          (cd dist && sha256sum --check --strict "$archive.sha256")
+          # An authenticated list includes drafts that the public tag endpoint omits.
+          releases=$(gh api --paginate --slurp "$endpoint?per_page=100" |
+            jq -ce --arg tag "$GITHUB_REF_NAME" '[.[][] | select(.tag_name == $tag)]')
+          if jq -e 'length == 0' <<< "$releases" >/dev/null; then
+            gh api --silent "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME"
+            if ! release_id=$(gh api --method POST "$endpoint" -F draft=true \
+              -f tag_name="$GITHUB_REF_NAME" -f name="herder ${GITHUB_REF_NAME#v}" -F body=@dist/release-notes.md |
+              jq -ser 'select(length == 1) | .[0].id | numbers | tostring | select(test("^[1-9][0-9]*$"))'); then
+              echo "::error::GitHub did not return a valid draft release ID. Inspect the release before rerunning this job."
+              exit 1
+            fi
+            for file in "$archive" "$archive.sha256"; do
+              printf 'Authorization: Bearer %s\n' "$GH_TOKEN" |
+                curl -fsS --max-time 60 --header @- --header 'Content-Type: application/octet-stream' \
+                  --data-binary "@dist/$file" "https://uploads.github.com/$endpoint/$release_id/assets?name=$file" >/dev/null
+            done
+            gh api --silent --method PATCH "$endpoint/$release_id" -F draft=false
+          elif ! jq -e 'length == 1 and .[0].draft == false and .[0].prerelease == false' <<< "$releases" >/dev/null; then
+            echo "::error::Inspect the existing release or draft for $GITHUB_REF_NAME before rerunning this job."
+            exit 1
+          fi
+          for file in "$archive" "$archive.sha256"; do
+            url="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$file"
+            if ! curl -fsSL --max-time 60 "$url" --output "$RUNNER_TEMP/$file" ||
+              ! cmp -s "dist/$file" "$RUNNER_TEMP/$file"; then
+              echo "::error::Public asset $file is missing or differs from the signed build. Inspect the GitHub release."
+              exit 1
+            fi
+          done
 
   homebrew:
     name: Publish Homebrew formula
-    needs: macos
+    needs: [macos, publish-release]
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
@@ -191,7 +255,7 @@ jobs:
 
       - uses: actions/download-artifact@v8
         with:
-          name: herder-macos-universal
+          artifact-ids: ${{ needs.macos.outputs.artifact-id }}
           path: dist
 
       - name: Render the formula from the released archive's checksum
@@ -211,6 +275,18 @@ jobs:
       - name: Push the formula to the tap
         working-directory: tap
         run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#v}
+          current=$(sed -nE 's|^  url "https://github\.com/Shaance/herder/releases/download/v([0-9]+\.[0-9]+\.[0-9]+)/herder-macos-universal\.tar\.gz"$|\1|p' Formula/herder.rb)
+          if [ -z "$current" ] || [[ "$current" == *$'\n'* ]]; then
+            echo "::error::Could not determine the current tap version from Formula/herder.rb."
+            exit 1
+          fi
+          oldest=$(printf '%s\n' "$version" "$current" | sort -V | head -n 1)
+          if [ "$current" != "$version" ] && [ "$oldest" = "$version" ]; then
+            echo "The tap already provides herder $current, newer than $version."
+            exit 0
+          fi
           cp "$RUNNER_TEMP/herder.rb" Formula/herder.rb
           git add -- Formula/herder.rb
           # A rerun with an unchanged formula succeeds without a commit.
@@ -220,26 +296,65 @@ jobs:
           fi
           git -c user.name='github-actions[bot]' \
             -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
-            commit -m "herder ${GITHUB_REF_NAME#v}"
+            commit -m "herder $version"
           git push origin HEAD:main
 
   publish-crate:
-    name: Publish to crates.io
-    needs: macos
+    name: Publish ${{ matrix.package }} to crates.io
+    needs: publish-release
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
     environment: crates-io
     permissions:
       contents: read
       id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - package: herder
+            manifest: Cargo.toml
+          - package: herder-mcp
+            manifest: mcp/Cargo.toml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Install the pinned toolchain before a publish token exists.
       - run: cargo --version
+      - name: Check exact crate version
+        id: version
+        env:
+          PACKAGE: ${{ matrix.package }}
+          MANIFEST: ${{ matrix.manifest }}
+        run: |
+          version=${GITHUB_REF_NAME#v}
+          response=$(mktemp)
+          trap 'rm -f "$response"' EXIT
+          status=$(curl -sS --max-time 30 --user-agent 'Herder release (https://github.com/Shaance/herder)' \
+            --output "$response" --write-out '%{http_code}' "https://crates.io/api/v1/crates/$PACKAGE/$version")
+          case "$status" in
+            404) echo 'publish=true' >> "$GITHUB_OUTPUT" ;;
+            200)
+              cargo package --locked --no-verify --registry crates-io --manifest-path "$MANIFEST" \
+                --target-dir "$RUNNER_TEMP/crate-check"
+              checksum=$(sha256sum "$RUNNER_TEMP/crate-check/package/$PACKAGE-$version.crate")
+              if ! jq -e --arg package "$PACKAGE" --arg version "$version" --arg checksum "${checksum%% *}" \
+                '.version | .crate == $package and .num == $version and .yanked == false and .checksum == $checksum' \
+                "$response" >/dev/null; then
+                echo "::error::Existing $PACKAGE $version is yanked or does not match the tagged package."
+                exit 1
+              fi
+              echo "Verified $PACKAGE $version already contains the exact tagged package."
+              echo 'publish=false' >> "$GITHUB_OUTPUT"
+              ;;
+            *) echo "::error::crates.io returned HTTP $status for $PACKAGE $version."; exit 1 ;;
+          esac
       - uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
+        if: steps.version.outputs.publish == 'true'
         id: auth
-      - run: cargo publish --locked
+      - run: cargo publish --locked --registry crates-io --manifest-path "$MANIFEST"
+        if: steps.version.outputs.publish == 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+          MANIFEST: ${{ matrix.manifest }}
