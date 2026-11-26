@@ -4,6 +4,8 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+- Added a README example for starting a Codex review in Claude Code and opening its report in another client.
+
 ## 0.4.0 (2026-11-26)
 
 ### Added
