@@ -10,14 +10,14 @@ Starting with v0.4.0, Homebrew installs both binaries on macOS. The GitHub relea
 brew install shaance/tap/herder
 ```
 
-To get both binaries from crates.io once v0.4.0 is available, use Rust and install the two packages separately. If you already have the v0.4.0 CLI, install only `herder-mcp`.
+To get both binaries from crates.io, install the two packages separately. If you already have the v0.4.0 CLI, install only `herder-mcp`.
 
 ```sh
 cargo install --locked herder
 cargo install --locked herder-mcp
 ```
 
-Before v0.4.0 is published, install once from the root of a checkout that contains `mcp/`. If you already have the v0.4.0 CLI, you can install just the companion.
+To install from source, run these commands from the root of the Herder checkout.
 
 ```sh
 cargo install --locked --path .

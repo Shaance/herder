@@ -1,6 +1,16 @@
 # herder
 
-herder is a Rust CLI that lets your coding agent delegate work to Codex, Vibe or Claude workers, track them, and verify their work independently. People can use it directly too.
+Herder is a local Rust CLI that lets you or your coding agent delegate work to Claude Code, Codex, and Mistral Vibe. Track each run, verify that edits stayed within the allowed paths, and run your own checks.
+
+## Get a read-only Codex review from Claude Code
+
+Set up the local Herder MCP server in Claude Code, then try this prompt. [MCP setup guide](https://github.com/Shaance/herder/blob/master/mcp/README.md)
+
+> Use Herder to ask Codex for a read-only review of this diff. Use `pre-merge` as the goal and pick a fresh run name. Look for regressions and missing tests, cite the relevant files and lines, and give me the Herder run ID.
+
+Save the run ID. Once the review finishes, ask Codex or another Claude Code session to show the Herder report for that ID. Both clients need to use the same checkout and Herder state directory.
+
+## Verify a worker's changes
 
 Here a stub worker claimed success but edited `config.toml`, outside the `src/` path it was allowed to touch. `verify` catches it:
 
@@ -74,8 +84,6 @@ Then ask your agent, for example:
 > Have Codex add a module comment to `src/lib.rs` with herder, then verify it with `cargo test`.
 
 The skill teaches your agent the brief format and the dispatch, wait, report and verify loop, so you never need to write a brief yourself. The agent inspects the changes and runs verification; you or the coordinating agent decide what to do with the evidence.
-
-Claude Code and Codex can also request independent, read-only reviews and retrieve their reports through the optional `herder-mcp` companion. See the [install and project configuration guide](https://github.com/Shaance/herder/blob/master/mcp/README.md).
 
 ## Quick start
 
