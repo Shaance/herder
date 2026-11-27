@@ -173,7 +173,7 @@ pub struct FreshVerification {
     pub reused_from: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProtectedVerification {
     pub attempt: NonZeroU32,
     pub timestamp: String,

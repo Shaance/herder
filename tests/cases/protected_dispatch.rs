@@ -276,3 +276,31 @@ fn protected_owner_fences_new_work_and_checker_changes_are_in_the_saved_verdict(
     assert_ne!(third["run_id"], second);
     assert_eq!(verify(second, 0)["outcome"], "superseded");
 }
+
+#[test]
+fn superseded_protected_attempt_takes_precedence_over_a_busy_run_lock() {
+    let f = Fixture::new();
+    let check = external_check(&f);
+    let check_path = check.to_str().unwrap();
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let launched = f.dispatch(
+        "codex",
+        &["--request-id", "write/1", "--accept-with", check_path, "--expected-head", &head, "--path", "src"],
+        0,
+    );
+    let id = launched["data"]["run_id"].as_str().unwrap();
+    let dir = f.dir(id);
+    let mut historic = f.record(id);
+    historic["attempt"] = json!(2);
+    fs::write(dir.join("run.json"), historic.to_string()).unwrap();
+    let lock = fs::OpenOptions::new().write(true).open(dir.join("run.lock")).unwrap();
+    lock.try_lock().unwrap();
+
+    let verified = f.call(&["verify", "--repo", ".", "--accept-with", check_path, "--path", "src", "--", id], 0);
+    assert_eq!(verified["data"]["outcome"], "superseded");
+    assert_eq!(verified["data"]["message"], "the protected attempt was superseded");
+    assert_eq!(verified["data"]["state"], "running");
+    assert_eq!(verified["data"]["attempt"], 2);
+    assert_eq!(f.record(id), historic);
+    assert!(!f.state.join("host-check-ran").exists());
+}

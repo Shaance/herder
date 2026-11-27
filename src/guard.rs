@@ -97,17 +97,12 @@ pub fn require_available(slot: &Slot, store: &Store, repo: &Path) -> Result<()> 
     let mut message = "wait for the active protected work order to finish";
     if let Some(lock) = &lock {
         let deadline = Instant::now() + Duration::from_secs(2);
-        match runs::observe_until(&mut run, Some(lock), Some(deadline), process::ScriptSource::Configured).state() {
-            State::Failed | State::Stopped => return Ok(()),
-            State::Finished => {
-                if run.launch_attempt() != NonZeroU32::MIN
-                    || !progress::codex_turn_completed(&lock.dir.join(run.launch_events_name()))
-                {
-                    return Ok(());
-                }
-                message = "verify the finished protected work order before starting another";
-            }
-            _ => {}
+        let state =
+            runs::observe_until(&mut run, Some(lock), Some(deadline), process::ScriptSource::Configured).state();
+        if protected_completion(&run, state, Some(lock)).is_ok() {
+            message = "verify the finished protected work order before starting another";
+        } else if matches!(state, State::Failed | State::Stopped | State::Finished) {
+            return Ok(());
         }
     }
     Err(DispatchDenied::CheckoutBusy { run_id: Some(run.id), message }.into())
@@ -214,32 +209,16 @@ pub fn verify(
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let observed = runs::observe_until(&mut run, lock.as_ref(), Some(deadline), process::ScriptSource::Configured);
-    result.outcome = "pending";
-    result.message = None;
     result.state = observed.state();
     result.attempt = run.launch_attempt();
-    if result.attempt != NonZeroU32::MIN {
-        result.outcome = "superseded";
-        result.message = Some("the protected attempt was superseded");
-        return Ok((result, 0));
-    }
-    let Some(lock) = lock else {
-        result.message = Some("another Herder command holds the run lock");
-        return Ok((result, 0));
-    };
-    if result.state != State::Finished {
-        if matches!(result.state, State::Starting | State::Running | State::Unknown) {
-            return Ok((result, 0));
+    let lock = match protected_completion(&run, result.state, lock.as_ref()) {
+        Ok(lock) => lock,
+        Err((outcome, message, code)) => {
+            result.outcome = outcome;
+            result.message = message;
+            return Ok((result, code));
         }
-        result.outcome = "unverified";
-        result.message = Some("the worker did not finish successfully");
-        return Ok((result, 1));
-    }
-    if !progress::codex_turn_completed(&lock.dir.join(run.launch_events_name())) {
-        result.outcome = "unverified";
-        result.message = Some("the protected attempt has no completed Codex turn");
-        return Ok((result, 1));
-    }
+    };
 
     let mut scope = verify::scope_check(&run, &run.authorized_paths, None, Some(deadline));
     let host = (scope.exit_code == Some(0)).then(|| {
@@ -257,15 +236,28 @@ pub fn verify(
     }
     let passed = host_passed && scope.exit_code == Some(0);
     let verdict = if passed { Verdict::Pass } else { Verdict::Fail };
-    run.protected_verification = Some(ProtectedVerification {
-        attempt: result.attempt,
-        timestamp: timestamp(),
-        scope: scope.clone(),
-        host_check: host.clone(),
-        verdict,
-    });
+    let receipt =
+        ProtectedVerification { attempt: result.attempt, timestamp: timestamp(), scope, host_check: host, verdict };
+    run.protected_verification = Some(receipt.clone());
     lock.save(&run)?;
-    Ok(verified(result, run.protected_verification.take().expect("just saved a protected verdict")))
+    Ok(verified(result, receipt))
+}
+
+fn protected_completion<'a>(
+    run: &Run,
+    state: State,
+    lock: Option<&'a LockedRun>,
+) -> Result<&'a LockedRun, (&'static str, Option<&'static str>, i32)> {
+    if run.launch_attempt() != NonZeroU32::MIN {
+        return Err(("superseded", Some("the protected attempt was superseded"), 0));
+    }
+    let lock = lock.ok_or(("pending", Some("another Herder command holds the run lock"), 0))?;
+    match state {
+        State::Starting | State::Running | State::Unknown => Err(("pending", None, 0)),
+        State::Finished if progress::codex_turn_completed(&lock.dir.join(run.launch_events_name())) => Ok(lock),
+        State::Finished => Err(("unverified", Some("the protected attempt has no completed Codex turn"), 1)),
+        _ => Err(("unverified", Some("the worker did not finish successfully"), 1)),
+    }
 }
 
 fn verified(mut result: Verification, saved: ProtectedVerification) -> (Verification, i32) {
