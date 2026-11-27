@@ -1,16 +1,24 @@
 use crate::{
     domain::{LaunchPhase, Native, Observation, Run, State, Target, UnknownCause, UnknownError},
-    process::{Script, checked, output, query, script},
+    process::{Script, ScriptSource, checked, on_path, output, query, script, script_from},
 };
 use anyhow::{Context, Result, ensure};
 use std::{
     fs,
-    io::{BufRead, BufReader, ErrorKind},
+    io::{self, BufRead, BufReader, ErrorKind},
     num::NonZeroU32,
-    path::Path,
+    path::{Path, PathBuf},
     process::Command,
     time::Instant,
 };
+
+pub fn require_status_tools(source: ScriptSource) -> Result<()> {
+    ensure!(
+        source.override_dir().is_some() || on_path("jq"),
+        "embedded status requires jq on PATH. Install jq or add its executable to PATH."
+    );
+    Ok(())
+}
 
 pub struct ScriptExecutor {
     pub scripts: [Script; 3],
@@ -90,9 +98,21 @@ impl ScriptExecutor {
         }
         Ok(Some(native))
     }
-    pub fn query(&self, run: &Run, dir: &Path, deadline: Option<Instant>) -> Result<(Observation, Result<Native>)> {
+    pub fn query(
+        &self,
+        run: &Run,
+        dir: &Path,
+        deadline: Option<Instant>,
+        source: ScriptSource,
+    ) -> Result<(Observation, Result<Native>)> {
+        require_status_tools(source)?;
         let [_, status, _] = self.scripts;
-        let (stdout, stderr) = query(script(status).arg(dir).args(self.status_args(run)), deadline)?;
+        let status_dir = match source {
+            ScriptSource::Configured => dir.to_path_buf(),
+            ScriptSource::Embedded => self.status_dir(run, dir)?,
+        };
+        let (stdout, stderr) =
+            query(script_from(status, source).arg(status_dir).args(self.status_args(run)), deadline)?;
         let text = stdout + &stderr;
         let identity = run.launch.native().cloned().map_or_else(|| self.identity(dir), Ok);
         if let Ok(native) = &identity {
@@ -113,6 +133,52 @@ impl ScriptExecutor {
             _ => return Ok((Observation::unknown(UnknownCause::UnrecognizedStatus, text), identity)),
         };
         Ok((Observation::known(state, text), identity))
+    }
+
+    pub fn status_dir(&self, run: &Run, dir: &Path) -> Result<PathBuf> {
+        // The status adapters match the literal path in the active worker's argv.
+        let attempt = run.launch_attempt();
+        let recorded = if attempt == NonZeroU32::MIN {
+            run.brief.parent().map(Path::to_path_buf)
+        } else if let Some(path) = &run.resume_worker_dir {
+            Some(path.clone())
+        } else {
+            self.legacy_resume_dir(dir, attempt)?
+        };
+        if let Some(recorded) = recorded
+            && (recorded.as_os_str() == dir.as_os_str()
+                || (recorded.is_absolute() && recorded.canonicalize().is_ok_and(|path| path == dir)))
+        {
+            return Ok(recorded);
+        }
+        let pid: NonZeroU32 = fs::read_to_string(dir.join("run.pid"))?.trim().parse()?;
+        let pid = libc::pid_t::try_from(pid.get())?;
+        // SAFETY: this is a positive process ID and signal zero only checks existence.
+        let absent =
+            unsafe { libc::kill(pid, 0) } == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        ensure!(
+            absent,
+            UnknownError(
+                UnknownCause::IdentityMismatch,
+                "active worker path is missing or no longer resolves to this run".into()
+            )
+        );
+        // A vanished process no longer needs an argv match to read settlement evidence.
+        Ok(dir.into())
+    }
+
+    fn legacy_resume_dir(&self, dir: &Path, attempt: NonZeroU32) -> Result<Option<PathBuf>> {
+        let log = match fs::read_to_string(dir.join(format!("launch{attempt}.log"))) {
+            Ok(log) => log,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        // Older accepted attempts carry the adapter's successful receipt.
+        let Some(native) = self.identity(dir).ok() else { return Ok(None) };
+        let (pid, _, native_id) = native.process().unwrap();
+        let key = self.identity.1;
+        let ending = format!(" PID={pid} {key}={native_id} SUFFIX={attempt}");
+        Ok(log.lines().next().and_then(|line| line.strip_prefix("RUN_DIR=")?.strip_suffix(&ending)).map(PathBuf::from))
     }
 }
 pub fn codex_resume_started(run: &Run, dir: &Path, thread_id: &str, pid: NonZeroU32) -> Result<bool> {

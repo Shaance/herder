@@ -214,9 +214,13 @@ Use `--effort <LEVEL>` on `dispatch` or `handoff` to request reasoning effort fo
 
 `HERDER_STATE_DIR` overrides the default `~/.local/state/herder`. `HERDER_SKILLS_DIR` replaces the embedded scripts with scripts from an ai-skills-shaped directory. For Claude, `--profile` takes precedence over `CLAUDE_CONFIG_DIR`, then Claude's default applies. See [storage](https://github.com/Shaance/herder/blob/master/docs/reference.md#run-record-storage-and-locking) and [Claude profiles](https://github.com/Shaance/herder/blob/master/docs/reference.md#claude-identity-profiles-and-resume).
 
+## Terminal resume
+
+An interactive `herder wait` for one Codex or Vibe run can reopen the same recorded run after a restart in a terminal that supports the Program Resume Protocol (OSC 7577). See [terminal resume](https://github.com/Shaance/herder/blob/master/docs/reference.md#terminal-resume).
+
 ## Optional: Rex
 
-[Rex](https://superlogical.com) is a macOS terminal in invite-only public beta. In Rex, `--pane` opens a pane to attach to a Claude worker or wait for a Vibe or Codex worker. See [Rex panes](https://github.com/Shaance/herder/blob/master/docs/reference.md#rex-panes-and-environment).
+[Rex](https://superlogical.com) is a macOS terminal in invite-only public beta. In Rex, `--pane` opens a pane to attach to a Claude worker or wait for a Vibe or Codex worker. See [Rex panes and restore setup](https://github.com/Shaance/herder/blob/master/docs/reference.md#rex-panes-and-environment).
 
 ## Platform support
 

@@ -4,6 +4,12 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+## 0.6.0 (2026-11-27)
+
+- Terminals that support the Program Resume Protocol (OSC 7577) can reopen a foreground `herder wait` for one Codex or Vibe run after a restart. The monitor reconnects to the original run, even if you started the wait by name or changed your working directory. Rex users can opt in with a trust rule.
+- Use `herder wait --run-dir PATH` to open a monitor for an exact run directory. It uses Herder's embedded status scripts and works independently of the current state-directory setting.
+- When a terminal starts Herder without `jq` on its `PATH`, the bundled status checks preserve the saved report and explain the missing dependency.
+
 ## 0.5.0 (2026-11-27)
 
 - Inspect the registered worktree, worker model, effort and write settings with MCP `checkout` before spending worker quota. Use `wait` for up to 30 seconds at a time and reopen a report by run ID. The CLI exposes the same checkout through `herder context` and supports repository-scoped observations with `--repo`.

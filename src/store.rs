@@ -68,6 +68,17 @@ impl Store {
             )?,
         })
     }
+    pub fn from_run_dir(dir: &Path) -> Result<(Self, RunId)> {
+        ensure!(dir.is_absolute(), "--run-dir must be an absolute path");
+        let canonical = dir.canonicalize().with_context(|| format!("run directory {}", dir.display()))?;
+        ensure!(canonical.as_os_str() == dir.as_os_str(), "--run-dir must be canonical: {}", canonical.display());
+        let id = dir.file_name().and_then(|name| name.to_str()).and_then(RunId::parse);
+        let root = dir.parent().filter(|path| path.file_name().is_some_and(|name| name == "runs"));
+        match (id, root.and_then(Path::parent)) {
+            (Some(id), Some(root)) => Ok((Self { root: root.to_path_buf() }, id)),
+            _ => anyhow::bail!("--run-dir must name a directory under <state>/runs"),
+        }
+    }
     pub fn resolve(&self, value: &str) -> Result<RunId> {
         if let Some(id) = RunId::parse(value)
             && self.dir(&id).is_dir()

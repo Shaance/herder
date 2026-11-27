@@ -7,6 +7,7 @@ mod guard;
 mod handlers;
 mod handoff;
 mod process;
+mod program_resume;
 mod progress;
 mod render;
 mod runs;
@@ -17,6 +18,8 @@ mod writer_slot;
 use clap::{Args, Parser, Subcommand};
 use domain::Executor;
 use std::path::PathBuf;
+
+const DEFAULT_WAIT_TIMEOUT: u64 = 3600;
 
 #[derive(Parser)]
 #[command(
@@ -89,13 +92,16 @@ enum Action {
     )]
     Wait {
         /// Run IDs or unique dispatch names. With --repo, only exact run IDs are accepted
-        #[arg(required = true, num_args = 1..)]
+        #[arg(required_unless_present = "run_dir", num_args = 1..)]
         runs: Vec<String>,
+        /// Observe one exact run by its absolute, canonical directory
+        #[arg(long, conflicts_with_all = ["runs", "repo"])]
+        run_dir: Option<PathBuf>,
         /// Wait for all runs instead of any run
         #[arg(long)]
         all: bool,
         /// Maximum wait in seconds
-        #[arg(long, default_value = "3600")]
+        #[arg(long, default_value_t = DEFAULT_WAIT_TIMEOUT)]
         timeout: u64,
         /// Only observe runs recorded for this directory
         #[arg(long)]

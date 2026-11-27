@@ -26,7 +26,14 @@ pub fn read(configured_dir: &Path, state_dir: &Path) -> Result<Checkout> {
     let configured_dir = store::directory(configured_dir)?;
     let path_text = |path: &Path| path.to_str().map(str::to_owned).context("checkout and state paths must be UTF-8");
     let git = |args: &[&str]| {
-        Command::new("git").arg("-C").arg(&configured_dir).env("LC_ALL", "C").args(args).output().context("run Git")
+        Command::new("git")
+            .arg("-C")
+            .arg(&configured_dir)
+            .env("LC_ALL", "C")
+            .env_remove(crate::process::OSC7577_TOKEN)
+            .args(args)
+            .output()
+            .context("run Git")
     };
     let text = |bytes| {
         let value = String::from_utf8(bytes).context("Git returned non-UTF-8 output")?;

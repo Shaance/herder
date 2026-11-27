@@ -64,6 +64,9 @@ before signaling and may report that the stop was sent without confirming exit.
 Resume records a pending attempt before launch. Identity confirmation advances
 the attempt, as does a confirmed Codex worker failure before it opens a thread.
 An optional request ID makes replay of the same input return the recorded request.
+For a scripted resume, `resume_worker_dir` records the path spelling passed to
+the worker alongside the attempt reservation. Exact-directory waits use it to
+match the worker's command line when that spelling resolves to the selected run.
 
 For a pending Codex resume, Herder reads the numbered `events<N>.jsonl` stream
 from the beginning and checks the first newline-terminated `thread.started`

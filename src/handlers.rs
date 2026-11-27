@@ -2,7 +2,8 @@ use crate::{
     Action, DispatchArgs,
     dispatch_request::DispatchRequest,
     domain::*,
-    process, runs,
+    process::{self, ScriptSource},
+    runs,
     store::{self, RunId, ScopedNotFound, Store},
     writer_slot::Slot,
 };
@@ -101,6 +102,14 @@ pub struct WaitEntry {
 }
 
 pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
+    if let Action::Wait { run_dir: Some(dir), all, timeout, .. } = &action {
+        let (store, id) = Store::from_run_dir(dir)?;
+        let run = store.load(&id)?;
+        if !matches!(run.launch, Launch::Failed { .. }) && matches!(run.launch.target(), Target::Codex | Target::Vibe) {
+            crate::scripts::require_status_tools(ScriptSource::Embedded)?;
+        }
+        return wait(&store, &[id], None, *all, *timeout, json_output, ScriptSource::Embedded);
+    }
     let store = Store::new()?;
     let scope = match &action {
         Action::Wait { repo, .. }
@@ -138,7 +147,7 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
                 return Ok((Output::Rejection("wait --repo requires a nonzero --timeout".into()), 2));
             }
             let ids = runs.iter().map(|id| store.observation_id(id, repo.is_some())).collect::<Result<Vec<_>>>()?;
-            return wait(&store, &ids, repo, all, timeout, json_output);
+            return wait(&store, &ids, repo, all, timeout, json_output, ScriptSource::Configured);
         }
         Action::Ls { goal, .. } => {
             let mut summary = BTreeMap::<&str, BTreeMap<&str, usize>>::new();
@@ -516,6 +525,7 @@ fn dispatch(
                 goal: goal.clone(),
                 launch: Launch::Starting { target: target.clone() },
                 attempt: NonZeroU32::MIN,
+                resume_worker_dir: None,
                 request_attempts: Default::default(),
                 authorized_paths: paths.clone(),
                 accept_with: accept_with.clone(),
@@ -544,7 +554,7 @@ fn dispatch(
             }
             let outcome = match runs::launch(&mut run, LaunchPhase::Initial, &locked) {
                 Err(error) => LaunchOutcome::LaunchFailed(format!("{error:#}")),
-                Ok(()) if pane => match runs::pane(&run) {
+                Ok(()) if pane => match runs::pane(&run, &dir) {
                     Ok(()) => LaunchOutcome::Started,
                     Err(error) => LaunchOutcome::PaneFailed(format!("worker recorded; pane failed: {error:#}")),
                 },
@@ -645,7 +655,7 @@ fn verify_launched_attempt(
                 Ok(())
             };
             require_attempt(&run)?;
-            let observation = runs::observe_until(&mut run, lock.as_ref(), Some(deadline));
+            let observation = runs::observe_until(&mut run, lock.as_ref(), Some(deadline), ScriptSource::Configured);
             require_attempt(&run)?;
             let state = observation.state();
             match state {
@@ -684,7 +694,38 @@ fn wait(
     all: bool,
     timeout: u64,
     json_output: bool,
+    source: ScriptSource,
 ) -> Result<(Output, i32)> {
+    let replay = if let [id] = ids
+        && repo.is_none()
+        && !all
+        && !json_output
+        && timeout == crate::DEFAULT_WAIT_TIMEOUT
+        && source.override_dir().is_none()
+        && let Some(terminal) = crate::program_resume::Terminal::open()
+        && crate::scripts::require_status_tools(source).is_ok()
+    {
+        let dir = store.dir(id);
+        (|| {
+            let canonical = dir.canonicalize().ok()?;
+            if canonical.file_name() != dir.file_name() {
+                return None;
+            }
+            let (pinned, _) = Store::from_run_dir(&canonical).ok()?;
+            let run = pinned.load(id).ok()?;
+            let executor = match run.launch.target() {
+                Target::Codex => crate::scripts::ScriptExecutor::CODEX,
+                Target::Vibe => crate::scripts::ScriptExecutor::VIBE,
+                Target::Claude { .. } => return None,
+            };
+            executor.status_dir(&run, &canonical).ok()?;
+            Some((pinned, terminal.register(&canonical)?))
+        })()
+    } else {
+        None
+    };
+    let (observed_store, source) =
+        replay.as_ref().map_or((store, source), |(pinned, _)| (pinned, ScriptSource::Embedded));
     let started = Instant::now();
     let timeout = Duration::from_secs(timeout);
     let deadline = if let Some(repo) = repo {
@@ -702,8 +743,8 @@ fn wait(
         let (mut settled, mut finished, mut unknown) = (0, 0, false);
         for (index, id) in ids.iter().enumerate() {
             // The guard is dropped at the end of this iteration, before sleeping.
-            let (locked, mut run) = store.read_for_observation(id, repo, None)?.ok_or(ScopedNotFound)?;
-            let observation = runs::observe_until(&mut run, locked.as_ref(), deadline);
+            let (locked, mut run) = observed_store.read_for_observation(id, repo, None)?.ok_or(ScopedNotFound)?;
+            let observation = runs::observe_until(&mut run, locked.as_ref(), deadline, source);
             let state = observation.state();
             if previous[index] != Some(state) {
                 if !json_output {
@@ -714,7 +755,7 @@ fn wait(
             settled += usize::from(matches!(state, State::Finished | State::Failed | State::Stopped | State::Blocked));
             finished += usize::from(state == State::Finished);
             unknown |= state == State::Unknown;
-            data.push((run, observation, store.dir(id), locked.is_some()));
+            data.push((run, observation, observed_store.dir(id), locked.is_some()));
         }
         let met = if all { settled == ids.len() } else { settled > 0 };
         // A status query can time out under load; only an unknown that outlasts the wait is reported.

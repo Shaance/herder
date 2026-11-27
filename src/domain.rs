@@ -201,6 +201,8 @@ pub struct Run {
     pub name: String,
     pub launch: Launch,
     pub attempt: NonZeroU32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_worker_dir: Option<PathBuf>,
     #[serde(default)]
     pub request_attempts: std::collections::BTreeMap<String, NonZeroU32>,
     pub authorized_paths: Vec<String>,
