@@ -61,6 +61,23 @@ fn initial_dispatch_key_uses_exact_brief_and_route_without_relaunching() {
     assert_eq!(fs::read_dir(f.state.join("runs")).unwrap().count(), 1);
 }
 
+#[test]
+fn dispatch_keeps_staging_after_a_claim_io_error() {
+    let f = Fixture::new();
+    // Lookup sees no receipt, but claim cannot create a directory over this symlink.
+    symlink(f.state.join("missing-requests"), f.state.join("requests")).unwrap();
+    let failed = f.dispatch("codex", &["--request-id", "claim-io-error"], 1);
+    assert!(failed["error"].is_string());
+    let mut entries = fs::read_dir(f.state.join("runs")).unwrap();
+    let staged = entries.next().unwrap().unwrap();
+    assert!(entries.next().is_none());
+    let name = staged.file_name();
+    assert!(name.to_str().is_some_and(|name| name.starts_with('.') && name.ends_with(".pending")));
+    assert_eq!(fs::read(staged.path().join("input.md")).unwrap(), fs::read(f.root.join("brief.md")).unwrap());
+    assert!(!staged.path().join("run.json").exists());
+    assert!(!f.state.join("launch-args").exists());
+}
+
 fn external_check(f: &Fixture) -> PathBuf {
     let check = f.root.join("host check; literal");
     fs::write(&check, "#!/bin/sh\nset -eu\ntest \"$#\" -eq 0\nprintf '%s\\n' \"$PWD\" >> \"$HERDER_STATE_DIR/host-check-ran\"\necho verified\n").unwrap();

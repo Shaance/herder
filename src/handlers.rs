@@ -4,7 +4,7 @@ use crate::{
     domain::*,
     process::{self, ScriptSource},
     runs,
-    store::{self, RunId, ScopedNotFound, Store},
+    store::{self, LockedRun, RunId, ScopedNotFound, Store},
     writer_slot::Slot,
 };
 use anyhow::{Context, Result};
@@ -426,53 +426,15 @@ fn dispatch(
         _ => Models::Review(model),
     };
     let repo = store::repo(&repo)?;
-    if accept_with.is_some() {
-        crate::guard::require_external_state(&repo, &store.root)?;
-    }
-    let target = match executor {
-        Executor::Claude => Target::Claude { profile: process::profile(profile)? },
-        Executor::Vibe => Target::Vibe,
-        Executor::Codex => Target::Codex,
+    let resolve_target = || -> Result<Target> {
+        Ok(match executor {
+            Executor::Claude => Target::Claude { profile: process::profile(profile)? },
+            Executor::Vibe => Target::Vibe,
+            Executor::Codex => Target::Codex,
+        })
     };
-    let input = if handoff {
-        // Validate the continuation document before any staging or launch side effect.
-        let document = match crate::handoff::document(&brief) {
-            Ok(document) => document,
-            Err(error) => return reject(format!("{error:#}")),
-        };
-        Input::Generated(crate::handoff::prompt(&mode, &document).into_bytes())
-    } else if request_id.is_some() {
-        Input::Generated(std::fs::read(&brief).context("read dispatch brief")?)
-    } else {
-        process::lint(&brief, &mode)?;
-        Input::Brief(brief)
-    };
-    let request = if let (Some(key), Input::Generated(bytes), Models::Single(model)) = (&request_id, &input, &models) {
-        let payload = DispatchPayload {
-            mode: &mode,
-            target: &target,
-            model: model.as_deref(),
-            effort: effort.as_deref(),
-            goal: goal.as_deref(),
-            name: name.as_deref(),
-            extra: &extra,
-            paths: &paths,
-            accept_with: accept_with.as_deref(),
-            expected_head: expected_head.as_deref(),
-            expected_branch: expected_branch.as_deref(),
-            brief: bytes,
-        };
-        let request = DispatchRequest::new(store, &repo, key, &payload)?;
-        if let Some(run_id) = request.existing()? {
-            return Ok((Output::Replayed { run_id }, 0));
-        }
-        Some(request)
-    } else {
-        None
-    };
-    let accept_with = accept_with.as_deref().map(|path| crate::guard::host_check(&repo, path)).transpose()?;
-    let launch_run = |name: Option<String>, model: Option<String>| -> Result<_> {
-        let mut baseline_commit = if accept_with.is_none() {
+    let stage = |input: &Input, protected: bool| -> Result<_> {
+        let baseline_commit = if !protected {
             process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
                 .ok()
                 .map(|s| s.trim().to_owned())
@@ -486,33 +448,22 @@ fn dispatch(
                 dispatch_dirty.insert(path, hash);
             }
         }
-        let (id, mut locked) = store.create()?;
-        let dir = store.dir(&id);
+        let (id, locked) = store.create()?;
         let input_md = locked.dir.join("input.md");
-        let mut may_be_claimed = false;
-        let result = (|| -> Result<_> {
-            match &input {
-                Input::Brief(source) => {
-                    store::copy(source, &input_md)?;
-                }
-                Input::Generated(bytes) => {
-                    store::atomic(&input_md, bytes)?;
-                    process::lint(&input_md, &mode)?;
-                }
+        match input {
+            Input::Brief(source) => {
+                store::copy(source, &input_md)?;
             }
-            let slot = accept_with.is_some().then(|| Slot::lock(store, &repo)).transpose()?;
-            if let Some(request) = &request
-                && let Some(run_id) = request.existing()?
-            {
-                return Ok(InitialDispatch::Replayed(run_id));
+            Input::Generated(bytes) => {
+                store::atomic(&input_md, bytes)?;
+                process::lint(&input_md, &mode)?;
             }
-            if let Some(slot) = &slot {
-                crate::guard::require_available(slot, store, &repo)?;
-                crate::guard::require_clean(&repo, &paths)?;
-                baseline_commit = expected_head.clone();
-            }
-            crate::guard::check_pins(&repo, store, expected_head.as_deref(), expected_branch.as_deref())?;
-            let mut run = Run {
+        }
+        Ok((id, locked, (baseline_commit, dispatch_dirty)))
+    };
+    let new_run =
+        |id: &RunId, name: Option<String>, model, target: &Target, (baseline_commit, dispatch_dirty), accept_with| {
+            Run {
                 name: name.unwrap_or_else(|| id.to_string()),
                 id: id.to_string(),
                 model,
@@ -521,59 +472,97 @@ fn dispatch(
                 repo: repo.clone(),
                 baseline_commit,
                 dispatch_dirty,
-                brief: dir.join("input.md"),
+                brief: store.dir(id).join("input.md"),
                 goal: goal.clone(),
                 launch: Launch::Starting { target: target.clone() },
                 attempt: NonZeroU32::MIN,
                 resume_worker_dir: None,
                 request_attempts: Default::default(),
                 authorized_paths: paths.clone(),
-                accept_with: accept_with.clone(),
+                accept_with,
                 protected_verification: None,
                 verifications: vec![],
                 created_at: store::timestamp(),
-            };
-            if let Some(request) = &request {
-                // A failed claim may have persisted before a subsequent sync failed.
-                may_be_claimed = true;
-                match request.claim(&run.id) {
-                    Ok(Some(run_id)) => {
-                        may_be_claimed = false;
-                        return Ok(InitialDispatch::Replayed(run_id));
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        may_be_claimed = !error.is::<crate::dispatch_request::Conflict>();
-                        return Err(error);
-                    }
-                }
             }
-            store.publish(&mut locked, &run, &dir)?;
-            if let Some(slot) = slot {
-                slot.assign(&run.id)?;
-            }
-            let outcome = match runs::launch(&mut run, LaunchPhase::Initial, &locked) {
-                Err(error) => LaunchOutcome::LaunchFailed(format!("{error:#}")),
-                Ok(()) if pane => match runs::pane(&run, &dir) {
-                    Ok(()) => LaunchOutcome::Started,
-                    Err(error) => LaunchOutcome::PaneFailed(format!("worker recorded; pane failed: {error:#}")),
-                },
+        };
+    let launch = |mut run: Run, locked: &LockedRun| {
+        let outcome = match runs::launch(&mut run, LaunchPhase::Initial, locked) {
+            Err(error) => LaunchOutcome::LaunchFailed(format!("{error:#}")),
+            Ok(()) if pane => match runs::pane(&run, &locked.dir) {
                 Ok(()) => LaunchOutcome::Started,
-            };
-            let code = i32::from(!matches!(outcome, LaunchOutcome::Started));
-            Ok(InitialDispatch::Launched(id, Launched { run: Box::new(run), outcome }, code))
-        })();
-        if locked.dir != dir && !may_be_claimed {
-            let _ = std::fs::remove_dir_all(&locked.dir);
-        }
-        result
+                Err(error) => LaunchOutcome::PaneFailed(format!("worker recorded; pane failed: {error:#}")),
+            },
+            Ok(()) => LaunchOutcome::Started,
+        };
+        let code = i32::from(!matches!(outcome, LaunchOutcome::Started));
+        (Launched { run: Box::new(run), outcome }, code)
     };
     let models = match models {
         Models::Single(model) => {
-            let (id, mut launched, code) = match launch_run(name, model)? {
-                InitialDispatch::Launched(id, launched, code) => (id, launched, code),
-                InitialDispatch::Replayed(run_id) => return Ok((Output::Replayed { run_id }, 0)),
+            if accept_with.is_some() {
+                crate::guard::require_external_state(&repo, &store.root)?;
+            }
+            let target = resolve_target()?;
+            let (input, request) = if handoff {
+                // Validate the continuation document before any staging or launch side effect.
+                let document = match crate::handoff::document(&brief) {
+                    Ok(document) => document,
+                    Err(error) => return reject(format!("{error:#}")),
+                };
+                (Input::Generated(crate::handoff::prompt(&mode, &document).into_bytes()), None)
+            } else if let Some(key) = &request_id {
+                let bytes = std::fs::read(&brief).context("read dispatch brief")?;
+                let payload = DispatchPayload {
+                    mode: &mode,
+                    target: &target,
+                    model: model.as_deref(),
+                    effort: effort.as_deref(),
+                    goal: goal.as_deref(),
+                    name: name.as_deref(),
+                    extra: &extra,
+                    paths: &paths,
+                    accept_with: accept_with.as_deref(),
+                    expected_head: expected_head.as_deref(),
+                    expected_branch: expected_branch.as_deref(),
+                    brief: &bytes,
+                };
+                let request = DispatchRequest::new(store, &repo, key, &payload)?;
+                if let Some(run_id) = request.existing()? {
+                    return Ok((Output::Replayed { run_id }, 0));
+                }
+                (Input::Generated(bytes), Some(request))
+            } else {
+                process::lint(&brief, &mode)?;
+                (Input::Brief(brief), None)
             };
+            let accept_with = accept_with.as_deref().map(|path| crate::guard::host_check(&repo, path)).transpose()?;
+            let (id, mut locked, (mut baseline_commit, dispatch_dirty)) = stage(&input, accept_with.is_some())?;
+            let slot = accept_with.is_some().then(|| Slot::lock(store, &repo)).transpose()?;
+            if let Some(request) = &request
+                && let Some(run_id) = request.existing()?
+            {
+                return Ok((Output::Replayed { run_id }, 0));
+            }
+            if let Some(slot) = &slot {
+                crate::guard::require_available(slot, store, &repo)?;
+                crate::guard::require_clean(&repo, &paths)?;
+                baseline_commit = expected_head.clone();
+            }
+            crate::guard::check_pins(&repo, store, expected_head.as_deref(), expected_branch.as_deref())?;
+            let run = new_run(&id, name, model, &target, (baseline_commit, dispatch_dirty), accept_with);
+            if let Some(request) = &request
+                && let Some(run_id) = request.claim(&mut locked, &run.id)?
+            {
+                return Ok((Output::Replayed { run_id }, 0));
+            }
+            store.publish(&mut locked, &run, &store.dir(&id))?;
+            if let Some(slot) = slot {
+                slot.assign(&run.id)?;
+            }
+            let (mut launched, code) = launch(run, &locked);
+            // Checked dispatch acquires the published run lock again.
+            drop(locked);
+
             if checks.is_empty() {
                 return Ok((Output::Launch(launched), code));
             }
@@ -595,15 +584,23 @@ fn dispatch(
         }
         Models::Review(models) => models,
     };
+    let target = resolve_target()?;
+    process::lint(&brief, &mode)?;
+    let input = Input::Brief(brief);
     let (mut runs, mut code, mut error) = (vec![], 0, None);
     for model in models {
         let name = name.as_ref().map(|name| format!("{name}-{model}"));
-        match launch_run(name, Some(model.clone())) {
-            Ok(InitialDispatch::Launched(_, launched, one_code)) => {
+        let result = (|| -> Result<_> {
+            let (id, mut locked, baseline) = stage(&input, false)?;
+            let run = new_run(&id, name, Some(model.clone()), &target, baseline, None);
+            store.publish(&mut locked, &run, &store.dir(&id))?;
+            Ok(launch(run, &locked))
+        })();
+        match result {
+            Ok((launched, one_code)) => {
                 runs.push(launched);
                 code = code.max(one_code);
             }
-            Ok(InitialDispatch::Replayed(_)) => unreachable!("multi-model dispatch cannot claim a request"),
             // Earlier runs may already be working, so their ids must still be reported.
             Err(e) => {
                 error = Some(format!("{model}: {e:#}"));
@@ -613,11 +610,6 @@ fn dispatch(
         }
     }
     Ok((Output::Launches { runs, error }, code))
-}
-
-enum InitialDispatch {
-    Launched(RunId, Launched, i32),
-    Replayed(String),
 }
 
 #[derive(Serialize)]

@@ -1,4 +1,4 @@
-use crate::store::Store;
+use crate::store::{LockedRun, Store};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -58,8 +58,18 @@ impl DispatchRequest {
         Ok(Some(receipt.run_id))
     }
 
-    /// Returns None to the one process authorized to publish and launch this run.
-    pub fn claim(&self, run_id: &str) -> Result<Option<String>> {
+    /// Returns None to the one process authorized to publish and launch the staged run.
+    /// Keeps the staging after a successful claim or any error other than `Conflict`:
+    /// the receipt may already name it.
+    pub fn claim(&self, staged: &mut LockedRun, run_id: &str) -> Result<Option<String>> {
+        let result = self.persist(run_id);
+        if !matches!(&result, Ok(Some(_))) && !result.as_ref().is_err_and(|error| error.is::<Conflict>()) {
+            staged.keep_staging();
+        }
+        result
+    }
+
+    fn persist(&self, run_id: &str) -> Result<Option<String>> {
         let dir = self.receipt.parent().context("dispatch request receipt has no parent directory")?;
         fs::create_dir_all(dir)?;
         let mut pending = tempfile::NamedTempFile::new_in(dir)?;
@@ -94,16 +104,22 @@ mod tests {
         let store = Store { root: dir.path().to_owned() };
         let make = || DispatchRequest::new(&store, Path::new("/repo"), "review/42", &("high", "brief")).unwrap();
         let gate = Barrier::new(5);
+        assert!(make().existing().unwrap().is_none());
+        // Stage every contender before the barrier so a setup failure cannot strand the others.
+        let contenders: Vec<_> = (0..5)
+            .map(|_| {
+                let (id, staged) = store.create().unwrap();
+                (make(), id.to_string(), staged)
+            })
+            .collect();
         let owners = std::thread::scope(|scope| {
-            (0..5)
-                .map(|i| {
+            contenders
+                .into_iter()
+                .map(|(request, candidate, mut staged)| {
                     let gate = &gate;
-                    let request = make();
                     scope.spawn(move || {
-                        let candidate = format!("run-{i}");
-                        assert!(request.existing().unwrap().is_none());
                         gate.wait();
-                        let prior = request.claim(&candidate).unwrap();
+                        let prior = request.claim(&mut staged, &candidate).unwrap();
                         (candidate, prior)
                     })
                 })
@@ -117,9 +133,25 @@ mod tests {
         let winner = &winners[0].0;
         assert!(owners.iter().filter_map(|(_, prior)| prior.as_ref()).all(|id| id == winner));
         assert_eq!(make().existing().unwrap().as_ref(), Some(winner));
+        let staged = || {
+            let mut names: Vec<_> = fs::read_dir(dir.path().join("runs"))
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            names.sort();
+            names
+        };
+        // Losers drop their staging; the receipt owner keeps it until it publishes.
+        assert_eq!(staged(), [format!(".{winner}.pending")]);
         let changed = DispatchRequest::new(&store, Path::new("/repo"), "review/42", &("low", "brief")).unwrap();
-        assert!(changed.claim("run-new").unwrap_err().is::<Conflict>());
+        let (id, mut conflicting) = store.create().unwrap();
+        assert!(changed.claim(&mut conflicting, &id.to_string()).unwrap_err().is::<Conflict>());
+        drop(conflicting);
+        assert_eq!(staged(), [format!(".{winner}.pending")]);
         let sibling = DispatchRequest::new(&store, Path::new("/other"), "review/42", &("high", "brief")).unwrap();
-        assert_eq!(sibling.claim("independent").unwrap(), None);
+        let (id, mut independent) = store.create().unwrap();
+        assert_eq!(sibling.claim(&mut independent, &id.to_string()).unwrap(), None);
+        drop(independent);
+        assert_eq!(staged().len(), 2);
     }
 }
