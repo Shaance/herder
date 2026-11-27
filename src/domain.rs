@@ -33,7 +33,7 @@ impl Target {
         }
     }
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "executor", rename_all = "snake_case")]
 pub enum Native {
     Claude { id: String, session_id: String, profile: Option<PathBuf> },

@@ -28,8 +28,8 @@ pub fn last(run: &Run, observation: &Observation, dir: &Path, refreshed: bool) -
     let attempt = run.launch_attempt();
     let executor = run.launch.target().executor();
     let (kind, modified) = if executor == Executor::Claude {
-        match fs::metadata(dir.join(run.launch_report_name())) {
-            Ok(report) if report.is_file() && report.len() > 0 => ("report_updated", report.modified().ok()),
+        match store::nonempty_report_metadata(&dir.join(run.launch_report_name())) {
+            Some(report) => ("report_updated", report.modified().ok()),
             _ if refreshed && observation.state() == State::Running && run.launch.native().is_some() => {
                 ("executor_reports_working", None)
             }

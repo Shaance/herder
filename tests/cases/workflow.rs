@@ -1,9 +1,67 @@
 use super::*;
 use std::{
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
     process::Stdio,
     time::{Duration, Instant},
 };
+
+#[test]
+fn human_wait_announces_a_claude_report_without_settling_the_worker() {
+    let f = Fixture::new();
+    let id = f.launch("claude");
+    let dir = f.dir(&id);
+    let path = dir.join("final.md");
+    let mut waiter = f
+        .cmd()
+        .args(["wait", "--run-dir"])
+        .arg(&dir)
+        .args(["--timeout", "11"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdout = BufReader::new(waiter.stdout.take().unwrap());
+    let mut stderr = BufReader::new(waiter.stderr.take().unwrap());
+    let mut running = String::new();
+    stdout.read_line(&mut running).unwrap();
+    assert_eq!(running, format!("{id}\t{id}\trunning\n"));
+
+    fs::write(&path, "Claude's report is ready.\n").unwrap();
+    let mut notice = String::new();
+    stderr.read_line(&mut notice).unwrap();
+    assert_eq!(notice, format!("{id} attempt 1: report available at {}\n", path.display()));
+    assert!(waiter.try_wait().unwrap().is_none());
+    let report = f.call(&["report", &id, "--repo", "."], 0);
+    assert_eq!(report["data"]["observation"]["state"], "running");
+    assert_eq!(report["data"]["report"]["content"], "Claude's report is ready.\n");
+
+    let mut rest = String::new();
+    stderr.read_to_string(&mut rest).unwrap();
+    assert!(!rest.contains("report available"), "repeated notice: {rest}");
+    assert_eq!(waiter.wait().unwrap().code(), Some(1));
+
+    let mut record = f.record(&id);
+    record["launch"] = json!({"state":"pending_resume","previous":record["launch"]["native"],"attempt":2,"error":null});
+    fs::write(dir.join("run.json"), record.to_string()).unwrap();
+    let pending_path = dir.join("final2.md");
+    let human_poll = || f.cmd().args(["wait", &id, "--timeout", "0"]).output().unwrap();
+    let out = human_poll();
+    assert!(!String::from_utf8(out.stderr).unwrap().contains("report available"));
+    for unavailable in [&b""[..], &b"\xff"[..]] {
+        fs::write(&pending_path, unavailable).unwrap();
+        let out = human_poll();
+        assert!(!String::from_utf8(out.stderr).unwrap().contains("report available"));
+    }
+    fs::write(&pending_path, "Report from attempt two.\n").unwrap();
+    let out = human_poll();
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains(&format!("{id} attempt 2: report available at {}\n", pending_path.display())), "{stderr}");
+    let structured = f.call(&["wait", &id, "--timeout", "0"], 1);
+    assert_eq!(structured["data"]["runs"][0]["report_path"], json!(path));
+    assert_eq!(structured["data"]["runs"][0]["progress"]["attempt"], 2);
+    assert_eq!(structured["data"]["runs"][0]["progress"]["kind"], "report_updated");
+}
 
 #[test]
 fn output_envelopes_and_escaped_wait_and_report_text_are_stable() {

@@ -12,11 +12,13 @@ use std::{
     io::{self, IsTerminal, Write},
     os::fd::AsRawFd,
     path::Path,
+    sync::{Arc, Mutex},
     thread::{self, JoinHandle},
     time::SystemTime,
 };
 
 pub struct Resume {
+    reporter: Arc<Mutex<Reporter>>,
     signals: Handle,
     thread: Option<JoinHandle<()>>,
     reset_interrupt: bool,
@@ -30,6 +32,14 @@ pub struct Terminal {
 struct Reporter {
     target: Terminal,
     command: String,
+    publication: Publication,
+}
+
+#[derive(PartialEq, Eq)]
+enum Publication {
+    Withdrawn,
+    Eligible,
+    Published,
 }
 
 impl Terminal {
@@ -51,7 +61,7 @@ impl Terminal {
         let argv = args.map(|arg| STANDARD.encode(arg)).join(",");
         let command = format!("argv={argv}");
         let packet = report(&self.token, &command, std::process::id(), SystemTime::now())?;
-        let mut reporter = Reporter { target: self, command };
+        let mut reporter = Reporter { target: self, command, publication: Publication::Eligible };
         // Let an inherited SIGINT ignore stay in effect.
         let mut disposition = std::mem::MaybeUninit::<libc::sigaction>::uninit();
         // SAFETY: sigaction writes a complete action on success and does not install a handler here.
@@ -60,32 +70,44 @@ impl Terminal {
                 && disposition.assume_init().sa_sigaction == libc::SIG_DFL
         };
         let mut signals = Signals::new(if default_interrupt { &[SIGCONT, SIGINT][..] } else { &[SIGCONT] }).ok()?;
-        let mut registered = foreground(&reporter.target.terminal);
-        if registered && reporter.target.terminal.write_all(&packet).is_err() {
-            drop(signals);
-            restore_interrupt(default_interrupt);
-            return None;
+        if foreground(&reporter.target.terminal) {
+            if reporter.target.terminal.write_all(&packet).is_err() {
+                drop(signals);
+                restore_interrupt(default_interrupt);
+                return None;
+            }
+            reporter.publication = Publication::Published;
         }
         let handle = signals.handle();
+        let reporter = Arc::new(Mutex::new(reporter));
+        let signal_reporter = Arc::clone(&reporter);
         let thread = thread::spawn(move || {
             for signal in signals.forever() {
+                let mut reporter = signal_reporter.lock().unwrap();
                 if signal == SIGINT {
-                    if registered {
-                        reporter.send("clear=1");
-                    }
+                    reporter.withdraw();
+                    // Keep the guard until the process exits so the waiter cannot republish after clear.
                     let _ = emulate_default_handler(SIGINT);
                     return;
                 }
-                if foreground(&reporter.target.terminal) {
-                    registered |= reporter.refresh();
-                }
+                reporter.refresh();
             }
             // A normal return closes the iterator. Hangup and termination bypass it.
-            if registered {
-                reporter.send("clear=1");
-            }
+            signal_reporter.lock().unwrap().withdraw();
         });
-        Some(Resume { signals: handle, thread: Some(thread), reset_interrupt: default_interrupt })
+        Some(Resume { reporter, signals: handle, thread: Some(thread), reset_interrupt: default_interrupt })
+    }
+}
+
+impl Resume {
+    pub fn set_eligible(&self, eligible: bool) {
+        let mut reporter = self.reporter.lock().unwrap();
+        if !eligible {
+            reporter.withdraw();
+        } else if reporter.publication == Publication::Withdrawn {
+            reporter.publication = Publication::Eligible;
+            reporter.refresh();
+        }
     }
 }
 
@@ -100,17 +122,23 @@ impl Drop for Resume {
 }
 
 impl Reporter {
-    fn refresh(&mut self) -> bool {
-        let Some(packet) = report(&self.target.token, &self.command, std::process::id(), SystemTime::now()) else {
-            return false;
-        };
-        self.target.terminal.write_all(&packet).is_ok()
+    fn refresh(&mut self) {
+        if self.publication != Publication::Withdrawn
+            && foreground(&self.target.terminal)
+            && let Some(packet) = report(&self.target.token, &self.command, std::process::id(), SystemTime::now())
+            && self.target.terminal.write_all(&packet).is_ok()
+        {
+            self.publication = Publication::Published;
+        }
     }
 
-    fn send(&mut self, fields: &str) {
-        if let Some(packet) = report(&self.target.token, fields, std::process::id(), SystemTime::now()) {
+    fn withdraw(&mut self) {
+        if self.publication == Publication::Published
+            && let Some(packet) = report(&self.target.token, "clear=1", std::process::id(), SystemTime::now())
+        {
             let _ = self.target.terminal.write_all(&packet);
         }
+        self.publication = Publication::Withdrawn;
     }
 }
 

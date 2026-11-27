@@ -145,7 +145,7 @@ herder report module-comment
 herder verify module-comment --check 'cargo test'
 ```
 
-Wait also returns for blocked or failed runs; inspect `herder status module-comment` before continuing if the worker has not finished. Review the evidence before publishing. For review mode, use `--mode review` and include `<task>`, `<action_safety>`, `<default_follow_through_policy>` and `<structured_output_contract>` blocks; the brief must require read-only behavior.
+Wait also returns for blocked or failed runs; inspect `herder status module-comment` before continuing if the worker has not finished. While a Claude worker is still running, `herder wait` shows where to read its report as soon as a poll finds it. Review the evidence before publishing. For review mode, use `--mode review` and include `<task>`, `<action_safety>`, `<default_follow_through_policy>` and `<structured_output_contract>` blocks; the brief must require read-only behavior.
 
 </details>
 
@@ -216,7 +216,7 @@ Use `--effort <LEVEL>` on `dispatch` or `handoff` to request reasoning effort fo
 
 ## Terminal resume
 
-An interactive `herder wait` for one Codex or Vibe run can reopen the same recorded run after a restart in a terminal that supports the Program Resume Protocol (OSC 7577). See [terminal resume](https://github.com/Shaance/herder/blob/master/docs/reference.md#terminal-resume).
+An interactive `herder wait` for a confirmed Claude worker or one Codex or Vibe run can reopen the same recorded run after a restart in a terminal that supports the Program Resume Protocol (OSC 7577). See [terminal resume](https://github.com/Shaance/herder/blob/master/docs/reference.md#terminal-resume).
 
 ## Optional: Rex
 
