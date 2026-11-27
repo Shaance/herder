@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{num::NonZeroU32, path::PathBuf};
+use std::{
+    num::NonZeroU32,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +33,12 @@ impl Target {
             Self::Claude { .. } => Executor::Claude,
             Self::Vibe => Executor::Vibe,
             Self::Codex => Executor::Codex,
+        }
+    }
+    pub fn profile(&self) -> Option<&Path> {
+        match self {
+            Self::Claude { profile } => profile.as_deref(),
+            Self::Vibe | Self::Codex => None,
         }
     }
 }

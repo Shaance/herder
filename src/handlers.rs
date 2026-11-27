@@ -755,10 +755,8 @@ fn wait(
             }
             let (pinned, _) = Store::from_run_dir(&canonical).ok()?;
             let run = pinned.load(id).ok()?;
-            let executor = match run.launch.target() {
-                Target::Codex => crate::scripts::ScriptExecutor::CODEX,
-                Target::Vibe => crate::scripts::ScriptExecutor::VIBE,
-                Target::Claude { .. } => return Some((pinned, WaitRegistration::AwaitingClaude(terminal))),
+            let Some(executor) = crate::scripts::ScriptExecutor::for_executor(run.launch.target().executor()) else {
+                return Some((pinned, WaitRegistration::AwaitingClaude(terminal)));
             };
             if source.override_dir().is_some() {
                 return None;
