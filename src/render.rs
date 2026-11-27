@@ -1,7 +1,7 @@
 use crate::{
     doctor::CheckStatus,
     domain::{Executor, FreshVerification, Run, State, Verdict},
-    handlers::{CheckedLaunchVerification, LaunchOutcome, Launched, ListEntry, Output, RunDetail, Tail},
+    output::{CheckedLaunchVerification, LaunchOutcome, Launched, ListEntry, Output, RunDetail, Tail},
 };
 use anyhow::Result;
 use serde_json::{Value, json};
