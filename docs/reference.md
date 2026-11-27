@@ -40,7 +40,15 @@ Pass `--repo ROOT` to `status`, `report`, or `wait` to observe an exact run ID i
 
 `herder wait <run>...` polls every five seconds and returns when any run settles; `--all` waits for every listed run. Finished, failed, stopped and blocked count as settled. When the wait condition is met, the command exits 0 if every settled run at return is finished and 1 if any is failed, stopped or blocked. An unknown observation can clear during polling and does not itself end the wait. Without `--all`, a settled run can satisfy the wait while another remains unknown. If the wait condition is not met at timeout, the command exits 1. The default timeout is 3600 seconds. Human output shows state changes; final human and JSON output includes every run's ID, name, state and current report path.
 
+`herder wait --run-dir PATH` observes one exact run. Supply its canonical absolute `STATE_DIR/runs/RUN_ID` path without positional targets or `--repo`. The run directory supplies the store and ID. Codex and Vibe observations in this mode use the embedded status adapters, regardless of `HERDER_SKILLS_DIR`.
+
 On timeout, human stderr reports the last available progress for each unsettled attempt. JSON adds `data.runs[].progress` for those runs, with `attempt`, `kind` and, when available, `updated_at`, `age_seconds` or an unknown-state `cause`. A script executor can report `session_opened` when the session or thread opening is the only recorded activity. Timestamps and ages describe the event stream or Claude report file's last modification. Claude can also report that the executor says it is working without a timestamp. Wait omits command contents and event text from these diagnostics. An old or silent stream leaves the executor's current state intact.
+
+### Terminal resume
+
+A foreground, interactive wait for one Codex or Vibe run can report a restart command to a terminal that supports the [Program Resume Protocol (OSC 7577)](https://www.superlogical.com/rex/docs/build/program-resume). Herder resolves the ID, unique name, or `--run-dir` first. The restart command uses the selected run's canonical directory and starts a fresh wait with the default timeout. The terminal decides whether to replay it. The restored terminal's `PATH` needs `jq` for bundled status checks. An exact-directory wait reports a missing `jq` before polling.
+
+Reporting applies to human output with the default timeout and embedded status scripts. Scoped waits, `--all`, multiple runs, and positional waits using `HERDER_SKILLS_DIR` continue as ordinary waits. Herder clears the record on completion or Ctrl-C and refreshes it when continued in the foreground. A hangup or termination leaves it available to the terminal. Herder keeps the protocol token out of child commands.
 
 ## List runs
 
@@ -141,7 +149,20 @@ Handoff launches a continuation only: it does not transfer hidden conversation, 
 
 ## Rex panes and environment
 
-[Rex](https://superlogical.com) is a macOS terminal in invite-only public beta. `--pane` opens a pane for a Claude attach or for waiting on a Vibe or Codex worker. Vibe and Codex panes run `herder wait` and close when it exits; Claude panes use `claude attach`. Vibe and Codex launch and resume scripts receive no inherited `REX_SESSION`, `REX_BLOCK` or `REX_SERVER`.
+[Rex](https://superlogical.com) is a macOS terminal in invite-only public beta. `--pane` opens a Claude attach pane or starts `herder wait` in a new pane for a Vibe or Codex worker. The initial wait pane closes when the wait exits. A restored wait can return to a shell and leave its output visible. Vibe and Codex launch and resume scripts receive no inherited `REX_SESSION`, `REX_BLOCK` or `REX_SERVER`.
+
+To opt in to restoring eligible Codex and Vibe waits after a Rex server restart, add a trust rule to your [Rex configuration](https://www.superlogical.com/rex/docs/customize/resume-rules).
+
+```lua
+rex.set("resume.trust.herder_wait", {
+  command = { "/absolute/path/to/herder", "wait", "--run-dir",
+              rex.match.under("~/.local/state/herder/runs") },
+})
+```
+
+Replace the executable with the exact path Herder reports. Run `rex block call -b MONITOR_BLOCK program_resume_records` to see the reported command for a running monitor, or use `realpath "$(command -v herder)"` for a direct installation. If this points into a versioned Homebrew Cellar, refresh the rule after upgrading Herder. With a custom `HERDER_STATE_DIR`, use the canonical absolute path to its `runs` subdirectory. Check the active rules with `rex config check`.
+
+The rule authorizes only the observer command. Rex uses its usual shell when no rule matches.
 
 ## Legacy records
 

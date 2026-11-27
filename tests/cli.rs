@@ -561,8 +561,9 @@ fn script_dispatch_status_and_report_use_executor_artifacts() {
         assert!(args.contains("--model\nmodel-x"));
         let pane = fs::read_to_string(f.state.join("rex-args")).unwrap();
         assert!(pane.contains(&format!(
-            "--shell=none\n--\nenv\nHERDER_STATE_DIR={}\n{}\nwait\n{id}\n",
+            "--shell=none\n--\nenv\n-u\nHERDER_STATE_DIR\nHERDER_STATE_DIR={}\nHERDER_SKILLS_DIR={}\n{}\nwait\n{id}\n",
             f.state.display(),
+            f.skills.display(),
             env!("CARGO_BIN_EXE_herder")
         )));
         assert!(!pane.contains("watch"));
@@ -1053,6 +1054,89 @@ fn dispatch_pane_waits_on_deferred_script_launch() {
         let pane = fs::read_to_string(f.state.join("rex-args")).unwrap();
         assert!(pane.ends_with(&format!("\n{}\nwait\n{id}\n", env!("CARGO_BIN_EXE_herder"))));
     }
+}
+
+#[test]
+fn wait_run_dir_rejects_conflicting_selectors_and_mismatched_records() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    let dir = f.dir(&id);
+    let selected = dir.to_str().unwrap();
+    for other in [vec![id.as_str()], vec!["--repo", "."]] {
+        let mut args = vec!["wait", "--run-dir", selected];
+        args.extend(other);
+        assert!(f.call(&args, 2)["error"].as_str().unwrap().contains("cannot be used with"));
+    }
+    let mut run = f.record(&id);
+    run["id"] = json!("different-run");
+    let record = dir.join("run.json");
+    fs::write(&record, run.to_string()).unwrap();
+    let args = ["wait", "--run-dir", selected];
+    assert!(f.call(&args, 1)["error"].as_str().unwrap().contains("identity mismatch"));
+    f.dispatch("codex", &["--name", &id], 0);
+    fs::remove_file(record).unwrap();
+    assert!(f.call(&args, 1)["error"].as_str().unwrap().contains("run.json"));
+    let relative = format!("runs/{id}");
+    assert!(f.call(&["wait", "--run-dir", &relative], 1)["error"].as_str().unwrap().contains("absolute"));
+}
+
+#[test]
+fn only_supported_waits_register_on_their_controlling_terminal() {
+    let f = Fixture::new();
+    let name = "named monitor";
+    let dispatch = f.dispatch("codex", &["--name", name], 0);
+    let id = dispatch["data"]["run_id"].as_str().unwrap();
+    let dir = f.dir(id);
+    fs::write(dir.join("final.md"), "completed report").unwrap();
+    f.status("exited", "COMPLETED");
+    let legacy_id = f.launch("codex");
+    let legacy = f.dir(&legacy_id);
+    fs::write(legacy.join("final2.md"), "legacy completed report").unwrap();
+    fs::write(legacy.join("events2.jsonl"), "{\"type\":\"turn.completed\"}\n").unwrap();
+    let out = Command::new("/usr/bin/python3")
+        .env("OSC7577_TOKEN", "fixture-token-only-for-test")
+        .env_remove("HERDER_SKILLS_DIR")
+        .env_remove("REX_BLOCK")
+        .env_remove("REX_SESSION")
+        .env_remove("REX_SERVER")
+        .env("HERDER_STATE_DIR", &f.state)
+        .current_dir(&f.repo)
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/wait_resume_eligibility.py"))
+        .arg(env!("CARGO_BIN_EXE_herder"))
+        .args([id, name])
+        .arg(&dir)
+        .arg(&f.skills)
+        .arg(&legacy_id)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[test]
+fn foregrounding_a_wait_registers_and_pins_its_report_path() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    let dir = f.dir(&id);
+    fs::write(dir.join("final.md"), "completed report").unwrap();
+    let alias = f.root.join("active state");
+    std::os::unix::fs::symlink(&f.state, &alias).unwrap();
+    let decoy = f.root.join("other state");
+    let decoy_run = decoy.join("runs").join(&id);
+    fs::create_dir_all(&decoy_run).unwrap();
+    fs::write(decoy_run.join("final.md"), "different report").unwrap();
+
+    let out = Command::new("/usr/bin/python3")
+        .env("OSC7577_TOKEN", "fixture-token-only-for-test")
+        .env_remove("HERDER_SKILLS_DIR")
+        .env("HERDER_STATE_DIR", &alias)
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/wait_resume_job_control.py"))
+        .arg(env!("CARGO_BIN_EXE_herder"))
+        .arg(&id)
+        .arg(&dir)
+        .arg(&decoy)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
 }
 
 #[test]

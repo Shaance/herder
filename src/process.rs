@@ -9,14 +9,23 @@ use std::{
 };
 
 const EXECUTOR_QUERY_TIMEOUT: Duration = Duration::from_secs(10);
+pub const OSC7577_TOKEN: &str = "OSC7577_TOKEN";
 
 pub fn output(cmd: &mut Command) -> Result<(Option<i32>, String)> {
-    let out = cmd.stdin(Stdio::null()).output().with_context(|| format!("execute {:?}", cmd.get_program()))?;
+    let out = cmd
+        .env_remove(OSC7577_TOKEN)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("execute {:?}", cmd.get_program()))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     Ok((out.status.code(), text))
 }
 pub fn checked(cmd: &mut Command) -> Result<String> {
-    let out = cmd.stdin(Stdio::null()).output().with_context(|| format!("execute {:?}", cmd.get_program()))?;
+    let out = cmd
+        .env_remove(OSC7577_TOKEN)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("execute {:?}", cmd.get_program()))?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     ensure!(out.status.success(), "exit {:?}: {}{}", out.status.code(), stdout, String::from_utf8_lossy(&out.stderr));
     Ok(stdout.into_owned())
@@ -42,12 +51,20 @@ pub fn bounded_output(cmd: &mut Command, deadline: Instant) -> Result<(Option<Ex
     // Unlinked capture avoids pipe-reader hangs when a command leaves descendants behind.
     let mut stdout = tempfile::tempfile()?;
     let mut stderr = tempfile::tempfile()?;
-    let mut child =
-        cmd.stdin(Stdio::null()).stdout(stdout.try_clone()?).stderr(stderr.try_clone()?).process_group(0).spawn()?;
+    let mut child = cmd
+        .env_remove(OSC7577_TOKEN)
+        .stdin(Stdio::null())
+        .stdout(stdout.try_clone()?)
+        .stderr(stderr.try_clone()?)
+        .process_group(0)
+        .spawn()?;
     let status = loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            let _ = Command::new("/bin/kill").args(["-KILL", "--", &format!("-{}", child.id())]).status();
+            let _ = Command::new("/bin/kill")
+                .env_remove(OSC7577_TOKEN)
+                .args(["-KILL", "--", &format!("-{}", child.id())])
+                .status();
             let _ = child.kill();
             child.wait()?;
             break None;
@@ -81,7 +98,26 @@ pub enum Script {
     ResumeClassic,
 }
 
+#[derive(Clone, Copy)]
+pub enum ScriptSource {
+    Configured,
+    Embedded,
+}
+
+impl ScriptSource {
+    pub fn override_dir(self) -> Option<PathBuf> {
+        match self {
+            Self::Configured => env::var_os("HERDER_SKILLS_DIR").map(PathBuf::from),
+            Self::Embedded => None,
+        }
+    }
+}
+
 pub fn script(script: Script) -> Command {
+    script_from(script, ScriptSource::Configured)
+}
+
+pub fn script_from(script: Script, source: ScriptSource) -> Command {
     macro_rules! embedded {
         ($owner:literal, $file:literal) => {
             ($owner, $file, include_str!(concat!("../vendor/ai-skills/", $owner, "/scripts/", $file)))
@@ -97,8 +133,8 @@ pub fn script(script: Script) -> Command {
         Script::StatusClassic => embedded!("codex-implementer", "status_classic.sh"),
         Script::ResumeClassic => embedded!("codex-implementer", "resume_classic.sh"),
     };
-    if let Some(dir) = env::var_os("HERDER_SKILLS_DIR") {
-        return Command::new(PathBuf::from(dir).join(owner).join("scripts").join(file));
+    if let Some(dir) = source.override_dir() {
+        return Command::new(dir.join(owner).join("scripts").join(file));
     }
     let mut cmd = Command::new("bash");
     cmd.args(["-c", text, file]);

@@ -1,5 +1,5 @@
-use crate::scripts::ScriptExecutor;
 use crate::{claude, domain::*, process, scripts, store::LockedRun};
+use crate::{process::ScriptSource, scripts::ScriptExecutor};
 use anyhow::{Result, bail, ensure};
 use std::{path::Path, process::Command, time::Instant};
 
@@ -45,10 +45,15 @@ pub fn launch(run: &mut Run, phase: LaunchPhase<'_>, store: &LockedRun) -> Resul
     result
 }
 pub fn observe(run: &mut Run, store: Option<&LockedRun>) -> Observation {
-    observe_until(run, store, None)
+    observe_until(run, store, None, ScriptSource::Configured)
 }
 
-pub fn observe_until(run: &mut Run, store: Option<&LockedRun>, deadline: Option<Instant>) -> Observation {
+pub fn observe_until(
+    run: &mut Run,
+    store: Option<&LockedRun>,
+    deadline: Option<Instant>,
+    source: ScriptSource,
+) -> Observation {
     let Some(store) = store else {
         let evidence = "run busy: another herder command holds the lock".into();
         return match run.launch.state() {
@@ -78,7 +83,7 @@ pub fn observe_until(run: &mut Run, store: Option<&LockedRun>, deadline: Option<
                     Target::Vibe => ScriptExecutor::VIBE,
                     _ => ScriptExecutor::CODEX,
                 };
-                let (observed, identity) = executor.query(run, dir, deadline)?;
+                let (observed, identity) = executor.query(run, dir, deadline, source)?;
                 let identity = match &run.launch {
                     Launch::PendingResume { previous: Native::Codex { .. }, .. } => Some(identity?),
                     _ => identity.ok(),
@@ -208,7 +213,7 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
             native => {
                 let executor =
                     if matches!(native, Native::Vibe { .. }) { ScriptExecutor::VIBE } else { ScriptExecutor::CODEX };
-                let (observed, identity) = executor.query(run, dir, None)?;
+                let (observed, identity) = executor.query(run, dir, None, ScriptSource::Configured)?;
                 (observed, Some(identity))
             }
         };
@@ -251,6 +256,7 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
         run.request_attempts.insert(id.to_owned(), attempt);
     }
     run.launch = Launch::PendingResume { previous: native.clone(), attempt, error: None };
+    run.resume_worker_dir = native.process().map(|_| dir.to_path_buf());
     store.save(run)?;
     launch(run, LaunchPhase::Resume { previous: &native, delta: &delta }, store)?;
     let observed = observe(run, Some(store));
@@ -263,7 +269,7 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
     }
     Ok(observed)
 }
-pub fn pane(run: &Run) -> Result<()> {
+pub fn pane(run: &Run, dir: &Path) -> Result<()> {
     let block = std::env::var("REX_BLOCK")?;
     let mut cmd = Command::new("rex");
     cmd.arg("split");
@@ -285,15 +291,22 @@ pub fn pane(run: &Run) -> Result<()> {
             cmd.args(["claude", "attach", id]);
         }
         Target::Vibe | Target::Codex => {
-            cmd.arg("env");
-            if let Some(root) = std::env::var_os("HERDER_STATE_DIR") {
-                let mut assignment = std::ffi::OsString::from("HERDER_STATE_DIR=");
-                assignment.push(std::path::absolute(Path::new(&root))?);
-                cmd.arg(assignment);
+            let exe = std::env::current_exe()?;
+            if let Some(skills) = std::env::var_os("HERDER_SKILLS_DIR") {
+                cmd.args(["env", "-u", "HERDER_STATE_DIR"]);
+                if let Some(root) = std::env::var_os("HERDER_STATE_DIR") {
+                    let mut assignment = std::ffi::OsString::from("HERDER_STATE_DIR=");
+                    assignment.push(std::path::absolute(Path::new(&root))?);
+                    cmd.arg(assignment);
+                }
+                let mut assignment = std::ffi::OsString::from("HERDER_SKILLS_DIR=");
+                assignment.push(std::path::absolute(Path::new(&skills))?);
+                cmd.arg(assignment).arg(&exe).arg("wait").arg(&run.id);
             } else {
-                cmd.args(["-u", "HERDER_STATE_DIR"]);
+                let canonical = dir.canonicalize()?;
+                ensure!(canonical.file_name() == dir.file_name(), "pane run path changed identity");
+                cmd.arg(&exe).args(["wait", "--run-dir"]).arg(canonical);
             }
-            cmd.arg(std::env::current_exe()?).arg("wait").arg(&run.id);
         }
     }
     process::checked(&mut cmd)?;

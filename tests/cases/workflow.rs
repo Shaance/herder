@@ -267,10 +267,12 @@ fn script_launch_and_resume_do_not_inherit_rex_environment() {
         for action in ["launch", "resume"] {
             let path = stub_body(&f.skills.join(owner).join("scripts").join(format!("{action}_{suffix}.sh")));
             let original = fs::read_to_string(&path).unwrap();
-            fs::write(path, original.replace("set -eu\n", &format!("set -eu\nprintf '%s\\n' \"${{REX_SESSION-unset}}\" \"${{REX_BLOCK-unset}}\" \"${{REX_SERVER-unset}}\" > \"$HERDER_STATE_DIR/{action}-env\"\n"))).unwrap();
+            fs::write(path, original.replace("set -eu\n", &format!("set -eu\nprintf '%s\\n' \"${{REX_SESSION-unset}}\" \"${{REX_BLOCK-unset}}\" \"${{REX_SERVER-unset}}\" \"${{OSC7577_TOKEN-unset}}\" > \"$HERDER_STATE_DIR/{action}-env\"\n"))).unwrap();
         }
         let mut cmd = f.cmd();
-        cmd.env("REX_SESSION", "parent-session").env("REX_SERVER", "parent-server");
+        cmd.env("REX_SESSION", "parent-session")
+            .env("REX_SERVER", "parent-server")
+            .env("OSC7577_TOKEN", "fixture-token-only-for-test");
         let out = cmd
             .args(["dispatch", "--executor", executor, "--brief"])
             .arg(f.root.join("brief.md"))
@@ -280,18 +282,19 @@ fn script_launch_and_resume_do_not_inherit_rex_environment() {
         assert!(out.status.success());
         let value: Value = serde_json::from_slice(&out.stdout).unwrap();
         let id = value["data"]["run_id"].as_str().unwrap();
-        assert_eq!(fs::read_to_string(f.state.join("launch-env")).unwrap(), "unset\nunset\nunset\n");
+        assert_eq!(fs::read_to_string(f.state.join("launch-env")).unwrap(), "unset\nunset\nunset\nunset\n");
         f.status("exited", "COMPLETED");
         let out = f
             .cmd()
             .env("REX_SESSION", "parent-session")
             .env("REX_SERVER", "parent-server")
+            .env("OSC7577_TOKEN", "fixture-token-only-for-test")
             .args(["resume", id, "--brief"])
             .arg(f.root.join("brief.md"))
             .output()
             .unwrap();
         assert!(out.status.success());
-        assert_eq!(fs::read_to_string(f.state.join("resume-env")).unwrap(), "unset\nunset\nunset\n");
+        assert_eq!(fs::read_to_string(f.state.join("resume-env")).unwrap(), "unset\nunset\nunset\nunset\n");
     }
 }
 

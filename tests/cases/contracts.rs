@@ -278,6 +278,69 @@ fn real_status_scripts_report_stream_age_and_running_command() {
 }
 
 #[test]
+fn bundled_status_requires_jq_before_touching_executor_evidence() {
+    let f = Fixture::new();
+    let tools = f.root.join("path without jq");
+    fs::create_dir(&tools).unwrap();
+    let host_path = std::env::var_os("PATH").unwrap();
+    let host_tool = |name| {
+        std::env::split_paths(&host_path)
+            .map(|dir| dir.join(name))
+            .find(|file| file.is_file())
+            .unwrap_or_else(|| panic!("missing contract fixture tool {name}"))
+    };
+    for name in ["bash", "cat", "grep", "head", "perl", "ps", "sort", "tail", "tr", "uniq", "wc"] {
+        std::os::unix::fs::symlink(host_tool(name), tools.join(name)).unwrap();
+    }
+    let call = |args: &[&str], use_override: bool| {
+        let mut cmd = f.cmd();
+        if !use_override {
+            cmd.env_remove("HERDER_SKILLS_DIR");
+        }
+        let out = cmd.env("PATH", &tools).args(args).arg("--json").output().unwrap();
+        (out.status.code(), serde_json::from_slice::<Value>(&out.stdout).unwrap())
+    };
+    let mut runs = Vec::new();
+    for executor in ["codex", "vibe"] {
+        let id = f.launch(executor);
+        let dir = f.dir(&id);
+        let final_path = dir.join("final.md");
+        fs::write(&final_path, "saved report\n").unwrap();
+        if executor == "codex" {
+            fs::write(dir.join("events.jsonl"), "{\"type\":\"turn.failed\"}\n").unwrap();
+        } else {
+            fs::create_dir(dir.join("out")).unwrap();
+            fs::write(dir.join("out/export.json"), r#"{"outcome":"finished","config":{"active_model":"stub","models":{"stub":{"name":"stub","thinking":"high"}}}}"#).unwrap();
+            fs::write(dir.join("events.jsonl"), "{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"saved report\"}]}\n").unwrap();
+        }
+        for args in [vec!["status", &id], vec!["status", &id, "--repo", "."]] {
+            let (code, response) = call(&args, false);
+            assert_eq!(code, Some(0), "{response}");
+            let observation = &response["data"]["observation"];
+            assert_eq!(observation["state"], "unknown", "{response}");
+            assert_eq!(observation["cause"], "query_failed", "{response}");
+            assert!(observation["evidence"].as_str().unwrap().contains("requires jq on PATH"), "{response}");
+        }
+        let (code, wait) = call(&["wait", "--run-dir", dir.to_str().unwrap(), "--timeout", "0"], true);
+        assert_eq!(code, Some(1), "{wait}");
+        assert!(wait["error"].as_str().unwrap().contains("requires jq on PATH"), "{wait}");
+        assert_eq!(fs::read_to_string(final_path).unwrap(), "saved report\n");
+
+        f.status("exited", "COMPLETED");
+        let (code, overridden) = call(&["status", &id], true);
+        assert_eq!(code, Some(0), "{overridden}");
+        assert_eq!(overridden["data"]["observation"]["state"], "finished", "{overridden}");
+        runs.push((id, if executor == "codex" { "failed" } else { "finished" }));
+    }
+    std::os::unix::fs::symlink(host_tool("jq"), tools.join("jq")).unwrap();
+    for (id, expected) in runs {
+        let (code, status) = call(&["status", &id], false);
+        assert_eq!(code, Some(0), "{status}");
+        assert_eq!(status["data"]["observation"]["state"], expected, "{status}");
+    }
+}
+
+#[test]
 fn real_codex_status_recovers_late_identity() {
     let (f, skills) = setup();
     fs::write(f.skills.join("gate"), "").unwrap();
@@ -431,6 +494,127 @@ printf '%s\n' '{"type":"turn.completed"}'"#,
     assert_eq!(record["verifications"][0]["verdict"], "pass");
     let collector = record["verifications"][0]["checks"][1]["output"].as_str().unwrap();
     assert_eq!(collector.lines().filter(|line| line.starts_with("?? generated/")).count(), 40);
+}
+
+#[test]
+fn exact_wait_finds_a_live_worker_launched_through_a_state_alias() {
+    let (f, _) = setup();
+    let tmp = tempfile::tempdir_in("/tmp").unwrap();
+    let under_tmp = tmp.path().join("custom state");
+    fs::create_dir(&under_tmp).unwrap();
+    let alias = f.root.join("state-alias");
+    std::os::unix::fs::symlink(&f.state, &alias).unwrap();
+    let decoy_store = f.root.join("different state");
+    fs::create_dir(&decoy_store).unwrap();
+    f.script("codex-implementer", "status_classic", "touch \"$HERDER_SKILLS_DIR/decoy-called\"; exit 1");
+    f.executable(
+        &f.bin.join("rex"),
+        "test -z \"${OSC7577_TOKEN+x}\"; printf '%s\\n' \"$@\" > \"$HERDER_STATE_DIR/rex-args\"",
+    );
+    f.executable(
+        &f.bin.join("codex"),
+        r#"test -z "${OSC7577_TOKEN+x}"
+root=$(cd "$HERDER_STATE_DIR" && pwd -P)
+printf '%s\n' "$@" > "$root/worker-argv"
+while [ "$1" != -o ]; do shift; done
+report=$2
+printf '%s\n' '{"type":"thread.started","thread_id":"stub-thread"}'
+while test -f "$root/hold"; do sleep 0.02; done
+printf '%s\n' 'completed report' > "$report"
+printf '%s\n' '{"type":"turn.completed"}'
+touch "$root/worker-exiting""#,
+    );
+    for state in [&under_tmp, &alias] {
+        let canonical = state.canonicalize().unwrap();
+        fs::write(canonical.join("hold"), "").unwrap();
+        let out = f
+            .cmd()
+            .env_remove("HERDER_SKILLS_DIR")
+            .env("HERDER_STATE_DIR", state)
+            .env("OSC7577_TOKEN", "fixture-token-only-for-test")
+            .args(["dispatch", "--executor", "codex", "--repo", ".", "--pane", "--json", "--brief"])
+            .arg(f.root.join("brief.md"))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        let dispatch: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let id = dispatch["data"]["run_id"].as_str().unwrap();
+        let dir = canonical.join("runs").join(id);
+        let worker = fs::read_to_string(canonical.join("worker-argv")).unwrap();
+        assert!(worker.lines().any(|arg| Path::new(arg) == state.join("runs").join(id).join("final.md")));
+        let pane = fs::read_to_string(canonical.join("rex-args")).unwrap();
+        assert!(pane.ends_with(&format!(
+            "\n--\n{}\nwait\n--run-dir\n{}\n",
+            env!("CARGO_BIN_EXE_herder"),
+            dir.display()
+        )));
+
+        let wait = || {
+            let out = f
+                .cmd()
+                .env("HERDER_STATE_DIR", &decoy_store)
+                .env("OSC7577_TOKEN", "fixture-token-only-for-test")
+                .args(["wait", "--json", "--timeout", "0", "--run-dir"])
+                .arg(&dir)
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(1), "{out:?}");
+            serde_json::from_slice::<Value>(&out.stdout).unwrap()
+        };
+        assert_eq!(wait()["data"]["runs"][0]["state"], "running");
+        if state == &alias {
+            fs::remove_file(&alias).unwrap();
+            std::os::unix::fs::symlink(&decoy_store, &alias).unwrap();
+            let observed = wait();
+            assert_eq!(observed["data"]["runs"][0]["state"], "unknown");
+            assert_eq!(observed["data"]["runs"][0]["progress"]["cause"], "identity_mismatch");
+            fs::remove_file(&alias).unwrap();
+            std::os::unix::fs::symlink(&f.state, &alias).unwrap();
+        }
+        assert!(!f.skills.join("decoy-called").exists());
+        fs::remove_file(canonical.join("hold")).unwrap();
+        wait_file(&canonical.join("worker-exiting"));
+        if state == &alias {
+            let finished = || f.call(&["wait", "--run-dir", dir.to_str().unwrap(), "--timeout", "2"], 0);
+            assert_eq!(finished()["data"]["runs"][0]["state"], "finished");
+            fs::remove_file(canonical.join("worker-exiting")).unwrap();
+            fs::write(canonical.join("hold"), "").unwrap();
+            let resumed = f
+                .cmd()
+                .env_remove("HERDER_SKILLS_DIR")
+                .env("HERDER_STATE_DIR", &canonical)
+                .args(["resume", id, "--json", "--brief"])
+                .arg(f.root.join("brief.md"))
+                .output()
+                .unwrap();
+            assert!(resumed.status.success(), "{resumed:?}");
+            let mut record = f.record(id);
+            assert_eq!(record["attempt"], 2);
+            assert_eq!(record["resume_worker_dir"], json!(dir));
+            assert_eq!(wait()["data"]["runs"][0]["state"], "running");
+
+            // An attempt started before the new field still has its own launch receipt.
+            record.as_object_mut().unwrap().remove("resume_worker_dir");
+            fs::write(dir.join("run.json"), record.to_string()).unwrap();
+            assert_eq!(wait()["data"]["runs"][0]["state"], "running");
+            fs::remove_file(dir.join("launch2.log")).unwrap();
+            assert_eq!(wait()["data"]["runs"][0]["state"], "unknown");
+
+            fs::remove_file(canonical.join("hold")).unwrap();
+            wait_file(&canonical.join("worker-exiting"));
+            assert_eq!(finished()["data"]["runs"][0]["state"], "finished");
+            let ordinary = f
+                .cmd()
+                .env_remove("HERDER_SKILLS_DIR")
+                .env("HERDER_STATE_DIR", &alias)
+                .args(["wait", id])
+                .output()
+                .unwrap();
+            assert!(ordinary.status.success(), "{ordinary:?}");
+            let original_report_path = alias.join("runs").join(id).join("final2.md");
+            assert!(String::from_utf8(ordinary.stdout).unwrap().contains(original_report_path.to_str().unwrap()));
+        }
+    }
 }
 
 #[test]

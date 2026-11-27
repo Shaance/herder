@@ -97,7 +97,7 @@ pub fn require_available(slot: &Slot, store: &Store, repo: &Path) -> Result<()> 
     let mut message = "wait for the active protected work order to finish";
     if let Some(lock) = &lock {
         let deadline = Instant::now() + Duration::from_secs(2);
-        match runs::observe_until(&mut run, Some(lock), Some(deadline)).state() {
+        match runs::observe_until(&mut run, Some(lock), Some(deadline), process::ScriptSource::Configured).state() {
             State::Failed | State::Stopped => return Ok(()),
             State::Finished => {
                 if run.launch_attempt() != NonZeroU32::MIN
@@ -213,7 +213,7 @@ pub fn verify(
     drop(slot);
 
     let deadline = Instant::now() + Duration::from_secs(30);
-    let observed = runs::observe_until(&mut run, lock.as_ref(), Some(deadline));
+    let observed = runs::observe_until(&mut run, lock.as_ref(), Some(deadline), process::ScriptSource::Configured);
     result.outcome = "pending";
     result.message = None;
     result.state = observed.state();
