@@ -12,8 +12,7 @@ pub fn launch(run: &mut Run, phase: LaunchPhase<'_>, store: &LockedRun) -> Resul
     };
     let result = match outcome {
         Ok(Some(native)) => {
-            run.attempt = run.launch_attempt();
-            run.launch = Launch::Launched { native, intent: Intent::Running };
+            run.confirm_identity(native);
             Ok(())
         }
         Ok(None) => Ok(()),
@@ -69,12 +68,12 @@ pub fn observe_until(
         let target = run.launch.target();
         let mut observed = match ScriptExecutor::for_executor(target.executor()) {
             None => {
-                let accepted = matches!(run.launch, Launch::Accepted { .. });
-                let observed = claude::query(run, target.profile(), deadline)?;
+                let (observed, native) = claude::query(run, target.profile(), deadline)?;
                 if matches!(run.launch, Launch::PendingResume { .. }) {
                     return Ok(observed);
                 }
-                if accepted {
+                if matches!(run.launch, Launch::Accepted { .. }) {
+                    run.confirm_identity(native);
                     store.save(run)?;
                 }
                 observed
@@ -113,8 +112,7 @@ pub fn observe_until(
                             });
                         }
                     }
-                    run.attempt = run.launch_attempt();
-                    run.launch = Launch::Launched { native, intent: Intent::Running };
+                    run.confirm_identity(native);
                     store.save(run)?;
                 }
                 observed
@@ -207,7 +205,7 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
         }
         let target = previous.target();
         let (observed, identity) = match ScriptExecutor::for_executor(target.executor()) {
-            None => (claude::query(run, target.profile(), None)?, None),
+            None => (claude::query(run, target.profile(), None)?.0, None),
             Some(executor) => {
                 let (observed, identity) = executor.query(run, dir, None, ScriptSource::Configured)?;
                 (observed, Some(identity))

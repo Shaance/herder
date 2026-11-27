@@ -1,5 +1,5 @@
 use crate::{
-    domain::{Intent, Launch, LaunchPhase, Native, Observation, Run, State, UnknownCause, UnknownError},
+    domain::{Launch, LaunchPhase, Native, Observation, Run, State, UnknownCause, UnknownError},
     process::{self, output},
     store::{self, LockedRun},
 };
@@ -183,6 +183,9 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
     let mut confirmed = previous.cloned();
     loop {
         let (native, a) = identity(run, confirmed.as_ref(), profile, None)?;
+        if matches!(run.launch, Launch::Accepted { .. }) {
+            run.confirm_identity(native.clone());
+        }
         let started = if previous.is_some() {
             a.status.as_deref() == Some("busy")
                 || a.state == "working"
@@ -204,9 +207,9 @@ pub fn launch(run: &mut Run, profile: Option<&Path>, phase: LaunchPhase<'_>, sto
         thread::sleep(Duration::from_secs(1));
     }
 }
-// Resolve acceptance once; all later observations must match the full recorded identity.
+// Find the accepted or recorded agent; once the full identity is recorded, every lookup must match it.
 fn identity(
-    run: &mut Run,
+    run: &Run,
     previous: Option<&Native>,
     profile: Option<&Path>,
     deadline: Option<Instant>,
@@ -244,16 +247,10 @@ fn identity(
         )
     );
     let native = Native::Claude { id: id.clone(), session_id: a.session_id.clone(), profile: profile.clone() };
-    if let Launch::Accepted { error, .. } = &run.launch {
-        run.launch = Launch::Launched {
-            native: native.clone(),
-            intent: error.clone().map_or(Intent::Running, |error| Intent::Unconfirmed { error }),
-        };
-    }
     Ok((native, a))
 }
-pub fn query(run: &mut Run, profile: Option<&Path>, deadline: Option<Instant>) -> Result<Observation> {
-    let (_, a) = identity(run, None, profile, deadline)?;
+pub fn query(run: &Run, profile: Option<&Path>, deadline: Option<Instant>) -> Result<(Observation, Native)> {
+    let (native, a) = identity(run, None, profile, deadline)?;
     let Agent { id, session_id, status, state, .. } = a;
     let evidence = format!("id={id} session={session_id} status={} state={state}", status.as_deref().unwrap_or("none"));
     let state = match (status.as_deref(), state.as_str()) {
@@ -262,7 +259,7 @@ pub fn query(run: &mut Run, profile: Option<&Path>, deadline: Option<Instant>) -
         (_, "stopped" | "exited") => State::Stopped,
         (_, "blocked" | "waiting_for_permission") => State::Blocked,
         (Some("busy"), _) | (Some("idle") | None, "working") => State::Running,
-        _ => return Ok(Observation::unknown(UnknownCause::UnrecognizedStatus, evidence)),
+        _ => return Ok((Observation::unknown(UnknownCause::UnrecognizedStatus, evidence), native)),
     };
-    Ok(Observation::known(state, evidence))
+    Ok((Observation::known(state, evidence), native))
 }

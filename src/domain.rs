@@ -229,6 +229,16 @@ impl Run {
             _ => self.attempt,
         }
     }
+    pub fn confirm_identity(&mut self, native: Native) {
+        self.attempt = self.launch_attempt();
+        let intent = match &mut self.launch {
+            Launch::Accepted { error, .. } => {
+                error.take().map_or(Intent::Running, |error| Intent::Unconfirmed { error })
+            }
+            _ => Intent::Running,
+        };
+        self.launch = Launch::Launched { native, intent };
+    }
     pub fn suffix(&self) -> String {
         if self.attempt.get() == 1 { String::new() } else { self.attempt.to_string() }
     }
