@@ -4,11 +4,19 @@ Herder is a local Rust CLI that lets you or your coding agent delegate work to C
 
 ## Get a read-only Codex review from Claude Code
 
-Set up the local Herder MCP server in Claude Code, then try this prompt. [MCP setup guide](https://github.com/Shaance/herder/blob/master/mcp/README.md)
+Set up the local Herder MCP server in Claude Code and confirm which worktree it sees before launching a worker. [MCP setup guide](mcp/README.md) · [First-use checkout prompt](mcp/README.md#check-your-registration)
+
+You can also add the Herder skill to teach your agent when to use the registered tools or the CLI. [Skill setup](#add-the-herder-skill)
+
+Once the checkout matches and you have approved Codex quota for this goal, try this prompt.
 
 > Use Herder to ask Codex for a read-only review of this diff. Use `pre-merge` as the goal and pick a fresh run name. Look for regressions and missing tests, cite the relevant files and lines, and give me the Herder run ID.
 
-Save the run ID. Once the review finishes, ask Codex or another Claude Code session to show the Herder report for that ID. Both clients need to use the same checkout and Herder state directory.
+Save the run ID. You can ask another session to read the same report when both clients use the same checkout and Herder state directory.
+
+> Show me the report for run `<your run ID>`.
+
+With Herder v0.5.0 or later, the agent can wait up to 30 seconds at a time for a result. To let it implement a change, register a dedicated clean worktree, prefixes for auditing Git-visible changes, and an executable that checks the result. [MCP writer setup](mcp/README.md#enable-a-writer-for-one-worktree)
 
 ## Verify a worker's changes
 
@@ -60,7 +68,9 @@ sudo mv herder /usr/local/bin/   # or any directory on PATH
 cargo install --locked herder
 ```
 
-Clone the repository and run the line for your host to link the [herder skill](https://github.com/Shaance/herder/blob/master/skill/SKILL.md). Keep the clone in place. If a host already has a `herder` skill, inspect that entry before replacing it.
+### Add the Herder skill
+
+For personal use across projects, clone the repository and run the line for your host to link the [Herder skill](skill/SKILL.md). Keep the clone in place. If a host already has a `herder` skill, inspect that entry before replacing it.
 
 ```sh
 git clone https://github.com/Shaance/herder.git
@@ -72,6 +82,18 @@ mkdir -p ~/.codex/skills && ln -s "$PWD/skill" ~/.codex/skills/herder
 # Vibe
 mkdir -p ~/.vibe/skills && ln -s "$PWD/skill" ~/.vibe/skills/herder
 ```
+
+For a team, add one copy to the repository that will use Herder. Codex and Vibe find it at `.agents/skills/herder`. Claude Code finds it through the relative link at `.claude/skills/herder`. From that team's Git root, with the skill paths still unused, run these commands.
+
+```sh
+mkdir -p .agents/skills .claude/skills
+cp -R /path/to/herder/skill .agents/skills/herder
+ln -s ../../.agents/skills/herder .claude/skills/herder
+```
+
+Commit the copy and the relative link together so they work in other checkouts.
+
+### Run Herder from your agent
 
 Allow your agent to run herder with normal user access, since herder starts executor CLIs that use the network and their own configuration:
 
@@ -180,6 +202,7 @@ The arrows show common observations. `unknown` can occur whenever evidence is un
 | `ls` | List runs with fresh executor status and requested effort after the model. |
 | `wait` | Wait for any or all runs to settle. Exit 0 if every settled run at return is finished, or 1 if any failed, stopped, or blocked, or the wait times out. |
 | `status` | Query a run's current executor status. |
+| `context` | Show the configured directory, Git worktree root, branch, HEAD, and Herder state directory. |
 | `report` | Read the current attempt's report. |
 | `stop` | Stop the exact recorded worker. |
 | `resume` | Resume a recorded session with a delta brief. |
@@ -215,16 +238,7 @@ Tests use stub executors and temporary state, never real workers. Contract tests
 
 Move the release notes from `## Unreleased` to `## X.Y.Z (YYYY-MM-DD)` in `CHANGELOG.md`. Bump both package versions and refresh both lockfiles with `cargo check` and `cargo check --manifest-path mcp/Cargo.toml`. Commit the release and create a matching local `vX.Y.Z` tag.
 
-For **v0.4.0 only**, publish `herder-mcp` from the clean, tagged release commit before pushing the tag. crates.io requires an API token for a crate's first publish. Use a local token permitted to publish a new crate.
-
-```sh
-cargo login --registry crates-io
-git switch --detach v0.4.0 &&
-  test -z "$(git status --porcelain)" &&
-  cargo publish --locked --registry crates-io --manifest-path mcp/Cargo.toml -p herder-mcp@0.4.0
-```
-
-After bootstrapping, add a Trusted Publisher for `herder-mcp` on crates.io using repository `Shaance/herder`, workflow `release.yml`, and environment `crates-io`. Revoke the local bootstrap token. [crates.io Trusted Publishing](https://crates.io/docs/trusted-publishing)
+Both crates publish through the GitHub Actions Trusted Publisher for `Shaance/herder`, workflow `release.yml`, environment `crates-io`. [crates.io Trusted Publishing](https://crates.io/docs/trusted-publishing)
 
 Push the matching release tag to start the workflow. After the macOS build, the GitHub release job publishes and verifies the archive before the tap and crate jobs start. A registry job accepts an existing version only when crates.io reports an unyanked archive whose SHA-256 matches the package built from that tag.
 

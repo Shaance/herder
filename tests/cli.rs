@@ -17,6 +17,10 @@ mod durability;
 mod handoff;
 #[path = "cases/lifecycle.rs"]
 mod lifecycle;
+#[path = "cases/observations.rs"]
+mod observations;
+#[path = "cases/protected_dispatch.rs"]
+mod protected_dispatch;
 #[path = "cases/workflow.rs"]
 mod workflow;
 

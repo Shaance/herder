@@ -21,6 +21,10 @@ case "$HERDER_TEST_WORKER" in
         done
         [[ -f "$HERDER_STATE_DIR/release-worker" ]]
         ;;
+    implement)
+        mkdir -p src
+        printf 'fixture change\n' > src/implemented.txt
+        ;;
 esac
 
 printf 'A finding from the recorded review.\n' > "$report"

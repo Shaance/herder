@@ -1,25 +1,99 @@
-mod review;
+mod checkout;
+mod dispatch;
+mod wait;
+mod writer;
 
 use crate::{Companion, StatusArgs};
 use anyhow::{Context, Result, bail, ensure};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{ffi::OsStr, path::PathBuf, process::Command};
+use std::{
+    ffi::OsStr,
+    fmt,
+    num::NonZeroU32,
+    path::PathBuf,
+    process::{Command, ExitStatus},
+};
 
 const INCOMPLETE_LOOKUP: &str =
     "Some Herder records could not be read. Run lookup is incomplete for the configured checkout";
-const RUN_LOOKUP_FAILED: &str = "Could not resolve or read this run in the configured checkout";
+const CLI_PROTOCOL_ERROR: HerderUnavailable =
+    HerderUnavailable("Herder returned an invalid JSON response. Check that Herder and herder-mcp are compatible");
+const CLI_START_ERROR: HerderUnavailable =
+    HerderUnavailable("Could not start Herder. Check the configured executable and checkout directory");
+
+#[derive(Debug)]
+pub struct HerderUnavailable(&'static str);
+
+impl fmt::Display for HerderUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for HerderUnavailable {}
+
+#[derive(Debug)]
+pub struct RunNotFound;
+
+impl fmt::Display for RunNotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Could not resolve or read this run in the configured checkout")
+    }
+}
+
+impl std::error::Error for RunNotFound {}
 
 #[derive(Deserialize)]
 struct Envelope {
     ok: bool,
     data: Value,
     error: Option<String>,
+    #[serde(skip)]
+    exit_code: i32,
 }
 
 impl Envelope {
+    fn parse(status: ExitStatus, stdout: &[u8]) -> Result<Self> {
+        let exit_code =
+            status.code().context(HerderUnavailable("Herder exited unexpectedly. Check the configured executable"))?;
+        let mut reply: Self = serde_json::from_slice(stdout).map_err(|_| CLI_PROTOCOL_ERROR)?;
+        ensure!(reply.ok == (exit_code == 0), CLI_PROTOCOL_ERROR);
+        reply.exit_code = exit_code;
+        Ok(reply)
+    }
+
+    fn observation(self) -> Result<Self> {
+        ensure!(
+            self.exit_code != 2,
+            HerderUnavailable(
+                "Herder rejected the observation command. Check that Herder and herder-mcp are compatible"
+            )
+        );
+        ensure!(
+            self.error.is_none() && self.exit_code <= 1,
+            HerderUnavailable(
+                "Herder could not complete the observation. Check the configured checkout, Git, and state directory with the Herder CLI"
+            )
+        );
+        Ok(self)
+    }
+
+    fn exact_observation(self) -> Result<Self> {
+        let reply = self.observation()?;
+        if reply.data["outcome"] == "not_found" {
+            ensure!(!reply.ok, CLI_PROTOCOL_ERROR);
+            bail!(RunNotFound);
+        }
+        Ok(reply)
+    }
+
     fn diagnostic(&self) -> &str {
         self.error.as_deref().or_else(|| self.data["message"].as_str()).unwrap_or("Herder command failed")
+    }
+
+    fn decode<T: serde::de::DeserializeOwned>(self) -> Result<T> {
+        serde_json::from_value(self.data).map_err(|_| anyhow::anyhow!(CLI_PROTOCOL_ERROR))
     }
 }
 
@@ -27,12 +101,12 @@ impl Envelope {
 struct Run {
     id: String,
     repo: PathBuf,
-    attempt: u32,
+    attempt: NonZeroU32,
     launch: Launch,
 }
 
 impl Run {
-    fn observed_attempt(&self) -> u32 {
+    fn observed_attempt(&self) -> NonZeroU32 {
         match self.launch {
             Launch::PendingResume { attempt } => attempt,
             Launch::Other => self.attempt,
@@ -44,7 +118,7 @@ impl Run {
 #[serde(tag = "state", rename_all = "snake_case")]
 enum Launch {
     PendingResume {
-        attempt: u32,
+        attempt: NonZeroU32,
     },
     #[serde(other)]
     Other,
@@ -53,7 +127,7 @@ enum Launch {
 #[derive(Deserialize)]
 struct ObservedRun {
     run: Run,
-    observation: Value,
+    observation: Observation,
     report: Option<Report>,
 }
 
@@ -66,11 +140,36 @@ impl ObservedRun {
     }
 }
 
+#[derive(Deserialize, Serialize)]
+struct Observation {
+    state: WorkerState,
+    evidence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cause: Option<String>,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum WorkerState {
+    Starting,
+    Running,
+    Blocked,
+    Finished,
+    Failed,
+    Stopped,
+    Unknown,
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Report {
-    Available { content: String },
-    Missing { message: String },
+    Available {
+        content: String,
+    },
+    Missing {
+        #[serde(rename = "message")]
+        _message: String,
+    },
 }
 
 #[derive(Deserialize)]
@@ -81,8 +180,8 @@ struct Listing {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ListEntry {
-    Readable { run: NamedRun, observation: Value },
-    Unreadable(serde::de::IgnoredAny),
+    Readable { run: NamedRun, observation: Observation },
+    Unreadable { outcome: String },
 }
 
 #[derive(Deserialize)]
@@ -99,17 +198,19 @@ struct NameLookup {
 }
 
 impl Companion {
+    fn cli_command(&self, args: &[&OsStr]) -> Command {
+        let mut command = Command::new(&self.herder);
+        command.current_dir(&self.repo).arg("--json").args(args);
+        command
+    }
+
     fn cli(&self, args: &[&OsStr]) -> Result<Envelope> {
-        let output = Command::new(&self.herder)
-            .current_dir(&self.repo)
-            .arg("--json")
-            .args(args)
-            .output()
-            .context("run the configured Herder executable")?;
-        serde_json::from_slice(&output.stdout).with_context(|| {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            format!("Herder returned no valid JSON envelope ({}) {}", output.status, stderr.trim())
-        })
+        let output = self.cli_command(args).output().map_err(|_| CLI_START_ERROR)?;
+        Envelope::parse(output.status, &output.stdout)
+    }
+
+    fn observation_cli(&self, args: &[&OsStr]) -> Result<Envelope> {
+        self.cli(args)?.observation()
     }
 
     pub fn read_status(&self, args: StatusArgs) -> Result<Value> {
@@ -132,11 +233,10 @@ impl Companion {
 
     pub fn read_report(&self, id: &str) -> Result<Value> {
         let entry = self.read_run("report", id)?;
-        let report = entry.report.context("Herder report response is missing the report field")?;
+        let report = entry.report.context(CLI_PROTOCOL_ERROR)?;
         let (outcome, message, content) = match report {
             Report::Available { content } if !content.is_empty() => ("available", None, Some(content)),
-            Report::Available { .. } => ("missing", Some("no report yet".into()), None),
-            Report::Missing { message } => ("missing", Some(message), None),
+            Report::Available { .. } | Report::Missing { .. } => ("missing", Some("no report yet"), None),
         };
         let mut result = json!({
             "outcome": outcome, "message": message, "run_id": entry.run.id,
@@ -150,34 +250,50 @@ impl Companion {
     }
 
     fn read_run(&self, action: &str, id: &str) -> Result<ObservedRun> {
+        let reply = self.observe_exact_run(action, id, &[])?;
+        let ok = reply.ok;
+        let entry: ObservedRun = reply.decode()?;
+        ensure!(entry.run.id == id && entry.run.repo == self.repo, CLI_PROTOCOL_ERROR);
+        let missing_report = matches!(entry.report, Some(Report::Missing { .. }));
+        ensure!(ok || (action == "report" && missing_report), CLI_PROTOCOL_ERROR);
+        Ok(entry)
+    }
+
+    fn observe_exact_run(&self, action: &str, id: &str, flags: &[&OsStr]) -> Result<Envelope> {
+        self.cli(&self.exact_args(action, id, flags)?)?.exact_observation()
+    }
+
+    fn exact_args<'a>(&'a self, action: &'a str, id: &'a str, flags: &[&'a OsStr]) -> Result<Vec<&'a OsStr>> {
         ensure!(!id.trim().is_empty(), "run_id must be nonempty");
-        let reply =
-            self.cli(&[action.as_ref(), "--".as_ref(), id.as_ref()]).map_err(|_| anyhow::anyhow!(RUN_LOOKUP_FAILED))?;
-        // Herder also accepts names and its failed selector diagnostics search every checkout.
-        let run = &reply.data["run"];
-        let repo = run["repo"].as_str().map(std::path::Path::new);
-        ensure!(run["id"].as_str() == Some(id) && repo == Some(self.repo.as_path()), RUN_LOOKUP_FAILED);
-        let missing_report = action == "report" && reply.error.is_none() && reply.data["report"]["message"].is_string();
-        if !reply.ok && !missing_report {
-            bail!("{}", reply.diagnostic());
-        }
-        serde_json::from_value(reply.data).context("decode Herder run")
+        ensure!(!id.contains('\0'), RunNotFound);
+        let mut args = vec![action.as_ref(), "--repo".as_ref(), self.repo.as_os_str()];
+        args.extend_from_slice(flags);
+        args.extend_from_slice(&["--".as_ref(), id.as_ref()]);
+        Ok(args)
     }
 
     fn lookup(&self, goal: &str, name: &str) -> Result<NameLookup> {
         validate_label("goal", goal)?;
         validate_label("name", name)?;
-        let reply = self.cli(&["ls".as_ref(), format!("--goal={goal}").as_ref()])?;
-        ensure!(reply.ok, "{}", reply.diagnostic());
-        let listing: Listing = serde_json::from_value(reply.data).context("decode Herder listing")?;
+        let reply = self.observation_cli(&[
+            "ls".as_ref(),
+            "--repo".as_ref(),
+            self.repo.as_os_str(),
+            format!("--goal={goal}").as_ref(),
+        ])?;
+        ensure!(reply.ok, CLI_PROTOCOL_ERROR);
+        let listing: Listing = reply.decode()?;
         let mut lookup = NameLookup::default();
         for entry in listing.runs {
             match entry {
-                ListEntry::Readable { run, observation } if run.run.repo == self.repo && run.name == name => {
-                    lookup.matches.push(ObservedRun { run: run.run, observation, report: None });
+                ListEntry::Readable { run, observation } => {
+                    ensure!(run.run.repo == self.repo, CLI_PROTOCOL_ERROR);
+                    if run.name == name {
+                        lookup.matches.push(ObservedRun { run: run.run, observation, report: None });
+                    }
                 }
-                ListEntry::Unreadable(_) => lookup.incomplete = true,
-                _ => {}
+                ListEntry::Unreadable { outcome } if outcome == "incomplete" => lookup.incomplete = true,
+                ListEntry::Unreadable { .. } => bail!(CLI_PROTOCOL_ERROR),
             }
         }
         Ok(lookup)

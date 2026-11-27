@@ -172,6 +172,15 @@ pub struct FreshVerification {
     pub attempt: NonZeroU32,
     pub reused_from: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ProtectedVerification {
+    pub attempt: NonZeroU32,
+    pub timestamp: String,
+    pub scope: Check,
+    pub host_check: Option<Check>,
+    pub verdict: Verdict,
+}
 fn first_attempt() -> NonZeroU32 {
     NonZeroU32::MIN
 }
@@ -195,6 +204,10 @@ pub struct Run {
     #[serde(default)]
     pub request_attempts: std::collections::BTreeMap<String, NonZeroU32>,
     pub authorized_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accept_with: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_verification: Option<ProtectedVerification>,
     pub verifications: Vec<Verification>,
     pub created_at: String,
 }

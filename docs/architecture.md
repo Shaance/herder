@@ -135,4 +135,6 @@ launch alone cannot transfer hidden conversation or prove understanding. See
 
 ## Design rules
 
+The local MCP companion exposes the same checkout and run records to several clients. The host owns routing and write permission. The CLI owns request replay and verification. [MCP delegation decision](decisions/0002-mcp-delegation.md)
+
 - When parsing input, resolving identity, or committing a result establishes a fact, pass that fact to its consumer in the type instead of re-deriving it, re-reading it, or calling `expect`. Add a type only when it deletes an existing re-check, re-read or `expect`. The rule covers facts herder itself established; checks of external state that can change, such as executor files and the process table, stay where the state is used.

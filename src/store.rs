@@ -2,7 +2,7 @@ use crate::{domain::Run, process::home};
 use anyhow::{Context, Result, ensure};
 use std::{
     env, fmt, fs,
-    io::Read,
+    io::{ErrorKind, Read},
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime},
 };
@@ -25,6 +25,18 @@ impl fmt::Display for RunId {
 pub struct Store {
     pub root: PathBuf,
 }
+
+#[derive(Debug)]
+pub struct ScopedNotFound;
+
+impl fmt::Display for ScopedNotFound {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("could not find this run in the configured directory")
+    }
+}
+
+impl std::error::Error for ScopedNotFound {}
+
 pub struct LockedRun {
     pub dir: PathBuf,
     pub root: PathBuf,
@@ -86,18 +98,81 @@ impl Store {
         );
         Ok(matches.remove(0))
     }
+
+    pub fn observation_id(&self, value: &str, scoped: bool) -> Result<RunId> {
+        if !scoped {
+            return self.resolve(value);
+        }
+        let id = RunId::parse(value).ok_or(ScopedNotFound)?;
+        self.run_dirs()?;
+        Ok(id)
+    }
+
+    pub fn load_in_repo(&self, id: &RunId, repo: &Path) -> Result<Run> {
+        self.load(id).ok().filter(|run| run.repo == repo).ok_or_else(|| ScopedNotFound.into())
+    }
+
+    pub fn read_for_observation(
+        &self,
+        id: &RunId,
+        repo: Option<&Path>,
+        goal: Option<&str>,
+    ) -> Result<Option<(Option<LockedRun>, Run)>> {
+        let matches = |run: &Run| {
+            repo.is_none_or(|repo| run.repo == repo) && goal.is_none_or(|goal| run.goal.as_deref() == Some(goal))
+        };
+        let load = || self.load(id).map_err(|error| if repo.is_some() { ScopedNotFound.into() } else { error });
+        // Opening a lock can create the lock file. Check the scope before doing so.
+        let preview = if repo.is_some() {
+            let run = load()?;
+            if !matches(&run) {
+                return Ok(None);
+            }
+            Some(run)
+        } else {
+            None
+        };
+        let lock = self.try_lock(id)?;
+        let run = match preview {
+            Some(run) if lock.is_none() => run,
+            _ => load()?,
+        };
+        Ok(matches(&run).then_some((lock, run)))
+    }
     pub fn dir(&self, id: &RunId) -> PathBuf {
         self.root.join("runs").join(&id.0)
     }
     pub fn create(&self) -> Result<(RunId, LockedRun)> {
-        let mut bytes = [0; 2];
-        fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-        let (y, mo, d, h, mi, s) = utc(SystemTime::now());
-        let id = RunId(format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{:02x}{:02x}", bytes[0], bytes[1]));
         fs::create_dir_all(self.root.join("runs"))?;
+        let mut random = fs::File::open("/dev/urandom")?;
+        loop {
+            let mut bytes = [0; 2];
+            random.read_exact(&mut bytes)?;
+            let (y, mo, d, h, mi, s) = utc(SystemTime::now());
+            let id = RunId(format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{:02x}{:02x}", bytes[0], bytes[1]));
+            if let Some(staged) = self.stage(&id)? {
+                return Ok((id, staged));
+            }
+        }
+    }
+
+    fn stage(&self, id: &RunId) -> Result<Option<LockedRun>> {
         let dir = self.root.join("runs").join(format!(".{id}.pending"));
-        fs::create_dir(&dir)?;
-        Ok((id, LockedRun::try_acquire(dir, &self.root)?.context("new run is already locked")?))
+        match fs::create_dir(&dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => return Ok(None),
+            Err(error) => return Err(error.into()),
+        }
+        // Once this staging name is ours, no other allocator can publish this candidate.
+        match fs::symlink_metadata(self.dir(id)) {
+            Ok(_) => {
+                fs::remove_dir(&dir)?;
+                return Ok(None);
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(Some(LockedRun::try_acquire(dir, &self.root)?.context("new run is already locked")?))
     }
     pub fn publish(&self, locked: &mut LockedRun, run: &Run, dir: &Path) -> Result<()> {
         locked.save(run)?;
@@ -130,12 +205,11 @@ impl Store {
         load(&self.dir(id))
     }
     pub fn runs(&self) -> Result<Vec<Result<RunId, String>>> {
-        let path = self.root.join("runs");
-        if !path.exists() {
+        let Some(entries) = self.run_dirs()? else {
             return Ok(vec![]);
-        }
+        };
         let mut runs = vec![];
-        for entry in fs::read_dir(path)? {
+        for entry in entries {
             let entry = entry?;
             if entry.file_type()?.is_dir() && !entry.file_name().to_string_lossy().starts_with('.') {
                 runs.push(entry.file_name().to_string_lossy().into_owned());
@@ -143,6 +217,14 @@ impl Store {
         }
         runs.sort();
         Ok(runs.into_iter().map(|name| RunId::parse(&name).ok_or(name)).collect())
+    }
+
+    fn run_dirs(&self) -> Result<Option<fs::ReadDir>> {
+        match fs::read_dir(self.root.join("runs")) {
+            Ok(entries) => Ok(Some(entries)),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error).context("cannot read Herder runs directory"),
+        }
     }
 }
 pub fn load(dir: &Path) -> Result<Run> {
@@ -176,16 +258,32 @@ pub fn copy(source: &Path, dest: &Path) -> Result<PathBuf> {
     Ok(dest.to_path_buf())
 }
 
+#[derive(Debug)]
+pub struct RepoNotRoot(PathBuf);
+
+impl std::fmt::Display for RepoNotRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "--repo must be the repository root: {}", self.0.display())
+    }
+}
+
+impl std::error::Error for RepoNotRoot {}
+
 pub fn repo(path: &Path) -> Result<PathBuf> {
-    let path = fs::canonicalize(path)?;
-    ensure!(path.is_dir(), "repo must be a directory");
+    let path = directory(path)?;
     let top = crate::process::checked(
         std::process::Command::new("git").arg("-C").arg(&path).args(["rev-parse", "--show-toplevel"]),
     );
     if let Ok(top) = top {
         let top = fs::canonicalize(top.trim())?;
-        ensure!(top == path, "--repo must be the repository root: {}", top.display());
+        ensure!(top == path, RepoNotRoot(top));
     }
+    Ok(path)
+}
+
+pub fn directory(path: &Path) -> Result<PathBuf> {
+    let path = fs::canonicalize(path)?;
+    ensure!(path.is_dir(), "repo must be a directory");
     Ok(path)
 }
 pub fn report(path: &Path) -> Result<Option<String>> {
@@ -199,6 +297,23 @@ pub fn report(path: &Path) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn staging_never_reuses_a_published_or_reserved_candidate() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store { root: temp.path().into() };
+        let id = RunId("20261126-163000-abcd".into());
+        fs::create_dir_all(store.dir(&id)).unwrap();
+        let pending = store.root.join("runs/.20261126-163000-abcd.pending");
+        assert!(store.stage(&id).unwrap().is_none());
+        assert!(!pending.exists());
+        fs::remove_dir(store.dir(&id)).unwrap();
+        let staged = store.stage(&id).unwrap().unwrap();
+        assert_eq!(staged.dir, pending);
+        drop(staged);
+        assert!(store.stage(&id).unwrap().is_none());
+        assert!(pending.is_dir());
+    }
 
     #[test]
     fn utc_preserves_calendar_boundaries_and_truncates_to_seconds() {

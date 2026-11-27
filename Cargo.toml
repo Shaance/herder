@@ -1,6 +1,6 @@
 [package]
 name = "herder"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "Dispatch, track and verify agent workers (Claude, Vibe, Codex) from any coordinating agent"
 repository = "https://github.com/Shaance/herder"
@@ -17,5 +17,6 @@ anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha2 = "0.10.9"
 tempfile = "3.27.0"
 time = { version = "0.3.55", default-features = false }

@@ -20,6 +20,8 @@ Run writes use temporary files and rename under a per-run `run.lock` advisory lo
 
 Dispatch prepares `.ID.pending/` and publishes the directory only with `run.json`. Interrupted preparation can leave a hidden staging directory, which `ls` ignores. Broken published directories appear as individual errors in `ls` alongside healthy runs.
 
+On a single `dispatch`, supply `--request-id KEY` to make retries reuse the first run ID. Herder stores an immutable receipt in `requests/` before publishing the run or starting the worker. All clients must share the same state directory for this guarantee. If the process stops between reservation and publication, the receipt still identifies the reserved run. Inspect the state directory before deciding whether to issue a fresh work order with a new key.
+
 Scripts are embedded in the binary. Set `HERDER_SKILLS_DIR` to an ai-skills-shaped directory containing `<owner>/scripts/<name>.sh` to override them.
 
 ## Names and run IDs
@@ -27,6 +29,10 @@ Scripts are embedded in the binary. Set `HERDER_SKILLS_DIR` to an ai-skills-shap
 `status`, `report`, `stop`, `resume`, `verify` and `wait` accept a run ID or a unique dispatch `--name`. Existing IDs take precedence. Ambiguous names list their matches. Unknown names list similar names if any exist; otherwise herder suggests `herder ls`. Human dispatch output includes both ID and name.
 
 ## Status and tail
+
+For a client bound to one checkout, `herder context --repo PATH --json` returns the canonical configured directory and the Git worktree root, branch, HEAD, and Herder state directory. A linked worktree has its own root even if another worktree points at the same commit. `checkout_state` distinguishes an attached branch, detached HEAD, unborn branch and non-Git directory.
+
+Pass `--repo ROOT` to `status`, `report`, or `wait` to observe an exact run ID in that checkout. An absent or foreign ID returns the same `data.outcome` of `not_found`. Scoped `ls` filters by checkout before observing workers. If a record cannot be attributed, the listing indicates that it may be incomplete.
 
 `herder status <run> --tail <N>` shows the current launch attempt's last N event-stream lines, where N is 1 to 1000. Lines are capped at 500 characters each. JSON adds `data.tail`. Missing streams and Claude's lack of a herder-recorded stream are explained without changing status or exit codes.
 
@@ -96,6 +102,8 @@ Stop requires a running or blocked worker with a matching recorded identity. Cla
 If Herder refuses to stop a live Codex candidate because its thread ID conflicts, inspect the process, stop it manually, and dispatch a fresh run.
 
 ## Verify, scope and baseline
+
+For a protected direct Codex work order, include `--request-id KEY --expected-head FULL_SHA --accept-with /absolute/check` and one or more `--path` values on `dispatch`. Herder requires a clean Git worktree and binds the original attempt to that baseline and executable. Codex has workspace write access. Herder uses the prefixes to audit Git-visible changes after execution and leaves edits in the worktree if verification fails. After the worker finishes, run `herder verify ID --repo ROOT --path ALLOWED_PREFIX --accept-with /absolute/check --json`. Supply the path prefixes that the host currently authorizes. Herder verifies eligibility before it runs the checker. It records the first completed verdict, including the attempt, scope audit and host check. Later calls return that receipt even if the files change. Run `herder status ID` to see the worker state and protected acceptance verdict, or add `--json` for the saved check details.
 
 A report is never proof. Verification is separate from lifecycle and approval. Dispatch records the Git baseline commit. Verification checks committed, staged, unstaged and untracked paths against that baseline, then runs the evidence script and requested commands. Records without a baseline load, but scope verification fails explicitly. A verdict belongs to its attempt; a resumed attempt starts unverified.
 

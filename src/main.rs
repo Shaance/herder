@@ -1,6 +1,9 @@
 mod claude;
+mod context;
+mod dispatch_request;
 mod doctor;
 mod domain;
+mod guard;
 mod handlers;
 mod handoff;
 mod process;
@@ -10,6 +13,7 @@ mod runs;
 mod scripts;
 mod store;
 mod verify;
+mod writer_slot;
 use clap::{Args, Parser, Subcommand};
 use domain::Executor;
 use std::path::PathBuf;
@@ -30,6 +34,12 @@ struct Cli {
 enum Action {
     #[command(hide = true)]
     ClaudeStopHook { dir: PathBuf },
+    #[command(about = "Show the configured directory, Git checkout, and Herder state directory")]
+    Context {
+        /// Configured checkout directory
+        #[arg(long)]
+        repo: PathBuf,
+    },
     #[command(
         about = "Check executors, profiles and Rex",
         after_help = "Example: herder doctor --executor claude --profile ~/.claude"
@@ -69,13 +79,16 @@ enum Action {
         /// Match the exact goal string recorded at dispatch
         #[arg(long)]
         goal: Option<String>,
+        /// Only observe runs recorded for this directory
+        #[arg(long)]
+        repo: Option<PathBuf>,
     },
     #[command(
         about = "Wait for any or all runs to settle",
         after_help = "Example: herder wait 20261101-120000-abcd 20261101-120001-ef01 --all --timeout 60\nSettled states: finished, failed, stopped, blocked. Exits 0 if all settled runs at return are finished.\nExits 1 if a settled run failed, stopped or blocked, or if the wait times out.\nPolls every 5 seconds; final output includes every run and its report path. At timeout, stderr (or JSON progress) shows the last available evidence for each unsettled attempt."
     )]
     Wait {
-        /// Run ids or unique dispatch names to observe
+        /// Run IDs or unique dispatch names. With --repo, only exact run IDs are accepted
         #[arg(required = true, num_args = 1..)]
         runs: Vec<String>,
         /// Wait for all runs instead of any run
@@ -84,25 +97,34 @@ enum Action {
         /// Maximum wait in seconds
         #[arg(long, default_value = "3600")]
         timeout: u64,
+        /// Only observe runs recorded for this directory
+        #[arg(long)]
+        repo: Option<PathBuf>,
     },
     #[command(
         about = "Query a run's current executor status",
         after_help = "Example: herder status 20261101-120000-abcd\nStates: starting, running, blocked, finished, failed, stopped, unknown.\nUnknown means unresolved evidence (e.g. an identity mismatch or failed query); inspect evidence before acting."
     )]
     Status {
-        /// Run id or unique dispatch name
+        /// Run ID or unique dispatch name. With --repo, only an exact run ID is accepted
         run: String,
         /// Show the last N event-stream lines (1-1000), capped at 500 characters each
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u16).range(1..=1000))]
         tail: Option<u16>,
+        /// Only observe runs recorded for this directory
+        #[arg(long)]
+        repo: Option<PathBuf>,
     },
     #[command(
         about = "Read the current attempt's report",
         after_help = "Example: herder report 20261101-120000-abcd\nReads final.md (attempt 1), final2.md, etc. from $HERDER_STATE_DIR/runs/<id>.\nFor Codex, final.md contains the last agent message (codex exec -o).\nThe current attempt is the latest accepted attempt; a pending resume keeps the previous report current."
     )]
     Report {
-        /// Run id or unique dispatch name
+        /// Run ID or unique dispatch name. With --repo, only an exact run ID is accepted
         run: String,
+        /// Only observe runs recorded for this directory
+        #[arg(long)]
+        repo: Option<PathBuf>,
     },
     #[command(
         about = "Stop the exact recorded worker",
@@ -131,12 +153,18 @@ enum Action {
         after_help = "Example: herder verify 20261101-120000-abcd --path src/ --check 'cargo test --offline'"
     )]
     Verify {
+        /// Exact checkout directory for protected verification
+        #[arg(long, requires = "accept_with")]
+        repo: Option<PathBuf>,
+        /// The host check configured at protected dispatch
+        #[arg(long, requires_all = ["repo", "paths"], conflicts_with_all = ["baseline", "checks"])]
+        accept_with: Option<PathBuf>,
         /// Replace the recorded scope baseline with this commit revision
         #[arg(long)]
         baseline: Option<String>,
         /// Run id or unique dispatch name
         run: String,
-        /// Authorized path prefix (repeatable); required if none were recorded at dispatch
+        /// Prefix for auditing Git-visible changes (repeatable). Protected verification requires the host's allowed prefixes.
         #[arg(long = "path")]
         paths: Vec<String>,
         /// Shell command to verify in the repository (repeatable). When omitted, reuse the latest recorded commands from this run. If it has none, use the latest commands from another run with the same goal and repository, when available.
@@ -175,8 +203,20 @@ struct DispatchArgs {
     profile: Option<PathBuf>,
     #[arg(long, help = "Show worker in Rex; Vibe/Codex panes use herder wait")]
     pane: bool,
-    #[arg(long = "path", help = "Authorized path prefix for verification evidence (repeatable)")]
+    #[arg(long = "path", help = "Allowed prefix for the post-run Git change audit (repeatable)")]
     paths: Vec<String>,
+    /// Reserve one initial dispatch per checkout and request ID
+    #[arg(long)]
+    request_id: Option<String>,
+    /// Absolute host check for a protected Codex launch with workspace write access
+    #[arg(long, requires_all = ["request_id", "expected_head"])]
+    accept_with: Option<PathBuf>,
+    /// Require the checkout to start at this exact commit
+    #[arg(long)]
+    expected_head: Option<String>,
+    /// Require the checkout to be on this branch
+    #[arg(long)]
+    expected_branch: Option<String>,
     /// Arguments passed to the executor after -- (repeatable)
     #[arg(last = true)]
     extra: Vec<String>,
