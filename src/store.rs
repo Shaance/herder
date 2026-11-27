@@ -305,6 +305,10 @@ pub fn report(path: &Path) -> Result<Option<String>> {
     }
 }
 
+pub fn nonempty_report_metadata(path: &Path) -> Option<fs::Metadata> {
+    fs::metadata(path).ok().filter(|file| file.is_file() && file.len() > 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

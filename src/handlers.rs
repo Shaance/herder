@@ -687,6 +687,50 @@ enum Input {
     Generated(Vec<u8>),
 }
 
+enum WaitRegistration {
+    Script { _resume: crate::program_resume::Resume },
+    AwaitingClaude(crate::program_resume::Terminal),
+    Claude { resume: crate::program_resume::Resume, repo: PathBuf, native: Native },
+}
+
+fn update_claude_registration(
+    registration: &mut Option<WaitRegistration>,
+    run: &Run,
+    observation: &Observation,
+    refreshed: bool,
+    dir: &Path,
+) {
+    let confirmed = match &run.launch {
+        Launch::Launched {
+            native: native @ Native::Claude { id, session_id, .. },
+            intent: Intent::Running | Intent::Unconfirmed { .. },
+        } if !id.is_empty() && !session_id.is_empty() => Some(native),
+        _ => None,
+    };
+    if let Some(WaitRegistration::Claude { resume, repo, native }) = registration {
+        if run.repo != *repo
+            || confirmed != Some(native)
+            || matches!(observation.cause(), Some(UnknownCause::IdentityMismatch))
+        {
+            resume.set_eligible(false);
+        } else if refreshed && observation.state() == State::Running {
+            resume.set_eligible(true);
+        }
+    }
+    if refreshed
+        && observation.state() == State::Running
+        && let Some(native) = confirmed
+        && matches!(registration, Some(WaitRegistration::AwaitingClaude(_)))
+        && let Some(WaitRegistration::AwaitingClaude(terminal)) = registration.take()
+    {
+        *registration = terminal.register(dir).map(|resume| WaitRegistration::Claude {
+            resume,
+            repo: run.repo.clone(),
+            native: native.clone(),
+        });
+    }
+}
+
 fn wait(
     store: &Store,
     ids: &[RunId],
@@ -701,9 +745,7 @@ fn wait(
         && !all
         && !json_output
         && timeout == crate::DEFAULT_WAIT_TIMEOUT
-        && source.override_dir().is_none()
         && let Some(terminal) = crate::program_resume::Terminal::open()
-        && crate::scripts::require_status_tools(source).is_ok()
     {
         let dir = store.dir(id);
         (|| {
@@ -716,16 +758,20 @@ fn wait(
             let executor = match run.launch.target() {
                 Target::Codex => crate::scripts::ScriptExecutor::CODEX,
                 Target::Vibe => crate::scripts::ScriptExecutor::VIBE,
-                Target::Claude { .. } => return None,
+                Target::Claude { .. } => return Some((pinned, WaitRegistration::AwaitingClaude(terminal))),
             };
+            if source.override_dir().is_some() {
+                return None;
+            }
+            crate::scripts::require_status_tools(source).ok()?;
             executor.status_dir(&run, &canonical).ok()?;
-            Some((pinned, terminal.register(&canonical)?))
+            Some((pinned, WaitRegistration::Script { _resume: terminal.register(&canonical)? }))
         })()
     } else {
         None
     };
-    let (observed_store, source) =
-        replay.as_ref().map_or((store, source), |(pinned, _)| (pinned, ScriptSource::Embedded));
+    let (pinned, mut registration) = replay.unzip();
+    let (observed_store, source) = pinned.as_ref().map_or((store, source), |pinned| (pinned, ScriptSource::Embedded));
     let started = Instant::now();
     let timeout = Duration::from_secs(timeout);
     let deadline = if let Some(repo) = repo {
@@ -738,6 +784,7 @@ fn wait(
     };
     let interval = if repo.is_some() { Duration::from_secs(5).min(timeout / 3) } else { Duration::from_secs(5) };
     let mut previous = vec![None; ids.len()];
+    let mut reported = vec![None; ids.len()];
     loop {
         let mut data = Vec::with_capacity(ids.len());
         let (mut settled, mut finished, mut unknown) = (0, 0, false);
@@ -745,6 +792,12 @@ fn wait(
             // The guard is dropped at the end of this iteration, before sleeping.
             let (locked, mut run) = observed_store.read_for_observation(id, repo, None)?.ok_or(ScopedNotFound)?;
             let observation = runs::observe_until(&mut run, locked.as_ref(), deadline, source);
+            let refreshed = locked.is_some();
+            drop(locked);
+            let dir = observed_store.dir(id);
+            if matches!(registration, Some(WaitRegistration::AwaitingClaude(_) | WaitRegistration::Claude { .. })) {
+                update_claude_registration(&mut registration, &run, &observation, refreshed, &dir);
+            }
             let state = observation.state();
             if previous[index] != Some(state) {
                 if !json_output {
@@ -752,10 +805,27 @@ fn wait(
                 }
                 previous[index] = Some(state);
             }
+            if !json_output
+                && matches!(run.launch.target(), Target::Claude { .. })
+                && (state == State::Running || reported[index].is_some())
+            {
+                let attempt = run.launch_attempt();
+                let path = dir.join(run.launch_report_name());
+                if store::nonempty_report_metadata(&path).is_none() {
+                    reported[index] = None;
+                } else if refreshed
+                    && state == State::Running
+                    && reported[index] != Some(attempt)
+                    && store::report(&path).is_ok_and(|content| content.is_some_and(|text| !text.is_empty()))
+                {
+                    eprintln!("{id} attempt {attempt}: report available at {}", path.to_string_lossy().escape_debug());
+                    reported[index] = Some(attempt);
+                }
+            }
             settled += usize::from(matches!(state, State::Finished | State::Failed | State::Stopped | State::Blocked));
             finished += usize::from(state == State::Finished);
             unknown |= state == State::Unknown;
-            data.push((run, observation, observed_store.dir(id), locked.is_some()));
+            data.push((run, observation, dir, refreshed));
         }
         let met = if all { settled == ids.len() } else { settled > 0 };
         // A status query can time out under load; only an unknown that outlasts the wait is reported.

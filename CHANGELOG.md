@@ -4,6 +4,11 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+## 0.6.1 (2026-11-27)
+
+- Interactive `herder wait` now supports terminal restoration for a confirmed Claude worker. The restored wait observes the same recorded worker.
+- `herder wait` shows the report path when a running Claude worker saves a readable report. The wait continues tracking the worker.
+
 ## 0.6.0 (2026-11-27)
 
 - Terminals that support the Program Resume Protocol (OSC 7577) can reopen a foreground `herder wait` for one Codex or Vibe run after a restart. The monitor reconnects to the original run, even if you started the wait by name or changed your working directory. Rex users can opt in with a trust rule.

@@ -1113,6 +1113,43 @@ fn only_supported_waits_register_on_their_controlling_terminal() {
 }
 
 #[test]
+fn claude_wait_registers_only_after_a_fresh_worker_match() {
+    let f = Fixture::new();
+    let name = "Claude worker monitor";
+    let session = "8347a7ea-43e1-4b81-a8a2-b5b68fb370a2";
+    let profile = f.root.join("saved profile");
+    f.agents("busy", "working", session);
+    let dispatch = f.dispatch("claude", &["--name", name, "--profile", profile.to_str().unwrap()], 0);
+    let id = dispatch["data"]["run_id"].as_str().unwrap();
+    fs::remove_file(f.bin.join("jq")).unwrap();
+    f.executable(
+        &f.bin.join("claude"),
+        r#"printf '%s\t%s\t%s\n' "${CLAUDE_CONFIG_DIR-unset}" "$PWD" "$*" >> "$CLAUDE_FIXTURE/agents-calls"
+test "$*" = 'agents --json --all'
+test -z "${OSC7577_TOKEN+x}"
+/bin/cat "$CLAUDE_FIXTURE/agents.json""#,
+    );
+    let out = Command::new("/usr/bin/python3")
+        .env("OSC7577_TOKEN", "fixture-token-only-for-test")
+        .env_remove("REX_BLOCK")
+        .env_remove("REX_SESSION")
+        .env_remove("REX_SERVER")
+        .env("HERDER_STATE_DIR", &f.state)
+        .env("HERDER_SKILLS_DIR", f.root.join("decoy skills override"))
+        .env("CLAUDE_CONFIG_DIR", f.root.join("ambient profile"))
+        .env("CLAUDE_FIXTURE", &f.skills)
+        .env("PATH", &f.bin)
+        .current_dir(&f.root)
+        .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/wait_resume_claude.py"))
+        .arg(env!("CARGO_BIN_EXE_herder"))
+        .args([id, name])
+        .arg(f.dir(id))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+}
+
+#[test]
 fn foregrounding_a_wait_registers_and_pins_its_report_path() {
     let f = Fixture::new();
     let id = f.launch("codex");

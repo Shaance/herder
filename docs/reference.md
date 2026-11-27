@@ -42,13 +42,17 @@ Pass `--repo ROOT` to `status`, `report`, or `wait` to observe an exact run ID i
 
 `herder wait --run-dir PATH` observes one exact run. Supply its canonical absolute `STATE_DIR/runs/RUN_ID` path without positional targets or `--repo`. The run directory supplies the store and ID. Codex and Vibe observations in this mode use the embedded status adapters, regardless of `HERDER_SKILLS_DIR`.
 
+While a Claude worker is running, human `wait` output shows the report path on stderr when a poll finds a readable report for the observed attempt. The wait continues tracking the worker. For a pending resume, this notice can point to the new attempt's report while `herder report` still reads the last accepted attempt.
+
 On timeout, human stderr reports the last available progress for each unsettled attempt. JSON adds `data.runs[].progress` for those runs, with `attempt`, `kind` and, when available, `updated_at`, `age_seconds` or an unknown-state `cause`. A script executor can report `session_opened` when the session or thread opening is the only recorded activity. Timestamps and ages describe the event stream or Claude report file's last modification. Claude can also report that the executor says it is working without a timestamp. Wait omits command contents and event text from these diagnostics. An old or silent stream leaves the executor's current state intact.
 
 ### Terminal resume
 
-A foreground, interactive wait for one Codex or Vibe run can report a restart command to a terminal that supports the [Program Resume Protocol (OSC 7577)](https://www.superlogical.com/rex/docs/build/program-resume). Herder resolves the ID, unique name, or `--run-dir` first. The restart command uses the selected run's canonical directory and starts a fresh wait with the default timeout. The terminal decides whether to replay it. The restored terminal's `PATH` needs `jq` for bundled status checks. An exact-directory wait reports a missing `jq` before polling.
+A foreground, interactive wait for one run can report a restart command to a terminal that supports the [Program Resume Protocol (OSC 7577)](https://www.superlogical.com/rex/docs/build/program-resume). Herder resolves the ID, unique name, or `--run-dir` first. The restart command uses the selected run's canonical directory and starts a fresh wait with the default timeout. The terminal decides whether to replay it.
 
-Reporting applies to human output with the default timeout and embedded status scripts. Scoped waits, `--all`, multiple runs, and positional waits using `HERDER_SKILLS_DIR` continue as ordinary waits. Herder clears the record on completion or Ctrl-C and refreshes it when continued in the foreground. A hangup or termination leaves it available to the terminal. Herder keeps the protocol token out of child commands.
+For Claude, Herder reports after a fresh status check matches a running worker's recorded short ID, full session ID, and checkout under its saved profile. It withdraws the record if that identity becomes invalid or the worker enters a pending resume, and can publish it again after a fresh match to the same worker. The restored terminal needs `claude` on `PATH`. For Codex and Vibe, reporting uses the embedded status scripts and the restored terminal needs `jq` on `PATH`. An exact-directory wait for either scripted executor reports a missing `jq` before polling.
+
+Reporting applies to human output with the default timeout. Scoped waits, `--all`, multiple runs, and positional Codex or Vibe waits using `HERDER_SKILLS_DIR` continue as ordinary waits. Herder clears the record on completion or Ctrl-C and refreshes it when continued in the foreground. A hangup or termination leaves it available to the terminal. Herder keeps the protocol token out of child commands.
 
 ## List runs
 
@@ -151,7 +155,7 @@ Handoff launches a continuation only: it does not transfer hidden conversation, 
 
 [Rex](https://superlogical.com) is a macOS terminal in invite-only public beta. `--pane` opens a Claude attach pane or starts `herder wait` in a new pane for a Vibe or Codex worker. The initial wait pane closes when the wait exits. A restored wait can return to a shell and leave its output visible. Vibe and Codex launch and resume scripts receive no inherited `REX_SESSION`, `REX_BLOCK` or `REX_SERVER`.
 
-To opt in to restoring eligible Codex and Vibe waits after a Rex server restart, add a trust rule to your [Rex configuration](https://www.superlogical.com/rex/docs/customize/resume-rules).
+To opt in to restoring eligible waits after a Rex server restart, add a trust rule to your [Rex configuration](https://www.superlogical.com/rex/docs/customize/resume-rules).
 
 ```lua
 rex.set("resume.trust.herder_wait", {
