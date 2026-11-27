@@ -19,12 +19,15 @@ const WRONG_CODEX_STARTED: &str = "{\"type\":\"thread.started\",\"thread_id\":\"
 fn resume_codex_before_thread_started(f: &Fixture) -> String {
     let id = f.launch("codex");
     f.status("exited", "COMPLETED");
+    let stub = stub_body(&f.skills.join("codex-implementer/scripts/resume_classic.sh"));
+    let original = fs::read(&stub).unwrap();
     f.script(
         "codex-implementer",
         "resume_classic",
         "echo 43211 > \"$1/run.pid\"\necho 'state=alive pid=43211' > \"$HERDER_SKILLS_DIR/status\"\nexit 3",
     );
     f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+    fs::write(stub, original).unwrap();
     id
 }
 
@@ -162,8 +165,6 @@ fn codex_resume_blocks_verification_while_waiting_for_a_live_worker_to_open_its_
 #[test]
 fn codex_resume_failure_before_thread_started_settles_wait_and_advances_the_attempt() {
     let f = Fixture::new();
-    let stub = stub_body(&f.skills.join("codex-implementer/scripts/resume_classic.sh"));
-    let next = fs::read_to_string(&stub).unwrap().replace("43211", "43212");
     let id = resume_codex_before_thread_started(&f);
     fs::write(f.skills.join("status"), "state=exited pid=43211\nverdict: DIED\n").unwrap();
 
@@ -172,7 +173,7 @@ fn codex_resume_failure_before_thread_started_settles_wait_and_advances_the_atte
     assert_eq!(waited["data"]["message"], Value::Null);
     assert_eq!(f.record(&id)["attempt"], 2);
 
-    fs::write(stub, next).unwrap();
+    fs::write(f.skills.join("resume-pid"), "43212").unwrap();
     let resumed = f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
     assert_eq!(resumed["data"]["run"]["attempt"], 3);
     assert_eq!(resumed["data"]["run"]["launch"]["native"]["thread_id"], "native-1");
@@ -217,12 +218,10 @@ fn codex_resume_refuses_a_second_launch_before_the_first_publishes_its_pid() {
 #[test]
 fn codex_resume_recovers_a_late_matching_event_and_launches_the_next_attempt() {
     let f = Fixture::new();
-    let stub = stub_body(&f.skills.join("codex-implementer/scripts/resume_classic.sh"));
-    let next = fs::read_to_string(&stub).unwrap().replace("43211", "43212");
     let id = resume_codex_before_thread_started(&f);
     fs::write(f.dir(&id).join("events2.jsonl"), CODEX_STARTED).unwrap();
     fs::write(f.skills.join("status"), "state=exited pid=43211\nverdict: COMPLETED\n").unwrap();
-    fs::write(stub, next).unwrap();
+    fs::write(f.skills.join("resume-pid"), "43212").unwrap();
 
     let resumed = f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
     assert_eq!(resumed["data"]["run"]["attempt"], 3);
@@ -236,7 +235,7 @@ fn codex_resume_with_a_recorded_launch_error_can_retry_unless_the_thread_conflic
     let id = f.launch("codex");
     let dir = f.dir(&id);
     let stub = stub_body(&f.skills.join("codex-implementer/scripts/resume_classic.sh"));
-    let retry = fs::read_to_string(&stub).unwrap().replace("43211", "43212");
+    let original = fs::read(&stub).unwrap();
     f.status("exited", "COMPLETED");
     f.script(
         "codex-implementer",
@@ -249,7 +248,8 @@ fn codex_resume_with_a_recorded_launch_error_can_retry_unless_the_thread_conflic
     let pending = f.record(&id);
     assert_eq!(pending["attempt"], 1);
     assert!(pending["launch"]["error"].is_object());
-    fs::write(stub, retry).unwrap();
+    fs::write(stub, original).unwrap();
+    fs::write(f.skills.join("resume-pid"), "43212").unwrap();
     let stream = dir.join("events2.jsonl");
     fs::write(&stream, WRONG_CODEX_STARTED).unwrap();
     let rejected = f.call(&args, 1);
