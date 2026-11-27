@@ -1,20 +1,23 @@
 use crate::{
     Action, DispatchArgs,
+    dispatch_request::DispatchRequest,
     domain::*,
     process, runs,
-    store::{self, RunId, Store},
+    store::{self, RunId, ScopedNotFound, Store},
+    writer_slot::Slot,
 };
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
     num::NonZeroU32,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
 pub enum Output {
     Doctor(crate::doctor::Doctor),
+    Context(crate::context::Checkout),
     Ls {
         runs: Vec<ListEntry>,
         summary: BTreeMap<&'static str, BTreeMap<&'static str, usize>>,
@@ -22,8 +25,13 @@ pub enum Output {
     Wait {
         runs: Vec<WaitEntry>,
         message: Option<&'static str>,
+        timed_out: Option<bool>,
     },
     Launch(Launched),
+    Replayed {
+        run_id: String,
+    },
+    GuardVerification(crate::guard::Verification),
     CheckedLaunch {
         launched: Launched,
         verification: CheckedLaunchVerification,
@@ -77,6 +85,7 @@ pub enum Tail {
 pub enum ListEntry {
     Run { run: Box<Run>, observation: Observation },
     Broken { run_id: String, error: String },
+    Incomplete { outcome: &'static str },
 }
 
 #[derive(Serialize)]
@@ -84,6 +93,8 @@ pub struct WaitEntry {
     pub id: String,
     pub name: String,
     pub state: State,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<NonZeroU32>,
     pub report_path: PathBuf,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<crate::progress::Progress>,
@@ -91,10 +102,18 @@ pub struct WaitEntry {
 
 pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
     let store = Store::new()?;
+    let scope = match &action {
+        Action::Wait { repo, .. }
+        | Action::Status { repo, .. }
+        | Action::Report { repo, .. }
+        | Action::Ls { repo, .. }
+        | Action::Verify { repo, .. } => repo.as_deref().map(store::directory).transpose()?,
+        _ => None,
+    };
+    let repo = scope.as_deref();
     let read = |selector: &str| -> Result<_> {
-        let id = store.resolve(selector)?;
-        let locked = store.try_lock(&id)?;
-        let run = store.load(&id)?;
+        let id = store.observation_id(selector, repo.is_some())?;
+        let (locked, run) = store.read_for_observation(&id, repo, None)?.ok_or(ScopedNotFound)?;
         Ok((id, locked, run))
     };
     let (run, observation, detail, code) = match action {
@@ -107,31 +126,40 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
         Action::Doctor { executor, profile } => {
             return crate::doctor::run(executor, profile).map(|(doctor, code)| (Output::Doctor(doctor), code));
         }
+        Action::Context { repo } => {
+            return crate::context::read(&repo, &store.root).map(|context| (Output::Context(context), 0));
+        }
         Action::Dispatch { args, checks, check_timeout } => {
             return dispatch(args, &store, false, checks, check_timeout);
         }
         Action::Handoff(args) => return dispatch(args, &store, true, vec![], None),
-        Action::Wait { runs, all, timeout } => {
-            let ids = runs.iter().map(|id| store.resolve(id)).collect::<Result<Vec<_>>>()?;
-            return wait(&store, &ids, all, timeout, json_output);
+        Action::Wait { runs, all, timeout, .. } => {
+            if repo.is_some() && timeout == 0 {
+                return Ok((Output::Rejection("wait --repo requires a nonzero --timeout".into()), 2));
+            }
+            let ids = runs.iter().map(|id| store.observation_id(id, repo.is_some())).collect::<Result<Vec<_>>>()?;
+            return wait(&store, &ids, repo, all, timeout, json_output);
         }
-        Action::Ls { goal } => {
+        Action::Ls { goal, .. } => {
             let mut summary = BTreeMap::<&str, BTreeMap<&str, usize>>::new();
             let mut data = vec![];
+            let mut incomplete = false;
             for id in store.runs()? {
                 let id = match id {
                     Ok(id) => id,
+                    Err(_) if repo.is_some() => {
+                        incomplete = true;
+                        continue;
+                    }
                     Err(run_id) => {
                         data.push(ListEntry::Broken { run_id, error: "invalid run id".into() });
                         continue;
                     }
                 };
                 let entry = (|| -> Result<_> {
-                    let locked = store.try_lock(&id)?;
-                    let mut run = store.load(&id)?;
-                    if goal.is_some() && run.goal != goal {
+                    let Some((locked, mut run)) = store.read_for_observation(&id, repo, goal.as_deref())? else {
                         return Ok(None);
-                    }
+                    };
                     let observation = runs::observe(&mut run, locked.as_ref());
                     let executor = run.launch.target().executor().as_str();
                     let state = observation.state().as_str();
@@ -140,12 +168,16 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
                 })();
                 match entry {
                     Ok(entry) => data.extend(entry),
+                    Err(_) if repo.is_some() => incomplete = true,
                     Err(error) => data.push(ListEntry::Broken { run_id: id.to_string(), error: format!("{error:#}") }),
                 }
             }
+            if incomplete {
+                data.push(ListEntry::Incomplete { outcome: "incomplete" });
+            }
             return Ok((Output::Ls { runs: data, summary }, 0));
         }
-        Action::Status { run, tail } => {
+        Action::Status { run, tail, .. } => {
             let (id, locked, mut run) = read(&run)?;
             let dir = store.dir(&id);
             let observation = runs::observe(&mut run, locked.as_ref());
@@ -180,7 +212,7 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
             });
             (run, observation, RunDetail::Status { dir, tail }, 0)
         }
-        Action::Report { run } => {
+        Action::Report { run, .. } => {
             let (id, locked, mut run) = read(&run)?;
             let observation = runs::observe(&mut run, locked.as_ref());
             let path = store.dir(&id).join(run.report_name());
@@ -202,8 +234,18 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
             let observation = runs::resume(&mut run, &brief, request_id.as_deref(), &locked)?;
             (run, observation, RunDetail::Resume, 0)
         }
-        Action::Verify { run, paths, checks, baseline } => {
+        Action::Verify { run, paths, checks, baseline, accept_with, .. } => {
+            if let (Some(repo), Some(check)) = (repo, accept_with) {
+                crate::guard::require_external_state(repo, &store.root)?;
+                let slot = Slot::lock(&store, repo)?;
+                let (_, locked, run) = read(&run)?;
+                return crate::guard::verify(run, locked, &check, &paths, slot)
+                    .map(|(result, code)| (Output::GuardVerification(result), code));
+            }
             let (id, locked, mut run) = read(&run)?;
+            if run.accept_with.is_some() && baseline.is_some() {
+                return Ok((Output::Rejection("cannot replace the baseline of a protected run".into()), 2));
+            }
             // Validate before observation, which can recover and save executor identity.
             let baseline = if let Some(rev) = baseline {
                 let args = ["rev-parse", "--verify", &format!("{rev}^{{commit}}")];
@@ -263,11 +305,42 @@ fn dispatch(
     checks: Vec<String>,
     check_timeout: Option<u32>,
 ) -> Result<(Output, i32)> {
-    let DispatchArgs { mode, executor, brief, repo, mut model, effort, goal, name, profile, pane, paths, mut extra } =
-        args;
+    let DispatchArgs {
+        mode,
+        executor,
+        brief,
+        repo,
+        mut model,
+        effort,
+        goal,
+        name,
+        profile,
+        pane,
+        paths,
+        mut extra,
+        request_id,
+        accept_with,
+        expected_head,
+        expected_branch,
+    } = args;
     let reject = |message: String| Ok((Output::Rejection(message), 2));
     if !checks.is_empty() && model.len() > 1 {
         return reject("--check requires a single dispatch".into());
+    }
+    if request_id.is_some() && (handoff || pane || !checks.is_empty() || model.len() > 1) {
+        return reject("--request-id requires one dispatch without --pane or --check".into());
+    }
+    if (expected_head.is_some() || expected_branch.is_some())
+        && accept_with.is_none()
+        && (mode != "review" || handoff || model.len() > 1)
+    {
+        return reject("checkout pins require a single review dispatch or --accept-with".into());
+    }
+    if accept_with.is_some() {
+        if mode != "direct" || executor != Executor::Codex || !extra.is_empty() {
+            return reject("--accept-with requires a direct Codex dispatch without native extra arguments".into());
+        }
+        extra.extend(["--sandbox".into(), "workspace-write".into()]);
     }
     if checks.iter().any(|check| check.trim().is_empty()) {
         return reject("--check requires a nonempty shell command".into());
@@ -344,6 +417,14 @@ fn dispatch(
         _ => Models::Review(model),
     };
     let repo = store::repo(&repo)?;
+    if accept_with.is_some() {
+        crate::guard::require_external_state(&repo, &store.root)?;
+    }
+    let target = match executor {
+        Executor::Claude => Target::Claude { profile: process::profile(profile)? },
+        Executor::Vibe => Target::Vibe,
+        Executor::Codex => Target::Codex,
+    };
     let input = if handoff {
         // Validate the continuation document before any staging or launch side effect.
         let document = match crate::handoff::document(&brief) {
@@ -351,15 +432,44 @@ fn dispatch(
             Err(error) => return reject(format!("{error:#}")),
         };
         Input::Generated(crate::handoff::prompt(&mode, &document).into_bytes())
+    } else if request_id.is_some() {
+        Input::Generated(std::fs::read(&brief).context("read dispatch brief")?)
     } else {
         process::lint(&brief, &mode)?;
         Input::Brief(brief)
     };
+    let request = if let (Some(key), Input::Generated(bytes), Models::Single(model)) = (&request_id, &input, &models) {
+        let payload = DispatchPayload {
+            mode: &mode,
+            target: &target,
+            model: model.as_deref(),
+            effort: effort.as_deref(),
+            goal: goal.as_deref(),
+            name: name.as_deref(),
+            extra: &extra,
+            paths: &paths,
+            accept_with: accept_with.as_deref(),
+            expected_head: expected_head.as_deref(),
+            expected_branch: expected_branch.as_deref(),
+            brief: bytes,
+        };
+        let request = DispatchRequest::new(store, &repo, key, &payload)?;
+        if let Some(run_id) = request.existing()? {
+            return Ok((Output::Replayed { run_id }, 0));
+        }
+        Some(request)
+    } else {
+        None
+    };
+    let accept_with = accept_with.as_deref().map(|path| crate::guard::host_check(&repo, path)).transpose()?;
     let launch_run = |name: Option<String>, model: Option<String>| -> Result<_> {
-        let baseline_commit =
+        let mut baseline_commit = if accept_with.is_none() {
             process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
                 .ok()
-                .map(|s| s.trim().to_owned());
+                .map(|s| s.trim().to_owned())
+        } else {
+            None
+        };
         let mut dispatch_dirty = std::collections::BTreeMap::new();
         if baseline_commit.is_some() {
             for path in crate::verify::dirty_paths(&repo, None)? {
@@ -370,57 +480,90 @@ fn dispatch(
         let (id, mut locked) = store.create()?;
         let dir = store.dir(&id);
         let input_md = locked.dir.join("input.md");
-        match &input {
-            Input::Brief(source) => {
-                store::copy(source, &input_md)?;
-            }
-            Input::Generated(bytes) => {
-                store::atomic(&input_md, bytes)?;
-                if let Err(error) = process::lint(&input_md, &mode) {
-                    // Rejected handoff input must leave neither staging nor a published run behind.
-                    let _ = std::fs::remove_dir_all(&locked.dir);
-                    return Err(error);
+        let mut may_be_claimed = false;
+        let result = (|| -> Result<_> {
+            match &input {
+                Input::Brief(source) => {
+                    store::copy(source, &input_md)?;
+                }
+                Input::Generated(bytes) => {
+                    store::atomic(&input_md, bytes)?;
+                    process::lint(&input_md, &mode)?;
                 }
             }
-        }
-        let target = match executor {
-            Executor::Claude => Target::Claude { profile: process::profile(profile.clone())? },
-            Executor::Vibe => Target::Vibe,
-            Executor::Codex => Target::Codex,
-        };
-        let mut run = Run {
-            name: name.unwrap_or_else(|| id.to_string()),
-            id: id.to_string(),
-            model,
-            requested_effort: effort.clone(),
-            extra: extra.clone(),
-            repo: repo.clone(),
-            baseline_commit,
-            dispatch_dirty,
-            brief: dir.join("input.md"),
-            goal: goal.clone(),
-            launch: Launch::Starting { target },
-            attempt: NonZeroU32::MIN,
-            request_attempts: Default::default(),
-            authorized_paths: paths.clone(),
-            verifications: vec![],
-            created_at: store::timestamp(),
-        };
-        store.publish(&mut locked, &run, &dir)?;
-        let outcome = match runs::launch(&mut run, LaunchPhase::Initial, &locked) {
-            Err(error) => LaunchOutcome::LaunchFailed(format!("{error:#}")),
-            Ok(()) if pane => match runs::pane(&run) {
+            let slot = accept_with.is_some().then(|| Slot::lock(store, &repo)).transpose()?;
+            if let Some(request) = &request
+                && let Some(run_id) = request.existing()?
+            {
+                return Ok(InitialDispatch::Replayed(run_id));
+            }
+            if let Some(slot) = &slot {
+                crate::guard::require_available(slot, store, &repo)?;
+                crate::guard::require_clean(&repo, &paths)?;
+                baseline_commit = expected_head.clone();
+            }
+            crate::guard::check_pins(&repo, store, expected_head.as_deref(), expected_branch.as_deref())?;
+            let mut run = Run {
+                name: name.unwrap_or_else(|| id.to_string()),
+                id: id.to_string(),
+                model,
+                requested_effort: effort.clone(),
+                extra: extra.clone(),
+                repo: repo.clone(),
+                baseline_commit,
+                dispatch_dirty,
+                brief: dir.join("input.md"),
+                goal: goal.clone(),
+                launch: Launch::Starting { target: target.clone() },
+                attempt: NonZeroU32::MIN,
+                request_attempts: Default::default(),
+                authorized_paths: paths.clone(),
+                accept_with: accept_with.clone(),
+                protected_verification: None,
+                verifications: vec![],
+                created_at: store::timestamp(),
+            };
+            if let Some(request) = &request {
+                // A failed claim may have persisted before a subsequent sync failed.
+                may_be_claimed = true;
+                match request.claim(&run.id) {
+                    Ok(Some(run_id)) => {
+                        may_be_claimed = false;
+                        return Ok(InitialDispatch::Replayed(run_id));
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        may_be_claimed = !error.is::<crate::dispatch_request::Conflict>();
+                        return Err(error);
+                    }
+                }
+            }
+            store.publish(&mut locked, &run, &dir)?;
+            if let Some(slot) = slot {
+                slot.assign(&run.id)?;
+            }
+            let outcome = match runs::launch(&mut run, LaunchPhase::Initial, &locked) {
+                Err(error) => LaunchOutcome::LaunchFailed(format!("{error:#}")),
+                Ok(()) if pane => match runs::pane(&run) {
+                    Ok(()) => LaunchOutcome::Started,
+                    Err(error) => LaunchOutcome::PaneFailed(format!("worker recorded; pane failed: {error:#}")),
+                },
                 Ok(()) => LaunchOutcome::Started,
-                Err(error) => LaunchOutcome::PaneFailed(format!("worker recorded; pane failed: {error:#}")),
-            },
-            Ok(()) => LaunchOutcome::Started,
-        };
-        let code = i32::from(!matches!(outcome, LaunchOutcome::Started));
-        Ok((id, Launched { run: Box::new(run), outcome }, code))
+            };
+            let code = i32::from(!matches!(outcome, LaunchOutcome::Started));
+            Ok(InitialDispatch::Launched(id, Launched { run: Box::new(run), outcome }, code))
+        })();
+        if locked.dir != dir && !may_be_claimed {
+            let _ = std::fs::remove_dir_all(&locked.dir);
+        }
+        result
     };
     let models = match models {
         Models::Single(model) => {
-            let (id, mut launched, code) = launch_run(name, model)?;
+            let (id, mut launched, code) = match launch_run(name, model)? {
+                InitialDispatch::Launched(id, launched, code) => (id, launched, code),
+                InitialDispatch::Replayed(run_id) => return Ok((Output::Replayed { run_id }, 0)),
+            };
             if checks.is_empty() {
                 return Ok((Output::Launch(launched), code));
             }
@@ -446,10 +589,11 @@ fn dispatch(
     for model in models {
         let name = name.as_ref().map(|name| format!("{name}-{model}"));
         match launch_run(name, Some(model.clone())) {
-            Ok((_, launched, one_code)) => {
+            Ok(InitialDispatch::Launched(_, launched, one_code)) => {
                 runs.push(launched);
                 code = code.max(one_code);
             }
+            Ok(InitialDispatch::Replayed(_)) => unreachable!("multi-model dispatch cannot claim a request"),
             // Earlier runs may already be working, so their ids must still be reported.
             Err(e) => {
                 error = Some(format!("{model}: {e:#}"));
@@ -459,6 +603,27 @@ fn dispatch(
         }
     }
     Ok((Output::Launches { runs, error }, code))
+}
+
+enum InitialDispatch {
+    Launched(RunId, Launched, i32),
+    Replayed(String),
+}
+
+#[derive(Serialize)]
+struct DispatchPayload<'a> {
+    mode: &'a str,
+    target: &'a Target,
+    model: Option<&'a str>,
+    effort: Option<&'a str>,
+    goal: Option<&'a str>,
+    name: Option<&'a str>,
+    extra: &'a [String],
+    paths: &'a [String],
+    accept_with: Option<&'a Path>,
+    expected_head: Option<&'a str>,
+    expected_branch: Option<&'a str>,
+    brief: &'a [u8],
 }
 
 fn verify_launched_attempt(
@@ -512,18 +677,33 @@ enum Input {
     Generated(Vec<u8>),
 }
 
-fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool) -> Result<(Output, i32)> {
+fn wait(
+    store: &Store,
+    ids: &[RunId],
+    repo: Option<&Path>,
+    all: bool,
+    timeout: u64,
+    json_output: bool,
+) -> Result<(Output, i32)> {
     let started = Instant::now();
     let timeout = Duration::from_secs(timeout);
+    let deadline = if let Some(repo) = repo {
+        for id in ids {
+            store.load_in_repo(id, repo)?;
+        }
+        Some(started.checked_add(timeout).context("wait timeout is too large")?)
+    } else {
+        None
+    };
+    let interval = if repo.is_some() { Duration::from_secs(5).min(timeout / 3) } else { Duration::from_secs(5) };
     let mut previous = vec![None; ids.len()];
     loop {
         let mut data = Vec::with_capacity(ids.len());
         let (mut settled, mut finished, mut unknown) = (0, 0, false);
         for (index, id) in ids.iter().enumerate() {
             // The guard is dropped at the end of this iteration, before sleeping.
-            let locked = store.try_lock(id)?;
-            let mut run = store.load(id)?;
-            let observation = runs::observe(&mut run, locked.as_ref());
+            let (locked, mut run) = store.read_for_observation(id, repo, None)?.ok_or(ScopedNotFound)?;
+            let observation = runs::observe_until(&mut run, locked.as_ref(), deadline);
             let state = observation.state();
             if previous[index] != Some(state) {
                 if !json_output {
@@ -538,14 +718,15 @@ fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool
         }
         let met = if all { settled == ids.len() } else { settled > 0 };
         // A status query can time out under load; only an unknown that outlasts the wait is reported.
-        let message = if met {
-            None
-        } else if started.elapsed() >= timeout {
-            Some(if unknown { "unknown state at timeout: inspect run evidence" } else { "wait timed out" })
-        } else {
-            std::thread::sleep(Duration::from_secs(5).min(timeout.saturating_sub(started.elapsed())));
-            continue;
-        };
+        let remaining = timeout.saturating_sub(started.elapsed());
+        if !met && !remaining.is_zero() {
+            std::thread::sleep(interval.min(remaining));
+            if deadline.is_none_or(|end| Instant::now() < end) {
+                continue;
+            }
+        }
+        let message =
+            (!met).then_some(if unknown { "unknown state at timeout: inspect run evidence" } else { "wait timed out" });
         let runs = data
             .into_iter()
             .map(|(run, observation, dir, refreshed)| {
@@ -553,9 +734,13 @@ fn wait(store: &Store, ids: &[RunId], all: bool, timeout: u64, json_output: bool
                 let progress = (!met && matches!(state, State::Starting | State::Running | State::Unknown))
                     .then(|| crate::progress::last(&run, &observation, &dir, refreshed));
                 let report_path = dir.join(run.report_name());
-                WaitEntry { id: run.id, name: run.name, state, report_path, progress }
+                let attempt = repo.map(|_| run.launch_attempt());
+                WaitEntry { id: run.id, name: run.name, state, attempt, report_path, progress }
             })
             .collect();
-        return Ok((Output::Wait { runs, message }, i32::from(!met || finished != settled)));
+        return Ok((
+            Output::Wait { runs, message, timed_out: repo.map(|_| !met) },
+            i32::from(!met || finished != settled),
+        ));
     }
 }

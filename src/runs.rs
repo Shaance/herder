@@ -177,8 +177,13 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
             "request id must be 1-200 bytes without control characters"
         );
     }
+    let replay_attempt = request_id.and_then(|id| run.request_attempts.get(id).copied());
+    ensure!(
+        replay_attempt.is_some() || run.accept_with.is_none(),
+        "dispatch a fresh keyed work order to continue a protected run"
+    );
     let contents = std::fs::read(delta)?;
-    if let Some(attempt) = request_id.and_then(|id| run.request_attempts.get(id).copied()) {
+    if let Some(attempt) = replay_attempt {
         // Known request: a replay returns the recorded run without another launch.
         let input = store.dir.join(format!("input{attempt}.md"));
         ensure!(

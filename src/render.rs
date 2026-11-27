@@ -10,6 +10,18 @@ use std::{io::IsTerminal, path::Path};
 pub fn emit(json_output: bool, result: Result<(Output, i32)>, failure_code: i32) -> ! {
     let (data, error, code) = match result {
         Ok((output, code)) if json_output => (data(&output), None, code),
+        Err(error) if json_output && error.is::<crate::store::ScopedNotFound>() => {
+            (json!({"outcome":"not_found"}), None, failure_code)
+        }
+        Err(error) if json_output && error.is::<crate::dispatch_request::Conflict>() => {
+            (json!({"outcome":"request_conflict"}), None, failure_code)
+        }
+        Err(error) if json_output && error.is::<crate::guard::DispatchDenied>() => {
+            (json!(error.downcast_ref::<crate::guard::DispatchDenied>()), None, failure_code)
+        }
+        Err(error) if json_output && error.is::<crate::store::RepoNotRoot>() => {
+            (json!({"outcome":"checkout_mismatch","reason":"root"}), Some(format!("{error:#}")), failure_code)
+        }
         Err(error) if json_output => (Value::Null, Some(format!("{error:#}")), failure_code),
         Ok((output, code)) => {
             human(&output);
@@ -27,9 +39,15 @@ pub fn emit(json_output: bool, result: Result<(Output, i32)>, failure_code: i32)
 fn data(output: &Output) -> Value {
     match output {
         Output::Doctor(doctor) => json!(doctor),
+        Output::Context(context) => json!(context),
         Output::Ls { runs, summary } => json!({"runs":runs,"summary":summary}),
-        Output::Wait { runs, message } => json!({"runs":runs,"message":message}),
+        Output::Wait { runs, message, timed_out } => match timed_out {
+            Some(timed_out) => json!({"runs":runs,"message":message,"timed_out":timed_out}),
+            None => json!({"runs":runs,"message":message}),
+        },
         Output::Launch(launched) => launch_data(launched),
+        Output::Replayed { run_id } => json!({"outcome":"replayed","run_id":run_id}),
+        Output::GuardVerification(verification) => json!(verification),
         Output::CheckedLaunch { launched, verification } => {
             let mut data = launch_data(launched);
             data["verification"] = match verification {
@@ -85,6 +103,9 @@ fn human(output: &Output) {
     let terminal = std::io::stdout().is_terminal();
     let color = terminal && std::env::var_os("NO_COLOR").is_none_or(|value| value.is_empty());
     match output {
+        Output::Context(context) => println!("{}", json!(context)),
+        Output::Replayed { run_id } => println!("{run_id}\treplayed"),
+        Output::GuardVerification(verification) => println!("{}", json!(verification)),
         Output::Doctor(doctor) => {
             for executor in &doctor.executors {
                 for check in &executor.checks {
@@ -113,6 +134,9 @@ fn human(output: &Output) {
                             error.escape_debug().to_string(),
                             "-".into(),
                         ],
+                        ListEntry::Incomplete { .. } => {
+                            ["-", "-", "-", "-", "incomplete", "-", "unreadable run records", "-"].map(str::to_owned)
+                        }
                         ListEntry::Run { run, observation } => terminal_run_row(run, observation.state()),
                     })
                     .collect::<Vec<_>>();
@@ -122,6 +146,9 @@ fn human(output: &Output) {
                     match entry {
                         ListEntry::Broken { run_id, error } => {
                             println!("{}\tbroken\t{}", run_id.escape_debug(), error.escape_debug());
+                        }
+                        ListEntry::Incomplete { .. } => {
+                            eprintln!("listing incomplete: some run records could not be read")
                         }
                         ListEntry::Run { run, observation } => println!(
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -144,7 +171,7 @@ fn human(output: &Output) {
                 println!("{executor}: {total} runs ({counts})");
             }
         }
-        Output::Wait { runs, message } => {
+        Output::Wait { runs, message, .. } => {
             for run in runs {
                 println!(
                     "{}\t{}\t{}\t{}",
@@ -198,7 +225,8 @@ fn human(output: &Output) {
         }
         Output::Run { run, observation, detail } => match detail {
             RunDetail::Status { dir, tail } => {
-                println!("state: {}", observation.state().as_str());
+                let state_label = if run.accept_with.is_some() { "worker state" } else { "state" };
+                println!("{state_label}: {}", observation.state().as_str());
                 if let Some(cause) = observation.cause() {
                     println!("cause: {}", cause.as_str());
                 }
@@ -207,19 +235,33 @@ fn human(output: &Output) {
                     println!("  {line}");
                 }
                 println!(
-                    "executor: {}\nattempt: {}\nrun dir: {}\nreport path: {}\nlatest verdict: {}\nrequested effort: {}",
+                    "executor: {}\nattempt: {}\nrun dir: {}\nreport path: {}",
                     run.launch.target().executor().as_str(),
                     run.launch_attempt(),
                     dir.display(),
-                    dir.join(run.report_name()).display(),
-                    run.verifications
-                        .iter()
-                        .rev()
-                        .find(|v| v.attempt == run.attempt)
-                        .map(|v| v.verdict.as_str())
-                        .unwrap_or("none"),
-                    run.requested_effort.as_deref().unwrap_or("-").escape_debug()
+                    dir.join(run.report_name()).display()
                 );
+                let latest = run.verifications.iter().rfind(|v| v.attempt == run.attempt);
+                if run.accept_with.is_some() {
+                    if let Some(receipt) = &run.protected_verification {
+                        let verdict = match receipt.verdict {
+                            Verdict::Pass => "PASS",
+                            Verdict::Fail => "FAIL",
+                        };
+                        println!(
+                            "protected acceptance: {verdict} (attempt {}, verified_at {})",
+                            receipt.attempt, receipt.timestamp
+                        );
+                    } else {
+                        println!("protected acceptance: not yet recorded");
+                    }
+                    if let Some(check) = latest {
+                        println!("latest ordinary verification verdict: {}", check.verdict.as_str());
+                    }
+                } else {
+                    println!("latest verdict: {}", latest.map(|v| v.verdict.as_str()).unwrap_or("none"));
+                }
+                println!("requested effort: {}", run.requested_effort.as_deref().unwrap_or("-").escape_debug());
                 match tail {
                     Some(Tail::Unavailable(_, message) | Tail::NoStream(message)) => println!("{message}"),
                     Some(Tail::Lines(path, lines)) => {

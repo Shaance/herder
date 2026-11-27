@@ -4,7 +4,12 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
-- Added a README example for starting a Codex review in Claude Code and opening its report in another client.
+## 0.5.0 (2026-11-27)
+
+- Inspect the registered worktree, worker model, effort and write settings with MCP `checkout` before spending worker quota. Use `wait` for up to 30 seconds at a time and reopen a report by run ID. The CLI exposes the same checkout through `herder context` and supports repository-scoped observations with `--repo`.
+- Pin a review to its intended worktree and retry a dispatch with the same `request_id` to recover the original run ID.
+- Opt in to MCP implementation in a dedicated clean worktree. The operator chooses the path prefixes to audit and the executable that checks the result. `verify` records the worker state, Git path audit and acceptance result for the run.
+- The optional Herder skill explains when to use MCP or the CLI. The setup guide covers personal and team installation and shows how to share a run between Claude Code, Codex and the CLI.
 
 ## 0.4.0 (2026-11-26)
 

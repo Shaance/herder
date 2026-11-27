@@ -1,6 +1,7 @@
 {
   "launched": {"ok": true, "error": null, "data": {"run_id": "<nonempty>", "launch_error": null, "run": {"launch": {"state": "launched"}}}},
   "failed": {"ok": false, "error": null, "data": {"run_id": "<nonempty>", "launch_error": "<nonempty>"}},
+  "checkout_mismatch": {"ok": false, "error": "<nonempty>", "data": {"outcome": "checkout_mismatch", "reason": "root"}},
   "rejected": {"ok": false, "error": "<nonempty>", "data": null},
   "cli_rejection": {"ok": false, "error": null, "data": {"message": "repeat --model only with --mode review; a writer runs one model"}},
   "listing": {"ok": true, "error": null, "data": {"runs": [

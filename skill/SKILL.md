@@ -5,11 +5,26 @@ description: Use when coordinating other agents or asked to dispatch, track, rea
 
 ## When to use
 
-Use herder to dispatch Claude, Vibe or Codex workers and keep their run identities,
-evidence and verification results together. Any coordinating
-agent or person can use the same CLI.
+Do ordinary reviews yourself. Use Herder when the task calls for a separate
+worker or an existing run.
 
-## The loop
+- For a known run ID, call the registered Herder MCP `report` directly. If the
+  run is still in progress, use `wait` if available or check `status`, then
+  read the report when ready.
+- Before commissioning a paid Codex review, compare the intended Git worktree
+  root (`git rev-parse --show-toplevel`) with `configured_dir` and `repo`
+  from MCP `checkout`. If `checkout` is unavailable, check the registered
+  `--repo`. When the worktree matches and the goal authorizes the review and
+  quota use, call `delegate` and save its run ID.
+- Use the CLI when MCP is disconnected, the operation or executor is unsupported,
+  or the user asks for the CLI. Respect explicit holds and registration
+  restrictions through either interface.
+- A run can exist while its report is pending. If a run is missing, compare
+  `state_dir` from MCP `checkout` and `herder context --repo .` before
+  concluding it is absent. With older builds, check each host's configured
+  `HERDER_STATE_DIR` or the default `~/.local/state/herder`.
+
+## CLI workflow
 
 1. Run `herder doctor` for the intended executor and profile.
 2. Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. Direct-mode briefs require

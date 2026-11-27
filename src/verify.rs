@@ -53,64 +53,8 @@ pub fn run(
         cmd.args(["-c", &text]);
         (text, cmd)
     }));
-    let scope = (|| -> Result<String> {
-        let baseline = baseline
-            .as_deref()
-            .or(run.baseline_commit.as_deref())
-            .ok_or_else(|| anyhow::anyhow!("no dispatch baseline; scope cannot be verified"))?;
-        let mut files = dirty_paths(&run.repo, deadline)?;
-        let text = process::checked_until(
-            Command::new("git").current_dir(&run.repo).args([
-                "diff",
-                "--name-only",
-                "--no-renames",
-                "-z",
-                baseline,
-                "HEAD",
-                "--",
-            ]),
-            deadline,
-        )?;
-        files.extend(text.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
-        let mut pre_existing = Vec::new();
-        for path in &files {
-            if let Some(hash) = run.dispatch_dirty.get(path)
-                && &content_hash(&run.repo, path, deadline)? == hash
-            {
-                pre_existing.push(path.clone());
-            }
-        }
-        let violations: Vec<_> = files
-            .iter()
-            .filter(|f| {
-                !pre_existing.contains(f)
-                    && !paths.iter().any(|p| {
-                        let prefix = Path::new(p);
-                        Path::new(f).starts_with(prefix.strip_prefix(".").unwrap_or(prefix))
-                    })
-            })
-            .collect();
-        let allowed = paths.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
-        let changed = files.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
-        let unchanged = pre_existing.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
-        let short_baseline: String = baseline.chars().take(7).collect();
-        let details = format!(
-            "Changed files: {}.\nPre-existing and unchanged: {}.",
-            if changed.is_empty() { "none" } else { &changed },
-            if unchanged.is_empty() { "none" } else { &unchanged }
-        );
-        anyhow::ensure!(
-            violations.is_empty(),
-            "{} changed outside allowed paths ({allowed}) since {short_baseline}.\n{details}",
-            violations.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ")
-        );
-        Ok(format!("Allowed paths: {allowed}. Baseline: {short_baseline}.\n{details}"))
-    })();
-    let (exit_code, output) = match scope {
-        Ok(output) => (0, output),
-        Err(error) => (1, format!("{error:#}")),
-    };
-    let scope = Check { command: SCOPE_CHECK.into(), exit_code: Some(exit_code), output: transition + &output };
+    let mut scope = scope_check(run, paths, baseline.as_deref(), deadline);
+    scope.output = transition + &scope.output;
     let mut commands = Vec::new();
     for (command, mut cmd) in jobs {
         cmd.current_dir(&run.repo);
@@ -146,6 +90,63 @@ pub fn run(
     locked.save(&current)?;
     *run = current;
     Ok(FreshVerification { verdict, scope, commands, attempt, reused_from })
+}
+
+pub fn scope_check(run: &Run, paths: &[String], baseline: Option<&str>, deadline: Option<Instant>) -> Check {
+    let scope = (|| -> Result<String> {
+        let baseline = baseline
+            .or(run.baseline_commit.as_deref())
+            .ok_or_else(|| anyhow::anyhow!("no dispatch baseline; scope cannot be verified"))?;
+        let mut files = dirty_paths(&run.repo, deadline)?;
+        let text = process::checked_until(
+            Command::new("git").current_dir(&run.repo).args([
+                "diff",
+                "--name-only",
+                "--no-renames",
+                "-z",
+                baseline,
+                "HEAD",
+                "--",
+            ]),
+            deadline,
+        )?;
+        files.extend(text.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
+        let mut pre_existing = Vec::new();
+        for path in &files {
+            if let Some(hash) = run.dispatch_dirty.get(path)
+                && &content_hash(&run.repo, path, deadline)? == hash
+            {
+                pre_existing.push(path.clone());
+            }
+        }
+        let violations: Vec<_> =
+            files.iter().filter(|f| !pre_existing.contains(f) && !paths.iter().any(|p| under_prefix(f, p))).collect();
+        let allowed = paths.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
+        let changed = files.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
+        let unchanged = pre_existing.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ");
+        let short_baseline: String = baseline.chars().take(7).collect();
+        let details = format!(
+            "Changed files: {}.\nPre-existing and unchanged: {}.",
+            if changed.is_empty() { "none" } else { &changed },
+            if unchanged.is_empty() { "none" } else { &unchanged }
+        );
+        anyhow::ensure!(
+            violations.is_empty(),
+            "{} changed outside allowed paths ({allowed}) since {short_baseline}.\n{details}",
+            violations.iter().map(|path| path.escape_debug().to_string()).collect::<Vec<_>>().join(", ")
+        );
+        Ok(format!("Allowed paths: {allowed}. Baseline: {short_baseline}.\n{details}"))
+    })();
+    let (exit_code, output) = match scope {
+        Ok(output) => (0, output),
+        Err(error) => (1, format!("{error:#}")),
+    };
+    Check { command: SCOPE_CHECK.into(), exit_code: Some(exit_code), output }
+}
+
+pub fn under_prefix(path: &str, prefix: &str) -> bool {
+    let prefix = Path::new(prefix);
+    Path::new(path).starts_with(prefix.strip_prefix(".").unwrap_or(prefix))
 }
 
 pub fn dirty_paths(repo: &Path, deadline: Option<Instant>) -> Result<std::collections::BTreeSet<String>> {
