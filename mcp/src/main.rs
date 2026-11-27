@@ -42,7 +42,7 @@ struct McpServer {
     router: ToolRouter<Self>,
 }
 
-#[tool_handler(router = self.router)]
+#[tool_handler(router = self.router, name = "herder-mcp")]
 impl ServerHandler for McpServer {}
 
 #[derive(Deserialize, JsonSchema)]

@@ -188,6 +188,10 @@ fn cli_fixture(case: &str, actual: &Value) {
 async fn discovery_review_and_exact_name_lookup() {
     let f = Fixture::new();
     let (client, _) = f.connect(&f.repo, "success").await;
+    let peer = client.peer_info().unwrap();
+    let identity = peer.server_info.as_ref().unwrap();
+    assert_eq!(identity.name, env!("CARGO_PKG_NAME"));
+    assert_eq!(identity.version, env!("CARGO_PKG_VERSION"));
     let tools = client.list_all_tools().await.unwrap();
     assert_eq!(
         tools.iter().map(|tool| tool.name.as_ref()).collect::<Vec<_>>(),

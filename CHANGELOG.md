@@ -10,6 +10,7 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 - Pin a review to its intended worktree and retry a dispatch with the same `request_id` to recover the original run ID.
 - Opt in to MCP implementation in a dedicated clean worktree. The operator chooses the path prefixes to audit and the executable that checks the result. `verify` records the worker state, Git path audit and acceptance result for the run.
 - The optional Herder skill explains when to use MCP or the CLI. The setup guide covers personal and team installation and shows how to share a run between Claude Code, Codex and the CLI.
+- MCP clients now see the companion's name and package version when they connect.
 
 ## 0.4.0 (2026-11-26)
 
