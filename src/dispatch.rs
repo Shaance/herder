@@ -1,3 +1,6 @@
+mod args;
+
+use self::args::Models;
 use crate::{
     DispatchArgs,
     dispatch_request::DispatchRequest,
@@ -18,11 +21,6 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-
-enum Models {
-    Single(Option<String>),
-    Review(Vec<String>),
-}
 
 fn lint_snapshot(bytes: &[u8], mode: &str, repo: &Path, state: &Path) -> Result<()> {
     let state = state.canonicalize().unwrap_or_else(|_| state.to_owned());
@@ -45,143 +43,35 @@ fn lint_snapshot(bytes: &[u8], mode: &str, repo: &Path, state: &Path) -> Result<
     Ok(())
 }
 
-fn codex_config_assignments(extra: &[String]) -> impl Iterator<Item = (&str, &str)> {
-    let mut args = extra.iter().map(String::as_str);
-    std::iter::from_fn(move || {
-        while let Some(arg) = args.next() {
-            let assignment = match arg {
-                "--" => break,
-                "-c" | "--config" => args.next(),
-                _ => arg
-                    .strip_prefix("--config=")
-                    .or_else(|| arg.strip_prefix("-c").map(|value| value.strip_prefix('=').unwrap_or(value))),
-            };
-            if let Some((key, value)) = assignment.and_then(|value| value.split_once('=')) {
-                return Some((key.trim(), value.trim()));
-            }
-        }
-        None
-    })
-}
-
 pub(crate) fn dispatch(
-    args: DispatchArgs,
+    mut args: DispatchArgs,
     store: &Store,
     handoff: bool,
     checks: Vec<String>,
     check_timeout: Option<u32>,
 ) -> Result<(Output, i32)> {
+    let reject = |message: String| Ok((Output::Rejection(message), 2));
+    let (extra, models) = match args::validate(&mut args, handoff, &checks) {
+        Ok(validated) => validated,
+        Err(message) => return reject(message),
+    };
     let DispatchArgs {
         mode,
         executor,
         brief,
         repo,
-        mut model,
         effort,
         goal,
         name,
         profile,
         pane,
         paths,
-        mut extra,
         request_id,
         accept_with,
         expected_head,
         expected_branch,
+        ..
     } = args;
-    let reject = |message: String| Ok((Output::Rejection(message), 2));
-    if !checks.is_empty() && model.len() > 1 {
-        return reject("--check requires a single dispatch".into());
-    }
-    if request_id.is_some() && (handoff || pane || !checks.is_empty() || model.len() > 1) {
-        return reject("--request-id requires one dispatch without --pane or --check".into());
-    }
-    if (expected_head.is_some() || expected_branch.is_some())
-        && accept_with.is_none()
-        && (mode != "review" || handoff || model.len() > 1)
-    {
-        return reject("checkout pins require a single review dispatch or --accept-with".into());
-    }
-    if accept_with.is_some() {
-        if mode != "direct" || executor != Executor::Codex || !extra.is_empty() {
-            return reject("--accept-with requires a direct Codex dispatch without native extra arguments".into());
-        }
-        extra.extend(["--sandbox".into(), "workspace-write".into()]);
-    }
-    if checks.iter().any(|check| check.trim().is_empty()) {
-        return reject("--check requires a nonempty shell command".into());
-    }
-    if executor != Executor::Claude && profile.is_some() {
-        return reject("--profile applies only to Claude".into());
-    }
-    if effort.is_some() {
-        let conflict = match executor {
-            Executor::Vibe => {
-                return reject(
-                    "Vibe has no per-run effort; effort comes from the model alias's `thinking` setting in Vibe's config.toml, choose an alias with --model"
-                        .into(),
-                );
-            }
-            Executor::Codex => codex_config_assignments(&extra).any(|(key, _)| key == "model_reasoning_effort"),
-            Executor::Claude => extra.iter().any(|arg| arg == "--effort" || arg.starts_with("--effort=")),
-        };
-        if conflict {
-            return reject("--effort conflicts with native effort arguments after --".into());
-        }
-    }
-    if executor == Executor::Codex && mode == "review" {
-        if codex_config_assignments(&extra).any(|(key, value)| {
-            key == "sandbox_mode" && !matches!(value, "read-only" | r#""read-only""# | "'read-only'")
-        }) {
-            return reject("Codex review requires sandbox_mode to be read-only".into());
-        }
-        let mut sandbox_specified = false;
-        let mut args = extra.iter_mut();
-        while let Some(arg) = args.next() {
-            let value = match arg.as_str() {
-                "--" => return reject("Codex review extras cannot include a second -- separator".into()),
-                "--dangerously-bypass-approvals-and-sandbox"
-                | "--yolo"
-                | "--full-auto"
-                | "--approve-for-me"
-                | "--not-so-yolo" => {
-                    return reject(format!("Codex review requires a read-only sandbox and cannot use {arg}"));
-                }
-                "--sandbox" | "-s" => args.next().map(|value| value.as_str()),
-                flag if flag.starts_with("--sandbox=") => flag.strip_prefix("--sandbox="),
-                flag if flag.starts_with("-s") => {
-                    flag.strip_prefix("-s").map(|value| value.strip_prefix('=').unwrap_or(value))
-                }
-                _ => continue,
-            };
-            if sandbox_specified {
-                return reject("Codex review accepts only one explicit sandbox flag".into());
-            }
-            if value != Some("read-only") {
-                return reject("Codex review requires --sandbox read-only".into());
-            }
-            if arg.starts_with("-s") && arg != "-s" {
-                // The launchers only recognize the split short flag or the long flag.
-                *arg = "--sandbox=read-only".into();
-            }
-            sandbox_specified = true;
-        }
-        if !sandbox_specified {
-            extra.extend(["--sandbox".into(), "read-only".into()]);
-        }
-    }
-    let models = match model.as_slice() {
-        [] | [_] => Models::Single(model.pop()),
-        _ if handoff => return reject("a handoff continues one conversation; pass --model at most once".into()),
-        // Several writers in one worktree would edit the same files concurrently.
-        _ if mode != "review" => {
-            return reject("repeat --model only with --mode review; a writer runs one model".into());
-        }
-        _ if model.iter().enumerate().any(|(i, name)| model[..i].contains(name)) => {
-            return reject("each repeated --model must name a different model".into());
-        }
-        _ => Models::Review(model),
-    };
     let repo = store::repo(&repo)?;
     let resolve_target = || -> Result<Target> {
         Ok(match executor {
