@@ -87,7 +87,7 @@ echo "RUN_DIR=$3 PID=43210 CONVERSATION_ID=native-1""#,
     echo '43210 1 43210 S Sat Nov 28 16:00:01 2026'
   fi;;
 -p)
-  if test "$4" = lstart=,args=; then printf 'Sat Nov 28 16:00:01 2026 '; fi
+  if test "$4" = stat=,lstart=,args=; then printf 'S Sat Nov 28 16:00:01 2026 '; fi
   cat "$HERDER_SKILLS_DIR/ps";;
 *) exit 90;;
 esac"#,

@@ -33,28 +33,35 @@ elif [[ "$STATE" == unknown ]]; then
 	exit 0
 fi
 
-RESULT=$(tail -n 1 "$EVENTS" 2>/dev/null | jq -ce 'select(.event == "result") | .result' 2>/dev/null || true)
-if [[ -z "$RESULT" ]]; then
+LAST_LINE=$(tail -n 1 "$EVENTS" 2>/dev/null || true)
+VERDICT=$(jq -Rr '
+	fromjson? | objects | select(.event == "result") | .result
+	| (.denied_actions // []) as $denied
+	| if ($denied | length) > 0 then
+		"FAILED (denied actions: \($denied | map(.display_name) | join(", ") | sub("\n+$"; "")))"
+	  elif .status == "ERROR" then
+		"ERROR", (.error // "")
+	  elif .status == "SUCCESS" and ((.response | strings | length) // 0) > 0 then
+		"COMPLETED"
+	  else "FAILED (result status \(.status) or empty response)" end
+' <<<"$LAST_LINE")
+if [[ -z "$VERDICT" ]]; then
 	echo "verdict: DIED (no result event)"
 	tail -n 5 "$RUN_DIR/stderr.log" 2>/dev/null || true
 	exit 0
 fi
 
-DENIED=$(jq -r '.denied_actions // [] | map(.display_name) | join(", ")' <<<"$RESULT")
-STATUS=$(jq -r '.status' <<<"$RESULT")
-ERROR=$(jq -r '.error // empty' <<<"$RESULT")
-if jq -e '(.denied_actions // []) | length > 0' <<<"$RESULT" >/dev/null; then
-	echo "verdict: FAILED (denied actions: $DENIED)"
-elif [[ "$STATUS" == ERROR && "$ERROR" == interrupted ]]; then
-	echo "verdict: STOPPED (interrupted)"
-elif [[ "$STATUS" == ERROR ]]; then
-	echo "verdict: FAILED (${ERROR:-no error message})"
-elif [[ "$STATUS" == SUCCESS ]] && jq -e '.response | strings | length > 0' <<<"$RESULT" >/dev/null; then
+case "$VERDICT" in
+ERROR$'\n'interrupted)
+	VERDICT='STOPPED (interrupted)';;
+ERROR*)
+	ERROR=${VERDICT#ERROR}
+	ERROR=${ERROR#$'\n'}
+	VERDICT="FAILED (${ERROR:-no error message})";;
+COMPLETED)
 	TEMP=$(mktemp "$FINAL.XXXXXX")
 	trap 'rm -f "$TEMP"' EXIT
-	jq -jr '.response' <<<"$RESULT" >"$TEMP"
-	mv -f "$TEMP" "$FINAL"
-	echo "verdict: COMPLETED"
-else
-	echo "verdict: FAILED (result status $STATUS or empty response)"
-fi
+	jq -jr '.result.response' <<<"$LAST_LINE" >"$TEMP"
+	mv -f "$TEMP" "$FINAL";;
+esac
+echo "verdict: $VERDICT"

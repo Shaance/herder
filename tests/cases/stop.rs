@@ -21,28 +21,24 @@ fn stop_signals_tree_and_shared_group_once_and_ignores_esrch() {
          4242 43210 4242 S Sat Nov 28 16:00:02 2026\n\
          43210 1 43210 S Sat Nov 28 16:00:01 2026\n\
          4244 43210 4244 Z Sat Nov 28 16:00:04 2026\n\
+         4245 43210 4245 S Sat Nov 28 16:00:05 2026\n\
+         4247 43210 9999 S Sat Nov 28 16:00:07 2026\n\
+         4248 43210 9999 S Sat Nov 28 16:00:08 2026\n\
          1 43210 1 S Sat Nov 28 15:00:00 2026\n",
     );
     f.executable(
         &f.bin.join("kill"),
         r#"printf '%s\n' "$@" >> "$HERDER_STATE_DIR/kill-args"
 printf 'state=exited pid=43210\nverdict: DIED\n' > "$HERDER_SKILLS_DIR/status"
-if test "$3" = 4242; then
+if test "$3" = 4247; then
+    : > "$HERDER_SKILLS_DIR/ps-snapshot"
     printf 'kill: %s: No such process\n' "$3" >&2
     exit 1
-fi
-if test "$3" = 4243; then : > "$HERDER_SKILLS_DIR/ps-snapshot"; fi"#,
+fi"#,
     );
     let stopped = f.call(&["stop", &id], 0);
     assert_eq!(stopped["data"]["observation"]["state"], "stopped");
-    let terms = signals(&f);
-    let lines: Vec<_> = terms.lines().skip(3).collect();
-    let (calls, trailing) = lines.as_chunks::<3>();
-    assert!(trailing.is_empty(), "{terms}");
-    let mut calls = calls.to_vec();
-    calls.sort_unstable();
-    assert!(terms.starts_with("-TERM\n--\n-43210\n"), "{terms}");
-    assert_eq!(calls, [["-TERM", "--", "-4242"], ["-TERM", "--", "4242"], ["-TERM", "--", "4243"]]);
+    assert_eq!(signals(&f), "-TERM\n--\n-43210\n-TERM\n--\n-4242\n-4245\n-TERM\n--\n4247\n4248\n");
 }
 
 #[test]
@@ -74,7 +70,7 @@ fi"#,
     let result = f.call(&["stop", &id], 0);
     assert!(began.elapsed() >= Duration::from_millis(1500));
     assert_eq!(result["data"]["observation"]["state"], "stopped");
-    assert_eq!(signals(&f), "-TERM\n--\n-43210\n-TERM\n--\n4243\n-KILL\n--\n4243\n");
+    assert_eq!(signals(&f), "-TERM\n--\n-43210\n-KILL\n--\n4243\n");
 }
 
 #[test]
@@ -91,7 +87,7 @@ if test "$3" = -43210; then
     cp "$HERDER_SKILLS_DIR/ps-after-term" "$HERDER_SKILLS_DIR/ps-snapshot"
     printf 'state=exited pid=43210\nverdict: DIED\n' > "$HERDER_SKILLS_DIR/status"
 fi
-if test "$1" = -TERM && test "$3" = 4242 && test -f "$HERDER_SKILLS_DIR/repeated"; then
+if test "$1" = -TERM && test "$3" = -4242 && test -f "$HERDER_SKILLS_DIR/repeated"; then
     : > "$HERDER_SKILLS_DIR/ps-snapshot"
 fi"#,
     );
@@ -110,13 +106,21 @@ fi"#,
     assert!(resume["error"].as_str().unwrap().contains("cannot resume"));
     assert_eq!(f.record(&id)["attempt"], 1);
 
-    fs::remove_file(f.skills.join("ps")).unwrap();
+    f.write(
+        "skills/ps-snapshot",
+        &format!("43210 1 43210 S Sat Nov 28 16:00:01 2026\n{}", child.replace(" 43210 ", " 1 ")),
+    );
+    f.executable(
+        &f.bin.join("ps"),
+        r#"case "$1" in
+-p) exit 1;;
+-Ao) cat "$HERDER_SKILLS_DIR/ps-snapshot";;
+*) exit 90;;
+esac"#,
+    );
     f.write("skills/repeated", "");
     assert_eq!(f.call(&["stop", &id], 0)["data"]["observation"]["state"], "stopped");
-    assert_eq!(
-        signals(&f),
-        "-TERM\n--\n-43210\n-TERM\n--\n-4242\n-TERM\n--\n4242\n-KILL\n--\n4242\n-TERM\n--\n-4242\n-TERM\n--\n4242\n"
-    );
+    assert_eq!(signals(&f), "-TERM\n--\n-43210\n-TERM\n--\n-4242\n-KILL\n--\n4242\n-TERM\n--\n-4242\n");
 }
 
 #[test]
@@ -138,7 +142,7 @@ fn stop_preserves_normal_verdict_and_explains_missing_children_if_worker_exits_b
     f.executable(
         &f.bin.join("ps"),
         r#"case "$1" in
--p) printf 'Sat Nov 28 16:00:01 2026 '; cat "$HERDER_SKILLS_DIR/ps";;
+-p) printf 'S Sat Nov 28 16:00:01 2026 '; cat "$HERDER_SKILLS_DIR/ps";;
 -Ao) printf 'state=exited pid=43210\nverdict: DIED\n' > "$HERDER_SKILLS_DIR/status";;
 *) exit 90;;
 esac"#,
@@ -155,6 +159,31 @@ esac"#,
     );
     assert!(!f.state.join("kill-args").exists());
     assert_eq!(f.record(&id)["launch"]["intent"]["state"], "running");
+}
+
+#[test]
+fn stop_handles_a_reaped_or_zombie_worker_during_confirmation() {
+    for response in ["exit 1", "echo 'Z Sat Nov 28 16:00:01 2026 <defunct>'", "echo 'permission denied' >&2; exit 1"] {
+        let f = Fixture::new();
+        let id = launch_codex(&f);
+        f.executable(
+            &f.bin.join("ps"),
+            &format!(
+                "test \"$1\" = -p\ntest \"$4\" = stat=,lstart=,args=\n\
+                 printf 'state=exited pid=43210\\nverdict: COMPLETED\\n' > \"$HERDER_SKILLS_DIR/status\"\n{response}"
+            ),
+        );
+        let denied = response.contains("permission denied");
+        let reply = f.call(&["stop", &id], i32::from(denied));
+        if denied {
+            assert!(reply["error"].as_str().unwrap().contains("permission denied"), "{reply}");
+        } else {
+            let observation = &reply["data"]["observation"];
+            assert_eq!(observation["state"], "finished", "{reply}");
+            assert!(observation["evidence"].as_str().unwrap().contains("worker had already exited"), "{reply}");
+        }
+        assert!(!f.state.join("kill-args").exists());
+    }
 }
 
 #[test]
@@ -199,16 +228,20 @@ fi"#,
     f.script(
         "codex-implementer",
         "status_classic",
-        r#"if test -f "$HERDER_SKILLS_DIR/term-sent" && ! test -f "$HERDER_SKILLS_DIR/kill-sent"; then sleep 4; fi
+        r#"if test -f "$HERDER_SKILLS_DIR/term-sent"; then
+    touch "$HERDER_SKILLS_DIR/queried-after-term"
+    sleep 4
+fi
 cat "$HERDER_SKILLS_DIR/status""#,
     );
     let stopped = f.call(&["stop", &id], 0);
     assert_eq!(stopped["data"]["observation"]["state"], "running");
-    assert_eq!(signals(&f), "-TERM\n--\n-43210\n-TERM\n--\n4242\n-KILL\n--\n4242\n");
+    assert_eq!(signals(&f), "-TERM\n--\n-43210\n-KILL\n--\n4242\n");
     let status = f.call(&["status", &id], 0);
     let evidence = status["data"]["observation"]["evidence"].as_str().unwrap();
     assert!(evidence.contains("worker 43210 still running"), "{evidence}");
     assert!(evidence.contains("1 child process still running: 4242"), "{evidence}");
+    assert!(!f.skills.join("queried-after-term").exists());
 }
 
 #[test]
@@ -218,7 +251,7 @@ fn failed_stop_snapshot_reports_unknown_and_blocks_follow_up_actions() {
     f.executable(
         &f.bin.join("ps"),
         r#"case "$1" in
--p) printf 'Sat Nov 28 16:00:01 2026 '; cat "$HERDER_SKILLS_DIR/ps";;
+-p) printf 'S Sat Nov 28 16:00:01 2026 '; cat "$HERDER_SKILLS_DIR/ps";;
 -Ao)
     if test -f "$HERDER_STATE_DIR/kill-args"; then
         echo 'ps: Operation not permitted' >&2

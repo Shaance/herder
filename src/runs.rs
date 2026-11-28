@@ -89,14 +89,13 @@ pub fn observe_until(
                     }
                     _ => None,
                 };
-                let queried = executor.query(run, dir, deadline, source);
                 if let Some(progress) = progress {
                     return Ok(progress);
                 }
+                let (mut observed, identity) = executor.query(run, dir, deadline, source)?;
                 if let Launch::Launched { intent: intent @ Intent::StopSent { worker: Some(_), .. }, .. } =
                     &mut run.launch
                 {
-                    let (mut observed, _) = queried?;
                     *intent = match observed.state() {
                         State::Finished | State::Failed => Intent::Running,
                         State::Unknown => return Ok(observed),
@@ -111,7 +110,6 @@ pub fn observe_until(
                     store.save(run)?;
                     return Ok(observed);
                 }
-                let (observed, identity) = queried?;
                 let identity = match &run.launch {
                     Launch::PendingResume { previous: Native::Codex { .. }, .. } => Some(identity?),
                     _ => identity.ok(),
@@ -195,7 +193,10 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     }
     let deadline = Instant::now() + Duration::from_secs(2);
     let escalate_at = deadline - Duration::from_millis(500);
-    let mut escalate = script_worker;
+    let mut escalate = matches!(
+        &run.launch,
+        Launch::Launched { intent: Intent::StopSent { descendants, .. }, .. } if !descendants.is_empty()
+    );
     let poll = Duration::from_millis(100);
     loop {
         let until_escalation = escalate_at.saturating_duration_since(Instant::now());

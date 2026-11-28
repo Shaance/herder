@@ -3,7 +3,7 @@ use crate::{
         Executor, Intent, Launch, LaunchPhase, Native, Observation, ProcessIdentity, Run, State, Target, UnknownCause,
         UnknownError,
     },
-    process::{Script, ScriptSource, checked, on_path, output, query, script, script_from},
+    process::{Script, ScriptSource, on_path, output, query, script, script_from},
     store::LockedRun,
 };
 use anyhow::{Context, Result, ensure};
@@ -291,14 +291,22 @@ pub fn confirm(native: &Native, dir: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn confirm_stop(native: &Native, run: &Run, dir: &Path, pid: i32) -> Result<ProcessIdentity> {
+fn confirm_stop(native: &Native, run: &Run, dir: &Path, pid: i32) -> Result<Option<ProcessIdentity>> {
     confirm(native, dir)?;
-    let args = checked(Command::new("ps").env("LC_ALL", "C").env("TZ", "UTC0").args([
+    let (code, args) = output(Command::new("ps").env("LC_ALL", "C").env("TZ", "UTC0").args([
         "-p",
         &pid.to_string(),
         "-o",
-        "lstart=,args=",
+        "stat=,lstart=,args=",
     ]))?;
+    if code == Some(1) && args.trim().is_empty() {
+        return Ok(None);
+    }
+    ensure!(code == Some(0), "exit {code:?}: {args}");
+    let mut fields = args.split_whitespace();
+    if fields.next().context("ps did not report worker status")?.starts_with('Z') {
+        return Ok(None);
+    }
     let marker = match native {
         Native::Vibe { .. } => dir.join(format!("out{}", run.suffix())),
         Native::Agy { .. } => dir.join("agy.log"),
@@ -308,8 +316,8 @@ fn confirm_stop(native: &Native, run: &Run, dir: &Path, pid: i32) -> Result<Proc
         format!("{} ", args.trim()).contains(&format!(" {} ", marker.display())),
         "pid {pid} command does not belong to this run; refusing TERM"
     );
-    let lstart = args.split_whitespace().take(5).collect::<Vec<_>>().join(" ");
-    Ok(ProcessIdentity { pid, lstart })
+    let lstart = fields.take(5).collect::<Vec<_>>().join(" ");
+    Ok(Some(ProcessIdentity { pid, lstart }))
 }
 
 struct ProcessRow {
@@ -365,19 +373,27 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<bool> {
         Intent::StopSent { worker: Some(worker), descendants } => Some((worker, descendants)),
         _ => None,
     };
-    let confirmed = prior.is_none().then(|| confirm_stop(native, run, &store.dir, pid)).transpose()?;
+    let confirmed = if prior.is_none() {
+        let Some(worker) = confirm_stop(native, run, &store.dir, pid)? else { return Ok(false) };
+        Some(worker)
+    } else {
+        None
+    };
     let rows = snapshot(None)?;
     let worker = rows.iter().find(|row| row.identity.pid == pid);
     if let Some(confirmed) = &confirmed {
         let Some(worker) = worker else { return Ok(false) };
         ensure!(worker.identity == *confirmed, "pid {pid} start time changed; refusing TERM");
     }
-    let worker = worker.filter(|row| prior.is_none_or(|(prior, _)| row.identity == *prior));
-    if let Some(worker) = worker {
-        ensure!(worker.pgid == pid, "pid {pid} is not its own process group; refusing TERM");
+    let mut worker = worker.filter(|row| prior.is_none_or(|(prior, _)| row.identity == *prior));
+    if let Some(row) = worker {
+        ensure!(row.pgid == pid, "pid {pid} is not its own process group; refusing TERM");
         if prior.is_some() {
-            let confirmed = confirm_stop(native, run, &store.dir, pid)?;
-            ensure!(worker.identity == confirmed, "pid {pid} start time changed; refusing TERM");
+            if let Some(confirmed) = confirm_stop(native, run, &store.dir, pid)? {
+                ensure!(row.identity == confirmed, "pid {pid} start time changed; refusing TERM");
+            } else {
+                worker = None;
+            }
         }
     }
     let descendants = if let Some((_, descendants)) = prior {
@@ -403,14 +419,14 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<bool> {
         let rows = snapshot(None)?;
         let groups: std::collections::BTreeSet<_> = living(&rows, &descendants)
             .map(|row| row.pgid)
-            .filter(|group| (*group == pid && worker.is_none()) || descendants.iter().any(|child| child.pid == *group))
+            .filter(|group| descendants.iter().any(|child| child.pid == *group))
             .collect();
-        for group in groups {
-            signal("-TERM", &[-group], None)?;
-        }
-        for child in living(&snapshot(None)?, &descendants) {
-            signal("-TERM", &[child.identity.pid], None)?;
-        }
+        signal("-TERM", &groups.iter().map(|group| -group).collect::<Vec<_>>(), None)?;
+        let individuals: Vec<_> = living(&snapshot(None)?, &descendants)
+            .filter(|row| !groups.contains(&row.pgid) && (worker.is_none() || row.pgid != pid))
+            .map(|row| row.identity.pid)
+            .collect();
+        signal("-TERM", &individuals, None)?;
     }
     Ok(true)
 }
