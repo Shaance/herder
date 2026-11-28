@@ -83,13 +83,19 @@ pub fn observe_until(
                 observed
             }
             Some(executor) => {
-                let queried = executor.query(run, dir, deadline, source);
-                if let Launch::Launched { intent, .. } = &mut run.launch
-                    && let Intent::StopSent { worker: Some(worker), descendants } = intent
-                {
-                    if let Some(evidence) = scripts::stop_progress(worker, descendants, deadline) {
-                        return Ok(Observation::known(State::Running, evidence));
+                let progress = match &run.launch {
+                    Launch::Launched { intent: Intent::StopSent { worker: Some(worker), descendants }, .. } => {
+                        scripts::stop_progress(worker, descendants, deadline)
                     }
+                    _ => None,
+                };
+                let queried = executor.query(run, dir, deadline, source);
+                if let Some(progress) = progress {
+                    return Ok(progress);
+                }
+                if let Launch::Launched { intent: intent @ Intent::StopSent { worker: Some(_), .. }, .. } =
+                    &mut run.launch
+                {
                     let (mut observed, _) = queried?;
                     *intent = match observed.state() {
                         State::Finished | State::Failed => Intent::Running,
@@ -190,8 +196,11 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let escalate_at = deadline - Duration::from_millis(500);
     let mut escalate = script_worker;
+    let poll = Duration::from_millis(100);
     loop {
-        if escalate && Instant::now() >= escalate_at {
+        let until_escalation = escalate_at.saturating_duration_since(Instant::now());
+        if escalate && until_escalation <= poll {
+            std::thread::sleep(until_escalation);
             scripts::kill_stop_descendants(run, deadline)?;
             escalate = false;
         }
@@ -204,12 +213,12 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
             return Ok(observed);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let poll = Duration::from_millis(100);
         if remaining.is_zero() || (script_worker && !escalate && remaining <= poll) {
             observed.prefix_evidence("stop sent; exit not confirmed: ");
             return Ok(observed);
         }
-        std::thread::sleep(observe_by.saturating_duration_since(Instant::now()).min(poll));
+        let poll_by = if script_worker { observe_by - poll } else { observe_by };
+        std::thread::sleep(poll_by.saturating_duration_since(Instant::now()).min(poll));
     }
 }
 pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &LockedRun) -> Result<Observation> {

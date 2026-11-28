@@ -210,3 +210,37 @@ cat "$HERDER_SKILLS_DIR/status""#,
     assert!(evidence.contains("worker 43210 still running"), "{evidence}");
     assert!(evidence.contains("1 child process still running: 4242"), "{evidence}");
 }
+
+#[test]
+fn failed_stop_snapshot_reports_unknown_and_blocks_follow_up_actions() {
+    let f = Fixture::new();
+    let id = launch_codex(&f);
+    f.executable(
+        &f.bin.join("ps"),
+        r#"case "$1" in
+-p) printf 'Sat Nov 28 16:00:01 2026 '; cat "$HERDER_SKILLS_DIR/ps";;
+-Ao)
+    if test -f "$HERDER_STATE_DIR/kill-args"; then
+        echo 'ps: Operation not permitted' >&2
+        exit 1
+    fi
+    echo '43210 1 43210 S Sat Nov 28 16:00:01 2026';;
+*) exit 90;;
+esac"#,
+    );
+    for command in ["stop", "status"] {
+        let result = f.call(&[command, &id], 0);
+        let observation = &result["data"]["observation"];
+        assert_eq!(observation["state"], "unknown", "{result}");
+        assert_eq!(observation["cause"], "query_failed", "{result}");
+        let evidence = observation["evidence"].as_str().unwrap();
+        assert!(evidence.starts_with("stop sent; could not check processes: "), "{evidence}");
+        assert!(evidence.contains("Operation not permitted"), "{evidence}");
+    }
+    assert_eq!(f.record(&id)["launch"]["intent"]["state"], "stop_sent");
+    assert_eq!(f.call(&["wait", &id, "--timeout", "1"], 1)["data"]["runs"][0]["state"], "unknown");
+    let verify = f.call(&["verify", &id, "--path", "src/"], 2);
+    assert_eq!(verify["data"]["message"], "cannot verify worker in state unknown");
+    let resume = f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 1);
+    assert!(resume["error"].as_str().unwrap().contains("cannot resume"));
+}

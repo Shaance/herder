@@ -419,10 +419,15 @@ pub fn stop_progress(
     worker: &ProcessIdentity,
     descendants: &[ProcessIdentity],
     deadline: Option<Instant>,
-) -> Option<String> {
+) -> Option<Observation> {
     let rows = match snapshot(deadline) {
         Ok(rows) => rows,
-        Err(error) => return Some(format!("stop sent; could not check processes: {error:#}")),
+        Err(error) => {
+            return Some(Observation::unknown(
+                UnknownCause::QueryFailed,
+                format!("stop sent; could not check processes: {error:#}"),
+            ));
+        }
     };
     let worker_evidence = living(&rows, std::slice::from_ref(worker))
         .next()
@@ -431,9 +436,12 @@ pub fn stop_progress(
     if !children.is_empty() {
         let label = if children.len() == 1 { "child process" } else { "child processes" };
         let prefix = worker_evidence.map_or_else(|| "stop sent; ".into(), |worker| format!("{worker}; "));
-        return Some(format!("{prefix}{} {label} still running: {}", children.len(), children.join(", ")));
+        return Some(Observation::known(
+            State::Running,
+            format!("{prefix}{} {label} still running: {}", children.len(), children.join(", ")),
+        ));
     }
-    worker_evidence
+    worker_evidence.map(|evidence| Observation::known(State::Running, evidence))
 }
 
 pub fn kill_stop_descendants(run: &Run, deadline: Instant) -> Result<()> {
