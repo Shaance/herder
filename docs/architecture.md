@@ -36,7 +36,10 @@ reports a broken published run without hiding other runs.
 
 ## Lifecycle and observation
 
-Dispatch lints the input, records the launch intent, then starts the worker.
+Dispatch reads the input once, lints those bytes through a private snapshot
+outside the checkout and state directory, stages the same bytes for every
+model, records the launch intent, then starts the worker. A brief that is not a
+regular, nonempty file is handed to the linter unread.
 The native session or thread identity and, where applicable, PID are recorded
 when confirmed. A launch gate can leave a run starting while later status calls
 recover identity from evidence. Claude acceptance is saved before its gate.
