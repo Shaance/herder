@@ -154,6 +154,12 @@ impl ScriptExecutor {
             ("alive", _) => State::Running,
             ("exited", Some("COMPLETED")) => State::Finished,
             ("exited", Some("STOPPED")) => State::Stopped,
+            // DIED is a missing executor result, which is expected after TERM.
+            ("exited", Some("DIED"))
+                if matches!(run.launch, Launch::Launched { intent: Intent::StopSent { worker: Some(_), .. }, .. }) =>
+            {
+                State::Stopped
+            }
             ("exited", Some("DIED" | "FAILED")) => State::Failed,
             _ => return Ok((Observation::unknown(UnknownCause::UnrecognizedStatus, text), identity)),
         };
@@ -285,9 +291,14 @@ pub fn confirm(native: &Native, dir: &Path) -> Result<()> {
     );
     Ok(())
 }
-fn confirm_stop(native: &Native, run: &Run, dir: &Path, pid: i32) -> Result<()> {
+fn confirm_stop(native: &Native, run: &Run, dir: &Path, pid: i32) -> Result<ProcessIdentity> {
     confirm(native, dir)?;
-    let args = checked(Command::new("ps").args(["-p", &pid.to_string(), "-o", "args="]))?;
+    let args = checked(Command::new("ps").env("LC_ALL", "C").env("TZ", "UTC0").args([
+        "-p",
+        &pid.to_string(),
+        "-o",
+        "lstart=,args=",
+    ]))?;
     let marker = match native {
         Native::Vibe { .. } => dir.join(format!("out{}", run.suffix())),
         Native::Agy { .. } => dir.join("agy.log"),
@@ -297,7 +308,8 @@ fn confirm_stop(native: &Native, run: &Run, dir: &Path, pid: i32) -> Result<()> 
         format!("{} ", args.trim()).contains(&format!(" {} ", marker.display())),
         "pid {pid} command does not belong to this run; refusing TERM"
     );
-    Ok(())
+    let lstart = args.split_whitespace().take(5).collect::<Vec<_>>().join(" ");
+    Ok(ProcessIdentity { pid, lstart })
 }
 
 struct ProcessRow {
@@ -337,7 +349,7 @@ fn signal(name: &str, pids: &[i32], deadline: Option<Instant>) -> Result<()> {
         return Ok(());
     }
     match crate::process::checked_until(
-        Command::new("kill").env("LC_ALL", "C").arg(name).args(pids.iter().map(i32::to_string)),
+        Command::new("kill").env("LC_ALL", "C").args([name, "--"]).args(pids.iter().map(i32::to_string)),
         deadline,
     ) {
         Err(error) if error.to_string().lines().all(|line| line.trim_end().ends_with(": No such process")) => Ok(()),
@@ -345,7 +357,7 @@ fn signal(name: &str, pids: &[i32], deadline: Option<Instant>) -> Result<()> {
     }
 }
 
-pub fn stop(run: &mut Run, store: &LockedRun) -> Result<()> {
+pub fn stop(run: &mut Run, store: &LockedRun) -> Result<bool> {
     let Launch::Launched { native, intent } = &run.launch else { anyhow::bail!("no recorded identity") };
     let (pid, _, _) = native.process().context("script identity required")?;
     let pid = i32::try_from(pid.get())?;
@@ -353,20 +365,26 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<()> {
         Intent::StopSent { worker: Some(worker), descendants } => Some((worker, descendants)),
         _ => None,
     };
-    if prior.is_none() {
-        confirm_stop(native, run, &store.dir, pid)?;
-    }
+    let confirmed = prior.is_none().then(|| confirm_stop(native, run, &store.dir, pid)).transpose()?;
     let rows = snapshot(None)?;
-    let worker = rows.iter().find(|row| row.identity.pid == pid).map(|row| row.identity.clone());
-    let signal_worker = worker.as_ref().is_some_and(|worker| prior.is_none_or(|(prior, _)| worker == prior));
-    let descendants = if let Some((_, descendants)) = prior {
-        if signal_worker {
-            confirm_stop(native, run, &store.dir, pid)?;
+    let worker = rows.iter().find(|row| row.identity.pid == pid);
+    if let Some(confirmed) = &confirmed {
+        let Some(worker) = worker else { return Ok(false) };
+        ensure!(worker.identity == *confirmed, "pid {pid} start time changed; refusing TERM");
+    }
+    let worker = worker.filter(|row| prior.is_none_or(|(prior, _)| row.identity == *prior));
+    if let Some(worker) = worker {
+        ensure!(worker.pgid == pid, "pid {pid} is not its own process group; refusing TERM");
+        if prior.is_some() {
+            let confirmed = confirm_stop(native, run, &store.dir, pid)?;
+            ensure!(worker.identity == confirmed, "pid {pid} start time changed; refusing TERM");
         }
+    }
+    let descendants = if let Some((_, descendants)) = prior {
         descendants.clone()
     } else {
         let mut descendants = Vec::new();
-        let mut parents: Vec<_> = worker.iter().map(|worker| worker.pid).collect();
+        let mut parents = vec![pid];
         while let Some(parent) = parents.pop() {
             for row in rows.iter().filter(|row| row.ppid == parent) {
                 parents.push(row.identity.pid);
@@ -374,18 +392,18 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<()> {
             }
         }
         let Launch::Launched { intent, .. } = &mut run.launch else { unreachable!() };
-        *intent = Intent::StopSent { worker, descendants: descendants.clone() };
+        *intent = Intent::StopSent { worker: confirmed, descendants: descendants.clone() };
         store.save(run)?;
         descendants
     };
-    if signal_worker {
-        signal("-TERM", &[pid], None)?;
+    if worker.is_some() {
+        signal("-TERM", &[-pid], None)?;
     }
     if !descendants.is_empty() {
         let rows = snapshot(None)?;
         let groups: std::collections::BTreeSet<_> = living(&rows, &descendants)
             .map(|row| row.pgid)
-            .filter(|group| *group == pid || descendants.iter().any(|child| child.pid == *group))
+            .filter(|group| (*group == pid && worker.is_none()) || descendants.iter().any(|child| child.pid == *group))
             .collect();
         for group in groups {
             signal("-TERM", &[-group], None)?;
@@ -394,7 +412,7 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<()> {
             signal("-TERM", &[child.identity.pid], None)?;
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 pub fn stop_progress(
@@ -406,14 +424,16 @@ pub fn stop_progress(
         Ok(rows) => rows,
         Err(error) => return Some(format!("stop sent; could not check processes: {error:#}")),
     };
+    let worker_evidence = living(&rows, std::slice::from_ref(worker))
+        .next()
+        .map(|_| format!("stop sent; worker {} still running", worker.pid));
     let children: Vec<_> = living(&rows, descendants).map(|row| row.identity.pid.to_string()).collect();
     if !children.is_empty() {
         let label = if children.len() == 1 { "child process" } else { "child processes" };
-        return Some(format!("stop sent; {} {label} still running: {}", children.len(), children.join(", ")));
+        let prefix = worker_evidence.map_or_else(|| "stop sent; ".into(), |worker| format!("{worker}; "));
+        return Some(format!("{prefix}{} {label} still running: {}", children.len(), children.join(", ")));
     }
-    living(&rows, std::slice::from_ref(worker))
-        .next()
-        .map(|_| format!("stop sent; worker {} still running", worker.pid))
+    worker_evidence
 }
 
 pub fn kill_stop_descendants(run: &Run, deadline: Instant) -> Result<()> {

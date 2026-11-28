@@ -90,13 +90,20 @@ pub fn observe_until(
                     if let Some(evidence) = scripts::stop_progress(worker, descendants, deadline) {
                         return Ok(Observation::known(State::Running, evidence));
                     }
-                    let evidence = match queried {
-                        Ok((observed, _)) => observed.evidence().to_owned(),
-                        Err(error) => format!("executor query failed: {error:#}"),
+                    let (mut observed, _) = queried?;
+                    *intent = match observed.state() {
+                        State::Finished | State::Failed => Intent::Running,
+                        State::Unknown => return Ok(observed),
+                        _ => {
+                            observed = Observation::known(
+                                State::Stopped,
+                                format!("stopped by herder stop; {}", observed.evidence()),
+                            );
+                            Intent::Stopped
+                        }
                     };
-                    *intent = Intent::Stopped;
                     store.save(run)?;
-                    return Ok(Observation::known(State::Stopped, format!("stopped by herder stop; {evidence}")));
+                    return Ok(observed);
                 }
                 let (observed, identity) = queried?;
                 let identity = match &run.launch {
@@ -175,27 +182,34 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
             *intent = Intent::StopSent { worker: None, descendants: vec![] };
         }
         store.save(run)?;
-    } else {
-        scripts::stop(run, store)?;
+    } else if !scripts::stop(run, store)? {
+        let mut observed = observe(run, Some(store));
+        observed.prefix_evidence("Child processes could not be checked because the worker had already exited.\n");
+        return Ok(observed);
     }
     let deadline = Instant::now() + Duration::from_secs(2);
+    let escalate_at = deadline - Duration::from_millis(500);
     let mut escalate = script_worker;
     loop {
-        let mut observed = observe_until(run, Some(store), script_worker.then_some(deadline), ScriptSource::Configured);
-        if observed.state() == State::Stopped {
+        if escalate && Instant::now() >= escalate_at {
+            scripts::kill_stop_descendants(run, deadline)?;
+            escalate = false;
+        }
+        let observe_by = if escalate { escalate_at } else { deadline };
+        let mut observed =
+            observe_until(run, Some(store), script_worker.then_some(observe_by), ScriptSource::Configured);
+        if observed.state() == State::Stopped
+            || (script_worker && matches!(observed.state(), State::Finished | State::Failed | State::Unknown))
+        {
             return Ok(observed);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
         let poll = Duration::from_millis(100);
-        if remaining.is_zero() || (script_worker && remaining <= poll) {
+        if remaining.is_zero() || (script_worker && !escalate && remaining <= poll) {
             observed.prefix_evidence("stop sent; exit not confirmed: ");
             return Ok(observed);
         }
-        if escalate && remaining <= Duration::from_millis(500) {
-            scripts::kill_stop_descendants(run, deadline)?;
-            escalate = false;
-        }
-        std::thread::sleep(remaining.min(poll));
+        std::thread::sleep(observe_by.saturating_duration_since(Instant::now()).min(poll));
     }
 }
 pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &LockedRun) -> Result<Observation> {

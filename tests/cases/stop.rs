@@ -27,22 +27,22 @@ fn stop_signals_tree_and_shared_group_once_and_ignores_esrch() {
         &f.bin.join("kill"),
         r#"printf '%s\n' "$@" >> "$HERDER_STATE_DIR/kill-args"
 printf 'state=exited pid=43210\nverdict: DIED\n' > "$HERDER_SKILLS_DIR/status"
-if test "$2" = 4242; then
-    printf 'kill: %s: No such process\n' "$2" >&2
+if test "$3" = 4242; then
+    printf 'kill: %s: No such process\n' "$3" >&2
     exit 1
 fi
-if test "$2" = 4243; then : > "$HERDER_SKILLS_DIR/ps-snapshot"; fi"#,
+if test "$3" = 4243; then : > "$HERDER_SKILLS_DIR/ps-snapshot"; fi"#,
     );
     let stopped = f.call(&["stop", &id], 0);
     assert_eq!(stopped["data"]["observation"]["state"], "stopped");
     let terms = signals(&f);
-    let lines: Vec<_> = terms.lines().skip(2).collect();
-    let (pairs, trailing) = lines.as_chunks::<2>();
+    let lines: Vec<_> = terms.lines().skip(3).collect();
+    let (calls, trailing) = lines.as_chunks::<3>();
     assert!(trailing.is_empty(), "{terms}");
-    let mut pairs = pairs.to_vec();
-    pairs.sort_unstable();
-    assert!(terms.starts_with("-TERM\n43210\n"), "{terms}");
-    assert_eq!(pairs, [["-TERM", "-4242"], ["-TERM", "4242"], ["-TERM", "4243"]]);
+    let mut calls = calls.to_vec();
+    calls.sort_unstable();
+    assert!(terms.starts_with("-TERM\n--\n-43210\n"), "{terms}");
+    assert_eq!(calls, [["-TERM", "--", "-4242"], ["-TERM", "--", "4242"], ["-TERM", "--", "4243"]]);
 }
 
 #[test]
@@ -64,7 +64,7 @@ fn stop_checks_start_time_before_signalling_and_kills_only_matching_descendants_
     f.executable(
         &f.bin.join("kill"),
         r#"printf '%s\n' "$@" >> "$HERDER_STATE_DIR/kill-args"
-if test "$2" = 43210; then cp "$HERDER_SKILLS_DIR/ps-after-term" "$HERDER_SKILLS_DIR/ps-snapshot"; fi
+if test "$3" = -43210; then cp "$HERDER_SKILLS_DIR/ps-after-term" "$HERDER_SKILLS_DIR/ps-snapshot"; fi
 if test "$1" = -KILL; then
     grep '^4242 ' "$HERDER_SKILLS_DIR/ps-after-term" > "$HERDER_SKILLS_DIR/ps-snapshot"
     printf 'state=exited pid=43210\nverdict: DIED\n' > "$HERDER_SKILLS_DIR/status"
@@ -74,7 +74,7 @@ fi"#,
     let result = f.call(&["stop", &id], 0);
     assert!(began.elapsed() >= Duration::from_millis(1500));
     assert_eq!(result["data"]["observation"]["state"], "stopped");
-    assert_eq!(signals(&f), "-TERM\n43210\n-TERM\n-43210\n-TERM\n4243\n-KILL\n4243\n");
+    assert_eq!(signals(&f), "-TERM\n--\n-43210\n-TERM\n--\n4243\n-KILL\n--\n4243\n");
 }
 
 #[test]
@@ -87,11 +87,11 @@ fn stop_tracks_reparented_survivors_across_wait_verify_resume_and_repeated_stop(
     f.executable(
         &f.bin.join("kill"),
         r#"printf '%s\n' "$@" >> "$HERDER_STATE_DIR/kill-args"
-if test "$2" = 43210; then
+if test "$3" = -43210; then
     cp "$HERDER_SKILLS_DIR/ps-after-term" "$HERDER_SKILLS_DIR/ps-snapshot"
     printf 'state=exited pid=43210\nverdict: DIED\n' > "$HERDER_SKILLS_DIR/status"
 fi
-if test "$1" = -TERM && test "$2" = 4242 && test -f "$HERDER_SKILLS_DIR/repeated"; then
+if test "$1" = -TERM && test "$3" = 4242 && test -f "$HERDER_SKILLS_DIR/repeated"; then
     : > "$HERDER_SKILLS_DIR/ps-snapshot"
 fi"#,
     );
@@ -113,5 +113,100 @@ fi"#,
     fs::remove_file(f.skills.join("ps")).unwrap();
     f.write("skills/repeated", "");
     assert_eq!(f.call(&["stop", &id], 0)["data"]["observation"]["state"], "stopped");
-    assert_eq!(signals(&f), "-TERM\n43210\n-TERM\n-4242\n-TERM\n4242\n-KILL\n4242\n-TERM\n-4242\n-TERM\n4242\n");
+    assert_eq!(
+        signals(&f),
+        "-TERM\n--\n-43210\n-TERM\n--\n-4242\n-TERM\n--\n4242\n-KILL\n--\n4242\n-TERM\n--\n-4242\n-TERM\n--\n4242\n"
+    );
+}
+
+#[test]
+fn stop_refuses_a_worker_replaced_between_argv_check_and_snapshot() {
+    let f = Fixture::new();
+    let id = launch_codex(&f);
+    f.write("skills/ps-snapshot", "43210 1 43210 S Sat Nov 28 16:00:02 2026\n");
+    let before = f.record(&id);
+    let refused = f.call(&["stop", &id], 1);
+    assert!(refused["error"].as_str().unwrap().contains("start time changed; refusing TERM"));
+    assert!(!f.state.join("kill-args").exists());
+    assert_eq!(f.record(&id), before);
+}
+
+#[test]
+fn stop_preserves_normal_verdict_and_explains_missing_children_if_worker_exits_before_snapshot() {
+    let f = Fixture::new();
+    let id = launch_codex(&f);
+    f.executable(
+        &f.bin.join("ps"),
+        r#"case "$1" in
+-p) printf 'Sat Nov 28 16:00:01 2026 '; cat "$HERDER_SKILLS_DIR/ps";;
+-Ao) printf 'state=exited pid=43210\nverdict: DIED\n' > "$HERDER_SKILLS_DIR/status";;
+*) exit 90;;
+esac"#,
+    );
+    let stopped = f.call(&["stop", &id], 0);
+    let observation = &stopped["data"]["observation"];
+    assert_eq!(observation["state"], "failed", "{stopped}");
+    assert!(
+        observation["evidence"]
+            .as_str()
+            .unwrap()
+            .contains("Child processes could not be checked because the worker had already exited"),
+        "{stopped}"
+    );
+    assert!(!f.state.join("kill-args").exists());
+    assert_eq!(f.record(&id)["launch"]["intent"]["state"], "running");
+}
+
+#[test]
+fn stop_retains_executor_completion_failure_and_identity_errors() {
+    for (pid, verdict, state) in
+        [(43210, "COMPLETED", "finished"), (43210, "FAILED", "failed"), (43211, "DIED", "unknown")]
+    {
+        let f = Fixture::new();
+        let id = launch_codex(&f);
+        f.executable(
+            &f.bin.join("kill"),
+            &format!("printf 'state=exited pid={pid}\\nverdict: {verdict}\\n' > \"$HERDER_SKILLS_DIR/status\""),
+        );
+        for command in ["stop", "status"] {
+            let result = f.call(&[command, &id], 0);
+            let observation = &result["data"]["observation"];
+            assert_eq!(observation["state"], state, "{result}");
+            if state == "unknown" {
+                assert_eq!(observation["cause"], "identity_mismatch", "{result}");
+            }
+        }
+    }
+}
+
+#[test]
+fn stop_names_worker_and_children_and_reserves_time_to_kill_after_slow_status() {
+    let f = Fixture::new();
+    let id = launch_codex(&f);
+    f.write(
+        "skills/ps-snapshot",
+        "43210 1 43210 S Sat Nov 28 16:00:01 2026\n4242 43210 43210 S Sat Nov 28 16:00:02 2026\n",
+    );
+    f.executable(
+        &f.bin.join("kill"),
+        r#"printf '%s\n' "$@" >> "$HERDER_STATE_DIR/kill-args"
+if test "$1" = -TERM; then
+    touch "$HERDER_SKILLS_DIR/term-sent"
+else
+    touch "$HERDER_SKILLS_DIR/kill-sent"
+fi"#,
+    );
+    f.script(
+        "codex-implementer",
+        "status_classic",
+        r#"if test -f "$HERDER_SKILLS_DIR/term-sent" && ! test -f "$HERDER_SKILLS_DIR/kill-sent"; then sleep 4; fi
+cat "$HERDER_SKILLS_DIR/status""#,
+    );
+    let stopped = f.call(&["stop", &id], 0);
+    assert_eq!(stopped["data"]["observation"]["state"], "running");
+    assert_eq!(signals(&f), "-TERM\n--\n-43210\n-TERM\n--\n4242\n-KILL\n--\n4242\n");
+    let status = f.call(&["status", &id], 0);
+    let evidence = status["data"]["observation"]["evidence"].as_str().unwrap();
+    assert!(evidence.contains("worker 43210 still running"), "{evidence}");
+    assert!(evidence.contains("1 child process still running: 4242"), "{evidence}");
 }

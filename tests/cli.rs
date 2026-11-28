@@ -84,9 +84,11 @@ echo "RUN_DIR=$3 PID=43210 CONVERSATION_ID=native-1""#,
   if test -f "$HERDER_SKILLS_DIR/ps-snapshot"; then
     cat "$HERDER_SKILLS_DIR/ps-snapshot"
   elif grep -q '^state=alive pid=43210' "$HERDER_SKILLS_DIR/status"; then
-    echo '43210 1 43210 S Sat Nov 28 16:00:00 2026'
+    echo '43210 1 43210 S Sat Nov 28 16:00:01 2026'
   fi;;
--p) cat "$HERDER_SKILLS_DIR/ps";;
+-p)
+  if test "$4" = lstart=,args=; then printf 'Sat Nov 28 16:00:01 2026 '; fi
+  cat "$HERDER_SKILLS_DIR/ps";;
 *) exit 90;;
 esac"#,
         );
@@ -882,7 +884,7 @@ fn stop_signals_only_confirmed_recorded_identity() {
         let stopped = f.call(&["stop", &id], 0);
         assert_eq!(stopped["data"]["observation"]["state"], "stopped");
         let (file, expected) =
-            if executor == "claude" { ("stop-args", "stop\nabc123\n") } else { ("kill-args", "-TERM\n43210\n") };
+            if executor == "claude" { ("stop-args", "stop\nabc123\n") } else { ("kill-args", "-TERM\n--\n-43210\n") };
         assert_eq!(fs::read_to_string(f.state.join(file)).unwrap(), expected);
     }
 }

@@ -813,7 +813,7 @@ fn agy_stop_requires_the_exact_log_marker() {
     fs::write(f.skills.join("ps"), format!("agy --log-file {} -p brief\n", log.display())).unwrap();
     let stopped = f.call(&["stop", id], 0);
     assert_eq!(stopped["data"]["observation"]["state"], "stopped");
-    assert_eq!(fs::read_to_string(f.state.join("kill-args")).unwrap(), "-TERM\n43210\n");
+    assert_eq!(fs::read_to_string(f.state.join("kill-args")).unwrap(), "-TERM\n--\n-43210\n");
 }
 
 #[test]
