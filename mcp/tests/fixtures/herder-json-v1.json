@@ -5,36 +5,42 @@
   "rejected": {"ok": false, "error": "<nonempty>", "data": null},
   "cli_rejection": {"ok": false, "error": null, "data": {"message": "repeat --model only with --mode review; a writer runs one model"}},
   "listing": {"ok": true, "error": null, "data": {"runs": [
-    {"run": {"id": "<nonempty>", "name": "--name exact ☕", "repo": "<nonempty>", "attempt": 1}, "observation": {"state": "finished", "evidence": "<nonempty>"}}
+    {"run": {"id": "<nonempty>", "name": "--name exact ☕", "repo": "<nonempty>", "attempt": 1}, "observed_attempt": 1, "observation": {"state": "finished", "evidence": "<nonempty>"}}
   ]}},
   "broken_listing": {"ok": true, "error": null, "data": {"runs": [
     {"run_id": "<nonempty>", "error": "<nonempty>"}
   ]}},
   "status": {"ok": true, "error": null, "data": {
     "run": {"id": "<nonempty>", "repo": "<nonempty>", "attempt": 1, "launch": {"state": "launched"}},
+    "observed_attempt": 1,
     "observation": {"state": "finished", "evidence": "<nonempty>"}
   }},
   "unknown": {"ok": true, "error": null, "data": {
     "run": {"id": "<nonempty>", "repo": "<nonempty>", "attempt": 1},
+    "observed_attempt": 1,
     "observation": {"state": "unknown", "cause": "identity_mismatch", "evidence": "<nonempty>"}
   }},
   "report": {"ok": true, "error": null, "data": {
     "run": {"id": "<nonempty>", "repo": "<nonempty>", "attempt": 1},
+    "observed_attempt": 1,
     "report": {"content": "A finding from the recorded review.\n"},
     "observation": {"state": "finished", "evidence": "<nonempty>"}
   }},
   "report_missing": {"ok": false, "error": null, "data": {
     "run": {"id": "<nonempty>", "repo": "<nonempty>", "attempt": 1},
+    "observed_attempt": 1,
     "report": {"message": "no report yet"},
     "observation": {"state": "starting", "evidence": "<nonempty>"}
   }},
   "report_placeholder": {"ok": true, "error": null, "data": {
     "run": {"id": "<nonempty>", "repo": "<nonempty>", "attempt": 1},
+    "observed_attempt": 1,
     "report": {"content": ""},
     "observation": {"state": "starting", "evidence": "<nonempty>"}
   }},
   "pending_resume": {"ok": true, "error": null, "data": {
     "run": {"id": "<nonempty>", "repo": "<nonempty>", "attempt": 1, "launch": {"state": "pending_resume", "attempt": 2}},
+    "observed_attempt": 2,
     "report": {"content": "A finding from the recorded review.\n"},
     "observation": {"state": "unknown", "cause": "unconfirmed", "evidence": "<nonempty>"}
   }}

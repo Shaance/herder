@@ -76,7 +76,8 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
                     let executor = run.launch.target().executor().as_str();
                     let state = observation.state().as_str();
                     *summary.entry(executor).or_default().entry(state).or_default() += 1;
-                    Ok(Some(ListEntry::Run { run: Box::new(run), observation }))
+                    let observed_attempt = run.launch_attempt();
+                    Ok(Some(ListEntry::Run { run: Box::new(run), observation, observed_attempt }))
                 })();
                 match entry {
                     Ok(entry) => data.extend(entry),

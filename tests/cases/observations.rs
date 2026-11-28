@@ -2,6 +2,35 @@ use super::*;
 use std::time::{Duration, Instant};
 
 #[test]
+fn status_and_listing_identify_the_observed_attempt() {
+    let f = Fixture::new();
+    let id = f.launch("codex");
+    let check = |launch_state: &str, accepted: u32, observed: u32| {
+        let status = f.call(&["status", "--repo", ".", "--", &id], 0);
+        let listing = f.call(&["ls", "--repo", "."], 0);
+        for entry in [&status["data"], &listing["data"]["runs"][0]] {
+            assert_eq!(entry["run"]["id"], id);
+            assert_eq!(entry["run"]["launch"]["state"], launch_state);
+            assert_eq!(entry["run"]["attempt"], accepted);
+            assert_eq!(entry["observed_attempt"], observed);
+        }
+        assert!(f.record(&id).get("observed_attempt").is_none());
+    };
+    check("launched", 1, 1);
+
+    f.status("exited", "COMPLETED");
+    f.script("codex-implementer", "resume_classic", "exit 3");
+    f.call(&["resume", &id, "--brief", f.root.join("brief.md").to_str().unwrap()], 0);
+    assert_eq!(f.record(&id)["launch"]["attempt"], 2);
+    check("pending_resume", 1, 2);
+
+    fs::write(f.dir(&id).join("run.pid"), "43211").unwrap();
+    fs::write(f.dir(&id).join("events2.jsonl"), "{\"type\":\"thread.started\",\"thread_id\":\"native-1\"}\n").unwrap();
+    fs::write(f.skills.join("status"), "state=alive pid=43211\nverdict: RUNNING\n").unwrap();
+    check("launched", 2, 2);
+}
+
+#[test]
 fn scoped_observations_reject_foreign_and_noncanonical_ids_before_probing() {
     let mut f = Fixture::new();
     let checkout = f.repo.clone();
