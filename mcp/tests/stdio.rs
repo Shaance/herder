@@ -634,6 +634,46 @@ async fn a_second_guarded_order_reports_the_active_checkout_owner() {
 }
 
 #[tokio::test]
+async fn superseded_verification_reports_checkout_reassignment() {
+    let f = Fixture::new();
+    git(&f.repo, &["init", "-q", "-b", "fixture-main"]);
+    let head = initial_commit(&f.repo);
+    let check = f.repo.with_file_name("host-check");
+    fs::write(&check, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&check, fs::Permissions::from_mode(0o755)).unwrap();
+    let (client, _) = f
+        .connect_with(
+            &f.repo,
+            "incomplete",
+            &["--write-check".as_ref(), check.as_os_str(), "--write-path=src".as_ref()],
+        )
+        .await;
+    let mut args = parameters();
+    args["request_id"] = json!("first-writer");
+    args["expected_checkout"] = json!({"repo": f.repo, "head": head});
+    args["paths"] = json!(["src"]);
+    let first = response(&client, "implement", args.clone()).await;
+    assert_eq!(first["outcome"], "launched", "{first}");
+    let run = json!({"run_id": first["run_id"]});
+    assert_eq!(response(&client, "wait", run.clone()).await["state"], "finished");
+    assert_eq!(response(&client, "verify", run.clone()).await["outcome"], "unverified");
+
+    args["request_id"] = json!("successor-writer");
+    let successor = response(&client, "implement", args).await;
+    assert_eq!(successor["outcome"], "launched", "{successor}");
+    assert_ne!(successor["run_id"], first["run_id"]);
+
+    let superseded = response(&client, "verify", run).await;
+    assert_eq!(superseded["outcome"], "superseded");
+    assert_eq!(superseded["attempt"], 1);
+    assert_eq!(
+        superseded["message"],
+        "The checkout no longer belongs to this protected work order. Check status before verifying again"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn wait_times_out_and_reaps_a_stuck_configured_cli() {
     let mut f = Fixture::new();
     f.herder = f.repo.with_file_name("stuck-herder");

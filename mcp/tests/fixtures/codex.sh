@@ -31,6 +31,6 @@ printf 'A finding from the recorded review.\n' > "$report"
 printf '{"type":"thread.started","thread_id":"fixture-thread"}\n'
 if [[ "$HERDER_TEST_WORKER" == partial ]]; then
     printf '{"type":"turn.failed"}\n'
-else
+elif [[ "$HERDER_TEST_WORKER" != incomplete ]]; then
     printf '{"type":"turn.completed"}\n'
 fi
