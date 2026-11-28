@@ -4,6 +4,7 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+- Updated crates.io keywords and categories and the Homebrew description so searches for Claude Code, Codex, MCP, or code review can find herder.
 - The skill says to run dispatch in the host's background mode, never with a shell `&` or `nohup`. A non-interactive shell starts `&` children with SIGINT ignored, so the worker and every `--check` command can inherit it, and tests that need Ctrl-C fail. It also says to give the host command a time limit above `herder wait --timeout`.
 
 ## 0.7.0 (2026-11-28)

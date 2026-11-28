@@ -9,7 +9,7 @@ exclude = ["/.github", "/docs/assets", "/docs/plans", "/packaging"]
 license = "MIT OR Apache-2.0"
 authors = ["Christophe Ha"]
 rust-version = "1.89"
-keywords = ["agents", "cli", "codex", "orchestration", "llm"]
+keywords = ["agents", "claude-code", "codex", "orchestration", "code-review"]
 categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]

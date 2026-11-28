@@ -7,6 +7,8 @@ repository = "https://github.com/Shaance/herder"
 readme = "README.md"
 license = "MIT OR Apache-2.0"
 exclude = ["/tests"]
+keywords = ["mcp", "mcp-server", "claude-code", "codex", "code-review"]
+categories = ["development-tools", "command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"
