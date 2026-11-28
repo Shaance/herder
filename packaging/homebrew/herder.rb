@@ -3,7 +3,7 @@ require "open3"
 require "timeout"
 
 class Herder < Formula
-  desc "Dispatch, track and verify coding agent runs"
+  desc "Delegate coding tasks to Claude Code, Codex or Vibe and verify the changes"
   homepage "https://github.com/Shaance/herder"
   url "https://github.com/Shaance/herder/releases/download/v@VERSION@/herder-macos-universal.tar.gz"
   sha256 "@SHA256@"
