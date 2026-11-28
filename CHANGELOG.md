@@ -4,6 +4,8 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+## 0.7.0 (2026-11-28)
+
 - Dispatch stages exactly the brief bytes it linted. Editing or deleting the brief during a dispatch no longer changes or fails later models of a review. Only a regular, nonempty brief file is read; anything else goes to the linter unread, as before. Custom brief linters receive a private snapshot path outside the checkout and the state directory. On keyed dispatches and handoffs, a lint failure is now reported before staging or Git errors.
 - Dispatch and `herder verify` refuse a Git path that is not valid UTF-8 instead of handling it under a lossy spelling: dispatch stops before staging and verify fails the scope check, naming the path. This is reported before checkout pins and protected dispatch's clean-checkout check.
 - CLI JSON adds `observed_attempt` beside `observation` on single-run replies and readable `ls` rows. herder-mcp now reads it instead of re-deriving the attempt; install matching versions of Herder and herder-mcp.
