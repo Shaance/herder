@@ -1,6 +1,8 @@
 use super::*;
 use std::{
+    ffi::OsStr,
     io::{BufRead, BufReader, Read},
+    os::unix::ffi::OsStrExt,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -515,6 +517,62 @@ fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
         .unwrap();
     assert!(out.status.success());
     assert!(String::from_utf8(out.stdout).unwrap().ends_with("\tprinted-name\n"));
+}
+
+#[test]
+fn scope_allows_unchanged_dirty_path_with_literal_replacement_character() {
+    let f = Fixture::new();
+    let name = "local-�.txt";
+    let file = f.repo.join(name);
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", name]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user edit\n").unwrap();
+    f.git(&["add", name]);
+    let dispatch = f.dispatch("codex", &["--path", "src/"], 0);
+    let id = dispatch["data"]["run_id"].as_str().unwrap();
+
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", id], 0);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains(&format!("Pre-existing and unchanged: {name}.")), "{scope}");
+}
+
+#[test]
+fn dispatch_rejects_non_utf8_index_path_before_staging_or_launch() {
+    let f = Fixture::new();
+    stage_non_utf8_index_path(&f);
+
+    let result = f.dispatch("codex", &["--path", "src/"], 1);
+    assert_eq!(result["error"], "herder cannot represent Git path \"src/bad-�.txt\": invalid UTF-8");
+    assert!(!f.state.join("runs").exists());
+    assert!(!f.state.join("launch-args").exists());
+}
+
+#[test]
+fn verify_rejects_non_utf8_index_path_added_after_dispatch() {
+    let f = Fixture::new();
+    let dispatch = f.dispatch("codex", &["--path", "src/"], 0);
+    let id = dispatch["data"]["run_id"].as_str().unwrap();
+    stage_non_utf8_index_path(&f);
+    f.status("exited", "COMPLETED");
+
+    let result = f.call(&["verify", id], 1);
+    let scope = &result["data"]["run"]["verifications"][0]["checks"][0];
+    assert_eq!(scope["command"], "baseline scope");
+    assert_eq!(scope["exit_code"], 1);
+    assert_eq!(scope["output"], "herder cannot represent Git path \"src/bad-�.txt\": invalid UTF-8");
+}
+
+fn stage_non_utf8_index_path(f: &Fixture) {
+    let blob = f.git(&["hash-object", "-w", "--", f.root.join("brief.md").to_str().unwrap()]);
+    let out = Command::new("git")
+        .current_dir(&f.repo)
+        .args(["update-index", "--add", "--cacheinfo", "100644", &blob])
+        .arg(OsStr::from_bytes(b"src/bad-\xff.txt"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git update-index: {}", String::from_utf8_lossy(&out.stderr));
 }
 
 #[test]

@@ -9,6 +9,13 @@ use std::{collections::BTreeMap, path::Path, process::Command, time::Instant};
 const SCOPE_CHECK: &str = "baseline scope";
 const EVIDENCE_CHECK: &str = "collect_evidence.sh";
 
+fn path_listing(output: &[u8]) -> Result<&str> {
+    std::str::from_utf8(output).map_err(|_| {
+        let path = output.split(|&byte| byte == 0).find(|field| std::str::from_utf8(field).is_err()).unwrap_or(output);
+        anyhow::anyhow!("herder cannot represent Git path {:?}: invalid UTF-8", String::from_utf8_lossy(path))
+    })
+}
+
 /// The user commands of a stored verification, by position: the writer stores the scope row,
 /// then the collector, then user commands. Older records can omit the collector, and the first
 /// format had no scope row, so each built-in row is recognized only in its own position. In a
@@ -112,7 +119,7 @@ pub fn scope_check(run: &Run, paths: &[String], baseline: Option<&str>, deadline
             .or(run.baseline_commit.as_deref())
             .ok_or_else(|| anyhow::anyhow!("no dispatch baseline; scope cannot be verified"))?;
         let mut files = dirty_paths(&run.repo, deadline)?;
-        let text = process::checked_until(
+        let listing = process::checked_bytes_until(
             Command::new("git").current_dir(&run.repo).args([
                 "diff",
                 "--name-only",
@@ -124,7 +131,7 @@ pub fn scope_check(run: &Run, paths: &[String], baseline: Option<&str>, deadline
             ]),
             deadline,
         )?;
-        files.extend(text.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
+        files.extend(path_listing(&listing)?.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
         let mut staged_changes = std::collections::BTreeSet::new();
         if let Some(snapshot) = &run.dispatch_staged {
             for (path, state) in staged_states(&run.repo, "HEAD", snapshot.keys(), deadline)? {
@@ -181,8 +188,8 @@ pub fn dirty_paths(repo: &Path, deadline: Option<Instant>) -> Result<std::collec
         vec!["diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD", "--"],
         vec!["ls-files", "--others", "--exclude-standard", "-z"],
     ] {
-        let text = process::checked_until(Command::new("git").current_dir(repo).args(args), deadline)?;
-        files.extend(text.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
+        let listing = process::checked_bytes_until(Command::new("git").current_dir(repo).args(args), deadline)?;
+        files.extend(path_listing(&listing)?.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
     }
     Ok(files)
 }
@@ -193,7 +200,14 @@ pub fn content_hash(repo: &Path, path: &str, deadline: Option<Instant>) -> Resul
         Err(error) => Err(error.into()),
         // git hash-object follows symlinks and fails on a link to a directory.
         Ok(meta) if meta.file_type().is_symlink() => {
-            Ok(Some(format!("symlink:{}", std::fs::read_link(repo.join(path))?.display())))
+            let target = std::fs::read_link(repo.join(path))?;
+            let target = target.to_str().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "herder cannot represent symlink target {:?} for {path:?}: invalid UTF-8",
+                    target.to_string_lossy()
+                )
+            })?;
+            Ok(Some(format!("symlink:{target}")))
         }
         Ok(_) => process::checked_until(
             Command::new("git").current_dir(repo).args(["hash-object", "--no-filters", "--", path]),
@@ -213,7 +227,7 @@ pub fn staged_states<'a>(
     if states.is_empty() {
         return Ok(states);
     }
-    let changed = process::checked_until(
+    let changed = process::checked_bytes_until(
         Command::new("git").current_dir(repo).args([
             "diff-index",
             "--cached",
@@ -228,7 +242,7 @@ pub fn staged_states<'a>(
         ]),
         deadline,
     )?;
-    let mut fields = changed.split_terminator('\0');
+    let mut fields = path_listing(&changed)?.split_terminator('\0');
     let mut unmerged = BTreeMap::new();
     for (header, path) in std::iter::from_fn(|| fields.next().zip(fields.next())) {
         let Some(state) = states.get_mut(path) else { continue };
@@ -246,13 +260,16 @@ pub fn staged_states<'a>(
         }
     }
     if !unmerged.is_empty() {
-        let entries = process::checked_until(
+        let entries = process::checked_bytes_until(
             Command::new("git").current_dir(repo).args(["ls-files", "--unmerged", "-z"]),
             deadline,
         )?;
-        for (entry, path) in entries.split('\0').filter_map(|entry| entry.split_once('\t')) {
+        for record in entries.split(|&byte| byte == 0) {
+            let mut fields = record.splitn(2, |&byte| byte == b'\t');
+            let (Some(entry), Some(path)) = (fields.next(), fields.next()) else { continue };
+            let path = path_listing(path)?;
             if let Some(entries) = unmerged.get_mut(path) {
-                entries.push(entry.to_owned());
+                entries.push(String::from_utf8_lossy(entry).into_owned());
             }
         }
     }
@@ -260,4 +277,40 @@ pub fn staged_states<'a>(
         states.insert(path.to_owned(), StagedState::IndexEntries(entries));
     }
     Ok(states)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::{ffi::OsStrExt, fs::symlink};
+
+    #[test]
+    fn path_listing_rejects_invalid_utf8() {
+        let error = path_listing(b"valid.txt\0bad-\xff.txt\0").unwrap_err();
+        assert_eq!(error.to_string(), "herder cannot represent Git path \"bad-�.txt\": invalid UTF-8");
+    }
+
+    #[test]
+    fn path_listing_rejects_names_that_collide_under_lossy_decoding() {
+        let listing = b"bad-\xff.txt\0bad-\xfe.txt\0";
+        assert_eq!(String::from_utf8_lossy(listing), "bad-�.txt\0bad-�.txt\0");
+        assert!(path_listing(listing).is_err());
+    }
+
+    #[test]
+    fn path_listing_preserves_literal_replacement_character() {
+        let listing = "valid.txt\0local-�.txt\0";
+        assert_eq!(path_listing(listing.as_bytes()).unwrap(), listing);
+    }
+
+    #[test]
+    fn content_hash_rejects_invalid_utf8_symlink_target() {
+        let repo = tempfile::tempdir().unwrap();
+        symlink(std::ffi::OsStr::from_bytes(b"target-\xff"), repo.path().join("link")).unwrap();
+        let error = content_hash(repo.path(), "link", None).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "herder cannot represent symlink target \"target-�\" for \"link\": invalid UTF-8"
+        );
+    }
 }
