@@ -53,8 +53,11 @@ worker or an existing run.
    `--path`, repeat `--check '<command>'` for coordinator-owned commands, and
    choose a post-launch budget with `--check-timeout <secs>`. Omit `--path` when
    the worker is expected to leave the checkout untouched. Keep checks read-only
-   and safe to repeat. Run the dispatch as a background shell command when the host
-   can wake you on exit. Use a unique `--name` to inspect the worker while it runs.
+   and safe to repeat. Run the dispatch in the host's background mode when it can
+   wake you on exit, such as a Claude Code background Bash call, never with a shell
+   `&` or `nohup`: a non-interactive shell starts `&` children with SIGINT ignored,
+   and the worker and every check inherit that. Use a unique `--name` to inspect the
+   worker while it runs.
 
    ```sh
    herder dispatch --executor codex --effort medium --brief /tmp/work-order.md --repo . \
@@ -149,8 +152,8 @@ All flag details and examples live in `herder <command> --help`.
 ## Codex runs from a background coordinator
 
 Run checked dispatch itself in the background when verification is known at launch.
-For an ordinary dispatch, use this background shell command, for example in a
-Claude Code background Bash call.
+For an ordinary dispatch, run this command in the host's background mode, for example
+a Claude Code background Bash call, not with a shell `&`.
 
 ```sh
 (
