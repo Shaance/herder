@@ -67,6 +67,10 @@ def monitor(*args, exit_code=None):
     events.clear()
     pid, master = pty.fork()
     if pid == 0:
+        # A launcher can start the fixture with SIGINT ignored or blocked, and herder
+        # deliberately keeps an inherited ignore; give the monitor a terminal's default.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
         os.execv(binary, [binary, 'wait', *args])
     note(f'spawn wait {" ".join(args)}')
     output = bytearray()

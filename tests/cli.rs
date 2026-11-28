@@ -1138,7 +1138,20 @@ test "$*" = 'agents --json --all'
 test -z "${OSC7577_TOKEN+x}"
 /bin/cat "$CLAUDE_FIXTURE/agents.json""#,
     );
-    let out = Command::new("/usr/bin/python3")
+    let mut python = Command::new("/usr/bin/python3");
+    // Start the fixture the way a background shell would, with SIGINT ignored and blocked;
+    // the fixture must still give each monitor a terminal's default SIGINT.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut python, || {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            libc::sigemptyset(set.as_mut_ptr());
+            libc::sigaddset(set.as_mut_ptr(), libc::SIGINT);
+            libc::pthread_sigmask(libc::SIG_BLOCK, set.as_ptr(), std::ptr::null_mut());
+            Ok(())
+        });
+    }
+    let out = python
         .env("OSC7577_TOKEN", "fixture-token-only-for-test")
         .env_remove("REX_BLOCK")
         .env_remove("REX_SESSION")
