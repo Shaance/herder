@@ -9,6 +9,22 @@ use std::{path::Path, process::Command, time::Instant};
 const SCOPE_CHECK: &str = "baseline scope";
 const EVIDENCE_CHECK: &str = "collect_evidence.sh";
 
+/// The user commands of a stored verification, by position: the writer stores the scope row,
+/// then the collector, then user commands. Older records can omit the collector, and the first
+/// format had no scope row, so each built-in row is recognized only in its own position. In a
+/// record without a collector, a user command named like the collector in the second row is
+/// indistinguishable from it and is treated as built-in.
+fn user_checks(verification: &Verification) -> &[Check] {
+    let after_scope = match verification.checks.as_slice() {
+        [scope, rest @ ..] if scope.command == SCOPE_CHECK => rest,
+        all => all,
+    };
+    match after_scope {
+        [collector, user_checks @ ..] if collector.command == EVIDENCE_CHECK => user_checks,
+        _ => after_scope,
+    }
+}
+
 pub fn run(
     run: &mut Run,
     paths: Vec<String>,
@@ -20,10 +36,8 @@ pub fn run(
 ) -> Result<FreshVerification> {
     let mut reused_from = None;
     if deadline.is_none() && commands.is_empty() {
-        let is_user_check = |check: &Check| !matches!(check.command.as_str(), SCOPE_CHECK | EVIDENCE_CHECK);
-        if let Some(previous) = run.verifications.iter().rfind(|v| v.checks.iter().any(is_user_check)) {
-            commands
-                .extend(previous.checks.iter().filter(|check| is_user_check(check)).map(|check| check.command.clone()));
+        if let Some(previous) = run.verifications.iter().rfind(|v| !user_checks(v).is_empty()) {
+            commands.extend(user_checks(previous).iter().map(|check| check.command.clone()));
             reused_from = Some(run.id.clone());
         } else if let Some(goal) = &run.goal
             && let Some((source, previous)) = store
@@ -33,11 +47,11 @@ pub fn run(
                 .filter_map(|id| store.load(&id).ok())
                 .filter(|other| other.id != run.id && other.goal.as_ref() == Some(goal) && other.repo == run.repo)
                 .filter_map(|other| {
-                    other.verifications.into_iter().rfind(|v| v.checks.iter().any(is_user_check)).map(|v| (other.id, v))
+                    other.verifications.into_iter().rfind(|v| !user_checks(v).is_empty()).map(|v| (other.id, v))
                 })
                 .max_by(|(a_id, a), (b_id, b)| (&a.timestamp, a_id).cmp(&(&b.timestamp, b_id)))
         {
-            commands.extend(previous.checks.into_iter().filter(is_user_check).map(|check| check.command));
+            commands.extend(user_checks(&previous).iter().map(|check| check.command.clone()));
             reused_from = Some(source);
         }
     }

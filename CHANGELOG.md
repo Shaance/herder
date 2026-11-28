@@ -4,6 +4,8 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+- `herder verify` without `--check` now reuses a user check even when its command text matches a built-in label such as `collect_evidence.sh`; before, the check was dropped and reuse could fall back to an older verification. Records written before the collector row existed keep the old ambiguity for a command in that position.
+
 ## 0.6.1 (2026-11-27)
 
 - Interactive `herder wait` now supports terminal restoration for a confirmed Claude worker. The restored wait observes the same recorded worker.

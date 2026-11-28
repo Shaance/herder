@@ -319,6 +319,54 @@ fn verify_reuses_latest_checks_from_the_run_or_same_goal_and_repo() {
 }
 
 #[test]
+fn verify_reuses_user_collector_from_same_run() {
+    let f = Fixture::new();
+    f.executable(&f.bin.join("collect_evidence.sh"), r#"echo ran >> "$HERDER_STATE_DIR/check-marker""#);
+    let id = f.launch("codex");
+    f.status("exited", "COMPLETED");
+    f.call(&["verify", &id, "--path", "src/", "--check", "printf older"], 0);
+    f.call(&["verify", &id, "--path", "src/", "--check", "collect_evidence.sh"], 0);
+    let reused = f.call(&["verify", &id, "--path", "src/"], 0);
+
+    assert_eq!(fs::read_to_string(f.state.join("check-marker")).unwrap(), "ran\nran\n");
+    let checks = reused["data"]["run"]["verifications"][2]["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 3);
+    assert_eq!(checks[2]["command"], "collect_evidence.sh");
+}
+
+#[test]
+fn verify_reuses_user_collector_from_same_goal() {
+    let f = Fixture::new();
+    f.executable(&f.bin.join("collect_evidence.sh"), r#"echo ran >> "$HERDER_STATE_DIR/check-marker""#);
+    f.executable(&f.bin.join("baseline"), r#"test "$1" = scope"#);
+    let launch = || {
+        f.dispatch("codex", &["--goal", "shared", "--path", "src/"], 0)["data"]["run_id"].as_str().unwrap().to_owned()
+    };
+    let source = launch();
+    let target = launch();
+    f.status("exited", "COMPLETED");
+    f.call(
+        &[
+            "verify",
+            &source,
+            "--check",
+            "baseline scope",
+            "--check",
+            "collect_evidence.sh",
+            "--check",
+            "baseline scope",
+        ],
+        0,
+    );
+    let reused = f.call(&["verify", &target], 0);
+
+    assert_eq!(fs::read_to_string(f.state.join("check-marker")).unwrap(), "ran\nran\n");
+    let checks = reused["data"]["run"]["verifications"][0]["checks"].as_array().unwrap();
+    let commands: Vec<_> = checks[2..].iter().map(|check| check["command"].as_str().unwrap()).collect();
+    assert_eq!(commands, ["baseline scope", "collect_evidence.sh", "baseline scope"]);
+}
+
+#[test]
 fn script_launch_and_resume_do_not_inherit_rex_environment() {
     for (executor, owner, suffix) in [("vibe", "vibe-implementer", "vibe"), ("codex", "codex-implementer", "classic")] {
         let f = Fixture::new();
