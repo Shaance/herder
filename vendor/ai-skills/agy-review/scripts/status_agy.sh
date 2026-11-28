@@ -8,11 +8,13 @@ IDENTITY="$RUN_DIR/conversation-id"
 FINAL="$RUN_DIR/final.md"
 
 PID=$(cat "$RUN_DIR/run.pid" 2>/dev/null || true)
-if [[ "$PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$PID" 2>/dev/null \
-	&& [[ " $(ps -p "$PID" -o args= 2>/dev/null) " == *" $RUN_DIR/agy.log "* ]]; then
-	STATE=alive
-else
-	STATE=exited
+STATE=exited
+if [[ "$PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$PID" 2>/dev/null; then
+	if ! ARGS=$(ps -p "$PID" -o args= 2>/dev/null); then
+		STATE=unknown
+	elif [[ " $ARGS " == *" $RUN_DIR/agy.log "* ]]; then
+		STATE=alive
+	fi
 fi
 
 if [[ ! -s "$IDENTITY" ]]; then
@@ -25,6 +27,9 @@ echo "state=$STATE pid=${PID:-none} conversation=$(cat "$IDENTITY" 2>/dev/null |
 
 if [[ "$STATE" == alive ]]; then
 	echo "verdict: RUNNING"
+	exit 0
+elif [[ "$STATE" == unknown ]]; then
+	echo "verdict: UNKNOWN (ps failed to read process arguments)"
 	exit 0
 fi
 

@@ -767,6 +767,37 @@ fn agy_stop_requires_the_exact_log_marker() {
 }
 
 #[test]
+fn agy_status_is_unknown_when_ps_fails() {
+    let (f, _) = setup();
+    let pid = std::process::id();
+    f.script(
+        "agy-review",
+        "launch_agy",
+        &format!(
+            r#"echo {pid} > "$3/run.pid"
+echo native-1 > "$3/conversation-id"
+echo "RUN_DIR=$3 PID={pid} CONVERSATION_ID=native-1""#
+        ),
+    );
+    let launch = f.dispatch("agy", &["--model", AGY_MODEL], 0);
+    let id = launch["data"]["run_id"].as_str().unwrap();
+    let dir = f.dir(id);
+    fs::write(dir.join("events.jsonl"), AGY_SUCCESS).unwrap();
+    f.executable(&f.bin.join("ps"), "exit 1");
+
+    let status = || Fixture::call_with(f.cmd().env_remove("HERDER_SKILLS_DIR"), &["status", id], 0);
+    let observed = status();
+    let observation = &observed["data"]["observation"];
+    assert_eq!(observation["state"], "unknown", "{observed}");
+    assert_eq!(observation["cause"], "unrecognized_status");
+    assert!(!dir.join("final.md").exists());
+
+    f.executable(&f.bin.join("ps"), "echo unrelated-process");
+    assert_eq!(status()["data"]["observation"]["state"], "finished");
+    assert!(dir.join("final.md").exists());
+}
+
+#[test]
 fn agy_doctor_and_launcher_require_api_key_mode() {
     let (f, _) = setup();
     let home = f.root.join("agy-home");
@@ -907,9 +938,9 @@ cat "$HERDER_STATE_DIR/../agy-events.jsonl""#,
         let init: Value = serde_json::from_str(AGY_SUCCESS.lines().next().unwrap()).unwrap();
         assert_eq!(native["conversation_id"], init["conversation_id"]);
         let call = |args: &[&str], code| Fixture::call_with(f.cmd().env_remove("HERDER_SKILLS_DIR"), args, code);
+        call(&["wait", "--run-dir", dir.to_str().unwrap()], 0);
         assert_eq!(call(&["status", id], 0)["data"]["observation"]["state"], "finished");
         assert_eq!(call(&["ls"], 0)["data"]["summary"]["agy"]["finished"], 1);
-        call(&["wait", "--run-dir", dir.to_str().unwrap()], 0);
         let result: Value = serde_json::from_str(AGY_SUCCESS.lines().last().unwrap()).unwrap();
         assert_eq!(call(&["report", id], 0)["data"]["report"]["content"], result["result"]["response"]);
         if mode == "direct" {
