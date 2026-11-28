@@ -16,7 +16,7 @@ Executor queries time out after ten seconds with `unknown` evidence. Existing re
 
 State defaults to `~/.local/state/herder`; `HERDER_STATE_DIR` overrides it. Existing state is not moved automatically. `runs/<id>/run.json` owns recorded run facts, and scripts place evidence beside it. `input.md` is herder's brief copy; `final.md`, `final2.md` and so on are attempt reports.
 
-Run writes use temporary files and rename under a per-run `run.lock` advisory lock, including status recovery. Read commands never wait for that lock: while it is busy, they show recorded state and `run busy` evidence without saving. Mutating lock waits time out after two seconds. Launch gates retain the lock. Verification runs checks outside it, then locks, reloads and appends the original attempt's verdict. Unrelated runs remain independent.
+Run writes use temporary files and rename under a per-run `run.lock` advisory lock, including status recovery. Read commands never wait for that lock: while it is busy, they show recorded state and `run busy` evidence without saving. Mutating lock waits time out after two seconds. Launch gates retain the lock. Ordinary verification runs checks outside it, then locks, reloads and appends the original attempt's verdict. Protected verification holds it through the host check. Unrelated runs remain independent.
 
 Dispatch prepares `.ID.pending/` and publishes the directory only with `run.json`. Interrupted preparation can leave a hidden staging directory, which `ls` ignores. Broken published directories appear as individual errors in `ls` alongside healthy runs.
 
@@ -123,7 +123,7 @@ Pass one or more `--path` options to verify to use those paths for that check in
 
 Explicit `--check` commands take precedence. If omitted, verify reuses commands from the latest verification of this run that recorded any. If this run has no commands and has a goal, verify looks for the most recent verification with commands from another run in the same repository and goal. If no commands are found, verify runs only its built-in checks. Human output names the source run when commands are reused.
 
-After rebasing a worker branch, use `herder verify <run> --baseline <new-upstream-rev>` to verify against and persist the new commit baseline. Invalid revisions fail without changing the run record. Review the evidence before publishing as coordinator.
+After rebasing a worker branch, use `herder verify <run> --baseline <new-upstream-rev>` to verify against and persist the new commit baseline. Invalid revisions fail without changing the run record. A protected run's baseline cannot be replaced. Review the evidence before publishing as coordinator.
 
 ## Paired reviews
 

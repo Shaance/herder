@@ -4,7 +4,10 @@ herder is a Rust CLI for a coordinator running Claude, Vibe or Codex workers.
 It launches and tracks workers, reads their reports, and records verification.
 The coordinator chooses the executor and model, reviews results, and handles
 approval and publication. See [`src/main.rs`](../src/main.rs) and
-[`src/handlers.rs`](../src/handlers.rs) for the command interface and routing.
+[`src/handlers.rs`](../src/handlers.rs) for the command interface and routing;
+[`src/dispatch.rs`](../src/dispatch.rs) and [`src/wait.rs`](../src/wait.rs) hold
+the dispatch and wait commands, and [`src/output.rs`](../src/output.rs) defines
+what commands return to [`src/render.rs`](../src/render.rs).
 
 ## Run record
 
@@ -113,6 +116,10 @@ Verification also runs the shared evidence collector and each `--check` through
 collector records a worktree summary. All checks must exit zero for a pass.
 The verdict is attached to the attempt that was current when checks began;
 checks run without the run lock, then the record is reloaded and updated.
+Protected verification (`--accept-with`, [`src/guard.rs`](../src/guard.rs)) is
+the exception: it keeps the run lock through the host check until the receipt
+is saved, repeats the scope audit only after a successful host check, and saves
+its first verdict as an immutable receipt.
 Verification refuses starting, running and blocked workers, but can run with
 unknown evidence. It neither freezes the worktree nor approves the result.
 
@@ -134,7 +141,7 @@ For Codex, dispatch also records the read-only sandbox flag in `extra`, which th
 launcher replays on resume. Invalid input fails
 before launch. The coordinator supplies the context and stops its own edits;
 launch alone cannot transfer hidden conversation or prove understanding. See
-[`src/handoff.rs`](../src/handoff.rs) and [`src/handlers.rs`](../src/handlers.rs).
+[`src/handoff.rs`](../src/handoff.rs) and [`src/dispatch.rs`](../src/dispatch.rs).
 
 ## Design rules
 

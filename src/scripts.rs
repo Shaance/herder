@@ -1,5 +1,5 @@
 use crate::{
-    domain::{LaunchPhase, Native, Observation, Run, State, Target, UnknownCause, UnknownError},
+    domain::{Executor, LaunchPhase, Native, Observation, Run, State, Target, UnknownCause, UnknownError},
     process::{Script, ScriptSource, checked, on_path, output, query, script, script_from},
 };
 use anyhow::{Context, Result, ensure};
@@ -42,6 +42,13 @@ impl ScriptExecutor {
         numbered_status: false,
         native: |thread_id, pid| Native::Codex { thread_id, pid },
     };
+    pub fn for_executor(executor: Executor) -> Option<Self> {
+        match executor {
+            Executor::Claude => None,
+            Executor::Vibe => Some(Self::VIBE),
+            Executor::Codex => Some(Self::CODEX),
+        }
+    }
     pub fn status_args(&self, run: &Run) -> Option<String> {
         self.numbered_status
             .then(|| if run.launch_attempt().get() == 1 { String::new() } else { run.launch_attempt().to_string() })

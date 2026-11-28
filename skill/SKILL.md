@@ -87,6 +87,7 @@ saved options under the recorded profile; copies are stopped and rejected.
    paths and coordinator-chosen checks for the current attempt.
    After rebasing, use `herder verify <run> --baseline <new-upstream-rev>` to replace
    the recorded scope baseline. Invalid commit revisions leave the run unchanged.
+   A protected `--accept-with` run keeps its original baseline.
    Resolve each review finding or record its approved deferral.
 6. The coordinator handles approval and publication outside herder.
 

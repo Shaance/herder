@@ -191,14 +191,17 @@ cat "$HERDER_SKILLS_DIR/status""#,
                 owner,
                 &format!("resume_{suffix}"),
                 &format!(
-                    r#"test "$(cat "$1/{file}")" = native-1
+                    r#"echo call >> "$HERDER_STATE_DIR/resume-count"
+test "$(cat "$1/{file}")" = native-1
 grep -Eq '"state": "(starting|pending_resume)"' "$1/run.json"
 printf '%s\n' "$@" > "$HERDER_STATE_DIR/resume-args"
-echo 43211 > "$1/run.pid"
+pid=43211
+if test -f "$HERDER_SKILLS_DIR/resume-pid"; then pid=$(cat "$HERDER_SKILLS_DIR/resume-pid"); fi
+echo "$pid" > "$1/run.pid"
 {resume_event}
 echo "attempt $4" > "$1/final$4.md"
-echo 'state=alive pid=43211' > "$HERDER_SKILLS_DIR/status"
-echo "RUN_DIR=$1 PID=43211 {key}=native-1""#
+echo "state=alive pid=$pid" > "$HERDER_SKILLS_DIR/status"
+echo "RUN_DIR=$1 PID=$pid {key}=native-1""#
                 ),
             );
         }
@@ -1881,22 +1884,6 @@ fn request_id_replays_return_the_recorded_run_without_relaunching() {
         let f = Fixture::new();
         let id = f.launch(executor);
         f.status("exited", "COMPLETED");
-        let suffix = if executor == "vibe" { "vibe" } else { "classic" };
-        let original =
-            fs::read_to_string(stub_body(&f.skills.join(format!("{executor}-implementer/scripts/resume_{suffix}.sh"))))
-                .unwrap();
-        f.script(
-            &format!("{executor}-implementer"),
-            &format!("resume_{suffix}_impl"),
-            &original.replace("43211", "RESUME_PID"),
-        );
-        f.script(
-            &format!("{executor}-implementer"),
-            &format!("resume_{suffix}"),
-            &format!(
-                "echo call >> \"$HERDER_STATE_DIR/resume-count\"\npid=$((43210 + $(wc -l < \"$HERDER_STATE_DIR/resume-count\")))\nsed \"s/RESUME_PID/$pid/g\" \"$(dirname \"$0\")/resume_{suffix}_impl.sh.body\" | sh -s -- \"$@\""
-            ),
-        );
         f.write("delta.md", "sync payload one");
         let brief = f.root.join("delta.md");
         let brief = brief.to_str().unwrap();
@@ -1924,6 +1911,7 @@ fn request_id_replays_return_the_recorded_run_without_relaunching() {
         assert!(rejected["error"].as_str().unwrap().contains("sync-1"), "{rejected}");
         assert_eq!(count(&f), "call\n");
         // A different request id reserves a later attempt.
+        fs::write(f.skills.join("resume-pid"), "43212").unwrap();
         let second = f.call(&["resume", &id, "--brief", brief, "--request-id", "sync-2"], 0);
         assert_eq!(second["data"]["run"]["attempt"], 3);
         assert_eq!(second["data"]["run"]["request_attempts"], json!({"sync-1": 2, "sync-2": 3}));

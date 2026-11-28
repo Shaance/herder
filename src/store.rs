@@ -41,12 +41,14 @@ pub struct LockedRun {
     pub dir: PathBuf,
     pub root: PathBuf,
     _lock: fs::File,
+    /// Set only for staging from `Store::create`; cleared once published or kept.
+    discard_on_drop: bool,
 }
 impl LockedRun {
     fn try_acquire(dir: PathBuf, root: &Path) -> Result<Option<Self>> {
         let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("run.lock"))?;
         match file.try_lock() {
-            Ok(()) => Ok(Some(Self { dir, root: root.to_owned(), _lock: file })),
+            Ok(()) => Ok(Some(Self { dir, root: root.to_owned(), _lock: file, discard_on_drop: false })),
             Err(fs::TryLockError::WouldBlock) => Ok(None),
             Err(fs::TryLockError::Error(error)) => Err(error.into()),
         }
@@ -56,6 +58,18 @@ impl LockedRun {
     }
     pub fn save(&self, run: &Run) -> Result<()> {
         atomic(&self.dir.join("run.json"), &serde_json::to_vec_pretty(run)?)
+    }
+    /// Keeps unpublished staging on drop.
+    pub fn keep_staging(&mut self) {
+        self.discard_on_drop = false;
+    }
+}
+impl Drop for LockedRun {
+    fn drop(&mut self) {
+        // A panic leaves the staged input in place for inspection.
+        if self.discard_on_drop && !std::thread::panicking() {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
     }
 }
 impl Store {
@@ -161,7 +175,8 @@ impl Store {
             random.read_exact(&mut bytes)?;
             let (y, mo, d, h, mi, s) = utc(SystemTime::now());
             let id = RunId(format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-{:02x}{:02x}", bytes[0], bytes[1]));
-            if let Some(staged) = self.stage(&id)? {
+            if let Some(mut staged) = self.stage(&id)? {
+                staged.discard_on_drop = true;
                 return Ok((id, staged));
             }
         }
@@ -188,6 +203,7 @@ impl Store {
     pub fn publish(&self, locked: &mut LockedRun, run: &Run, dir: &Path) -> Result<()> {
         locked.save(run)?;
         fs::rename(&locked.dir, dir)?;
+        locked.discard_on_drop = false;
         locked.dir = dir.to_owned();
         Ok(())
     }

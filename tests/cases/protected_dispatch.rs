@@ -61,6 +61,23 @@ fn initial_dispatch_key_uses_exact_brief_and_route_without_relaunching() {
     assert_eq!(fs::read_dir(f.state.join("runs")).unwrap().count(), 1);
 }
 
+#[test]
+fn dispatch_keeps_staging_after_a_claim_io_error() {
+    let f = Fixture::new();
+    // Lookup sees no receipt, but claim cannot create a directory over this symlink.
+    symlink(f.state.join("missing-requests"), f.state.join("requests")).unwrap();
+    let failed = f.dispatch("codex", &["--request-id", "claim-io-error"], 1);
+    assert!(failed["error"].is_string());
+    let mut entries = fs::read_dir(f.state.join("runs")).unwrap();
+    let staged = entries.next().unwrap().unwrap();
+    assert!(entries.next().is_none());
+    let name = staged.file_name();
+    assert!(name.to_str().is_some_and(|name| name.starts_with('.') && name.ends_with(".pending")));
+    assert_eq!(fs::read(staged.path().join("input.md")).unwrap(), fs::read(f.root.join("brief.md")).unwrap());
+    assert!(!staged.path().join("run.json").exists());
+    assert!(!f.state.join("launch-args").exists());
+}
+
 fn external_check(f: &Fixture) -> PathBuf {
     let check = f.root.join("host check; literal");
     fs::write(&check, "#!/bin/sh\nset -eu\ntest \"$#\" -eq 0\nprintf '%s\\n' \"$PWD\" >> \"$HERDER_STATE_DIR/host-check-ran\"\necho verified\n").unwrap();
@@ -275,4 +292,32 @@ fn protected_owner_fences_new_work_and_checker_changes_are_in_the_saved_verdict(
     let third = dispatch("third", 0);
     assert_ne!(third["run_id"], second);
     assert_eq!(verify(second, 0)["outcome"], "superseded");
+}
+
+#[test]
+fn superseded_protected_attempt_takes_precedence_over_a_busy_run_lock() {
+    let f = Fixture::new();
+    let check = external_check(&f);
+    let check_path = check.to_str().unwrap();
+    let head = f.git(&["rev-parse", "HEAD"]);
+    let launched = f.dispatch(
+        "codex",
+        &["--request-id", "write/1", "--accept-with", check_path, "--expected-head", &head, "--path", "src"],
+        0,
+    );
+    let id = launched["data"]["run_id"].as_str().unwrap();
+    let dir = f.dir(id);
+    let mut historic = f.record(id);
+    historic["attempt"] = json!(2);
+    fs::write(dir.join("run.json"), historic.to_string()).unwrap();
+    let lock = fs::OpenOptions::new().write(true).open(dir.join("run.lock")).unwrap();
+    lock.try_lock().unwrap();
+
+    let verified = f.call(&["verify", "--repo", ".", "--accept-with", check_path, "--path", "src", "--", id], 0);
+    assert_eq!(verified["data"]["outcome"], "superseded");
+    assert_eq!(verified["data"]["message"], "the protected attempt was superseded");
+    assert_eq!(verified["data"]["state"], "running");
+    assert_eq!(verified["data"]["attempt"], 2);
+    assert_eq!(f.record(id), historic);
+    assert!(!f.state.join("host-check-ran").exists());
 }

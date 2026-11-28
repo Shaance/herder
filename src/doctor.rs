@@ -60,11 +60,7 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doct
     let override_set = std::env::var_os("HERDER_SKILLS_DIR").is_some();
     for &e in executor.as_ref().map_or(Executor::value_variants(), std::slice::from_ref) {
         let name = e.as_str();
-        let adapter = match e {
-            Executor::Claude => None,
-            Executor::Vibe => Some(ScriptExecutor::VIBE),
-            Executor::Codex => Some(ScriptExecutor::CODEX),
-        };
+        let adapter = ScriptExecutor::for_executor(e);
         let mut checks = vec![];
         let binaries = match (e == Executor::Claude, override_set) {
             (true, true) => vec![name],

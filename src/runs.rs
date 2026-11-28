@@ -5,15 +5,14 @@ use std::{path::Path, process::Command, time::Instant};
 
 pub fn launch(run: &mut Run, phase: LaunchPhase<'_>, store: &LockedRun) -> Result<()> {
     let target = run.launch.target();
-    let outcome = match target {
-        Target::Claude { ref profile } => claude::launch(run, profile.as_deref(), phase, store).map(Some),
-        Target::Vibe => ScriptExecutor::VIBE.launch(run, &store.dir, phase),
-        Target::Codex => ScriptExecutor::CODEX.launch(run, &store.dir, phase),
+    let outcome = if let Some(executor) = ScriptExecutor::for_executor(target.executor()) {
+        executor.launch(run, &store.dir, phase)
+    } else {
+        claude::launch(run, target.profile(), phase, store).map(Some)
     };
     let result = match outcome {
         Ok(Some(native)) => {
-            run.attempt = run.launch_attempt();
-            run.launch = Launch::Launched { native, intent: Intent::Running };
+            run.confirm_identity(native);
             Ok(())
         }
         Ok(None) => Ok(()),
@@ -66,23 +65,20 @@ pub fn observe_until(
     }
     let result = (|| -> Result<Observation> {
         let dir = &store.dir;
-        let mut observed = match run.launch.target() {
-            Target::Claude { profile } => {
-                let accepted = matches!(run.launch, Launch::Accepted { .. });
-                let observed = claude::query(run, profile.as_deref(), deadline)?;
+        let target = run.launch.target();
+        let mut observed = match ScriptExecutor::for_executor(target.executor()) {
+            None => {
+                let (observed, native) = claude::query(run, target.profile(), deadline)?;
                 if matches!(run.launch, Launch::PendingResume { .. }) {
                     return Ok(observed);
                 }
-                if accepted {
+                if matches!(run.launch, Launch::Accepted { .. }) {
+                    run.confirm_identity(native);
                     store.save(run)?;
                 }
                 observed
             }
-            target @ (Target::Vibe | Target::Codex) => {
-                let executor = match target {
-                    Target::Vibe => ScriptExecutor::VIBE,
-                    _ => ScriptExecutor::CODEX,
-                };
+            Some(executor) => {
                 let (observed, identity) = executor.query(run, dir, deadline, source)?;
                 let identity = match &run.launch {
                     Launch::PendingResume { previous: Native::Codex { .. }, .. } => Some(identity?),
@@ -116,8 +112,7 @@ pub fn observe_until(
                             });
                         }
                     }
-                    run.attempt = run.launch_attempt();
-                    run.launch = Launch::Launched { native, intent: Intent::Running };
+                    run.confirm_identity(native);
                     store.save(run)?;
                 }
                 observed
@@ -208,11 +203,10 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
                 "pending attempt {attempt} is reserved by another request id; resolve it with status first, or retry without --request-id to continue the same attempt"
             );
         }
-        let (observed, identity) = match &previous {
-            Native::Claude { profile, .. } => (claude::query(run, profile.as_deref(), None)?, None),
-            native => {
-                let executor =
-                    if matches!(native, Native::Vibe { .. }) { ScriptExecutor::VIBE } else { ScriptExecutor::CODEX };
+        let target = previous.target();
+        let (observed, identity) = match ScriptExecutor::for_executor(target.executor()) {
+            None => (claude::query(run, target.profile(), None)?.0, None),
+            Some(executor) => {
                 let (observed, identity) = executor.query(run, dir, None, ScriptSource::Configured)?;
                 (observed, Some(identity))
             }

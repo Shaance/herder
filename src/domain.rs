@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
-use std::{num::NonZeroU32, path::PathBuf};
+use std::{
+    num::NonZeroU32,
+    path::{Path, PathBuf},
+};
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
@@ -30,6 +33,12 @@ impl Target {
             Self::Claude { .. } => Executor::Claude,
             Self::Vibe => Executor::Vibe,
             Self::Codex => Executor::Codex,
+        }
+    }
+    pub fn profile(&self) -> Option<&Path> {
+        match self {
+            Self::Claude { profile } => profile.as_deref(),
+            Self::Vibe | Self::Codex => None,
         }
     }
 }
@@ -173,7 +182,7 @@ pub struct FreshVerification {
     pub reused_from: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProtectedVerification {
     pub attempt: NonZeroU32,
     pub timestamp: String,
@@ -219,6 +228,16 @@ impl Run {
             Launch::PendingResume { attempt, .. } => attempt,
             _ => self.attempt,
         }
+    }
+    pub fn confirm_identity(&mut self, native: Native) {
+        self.attempt = self.launch_attempt();
+        let intent = match &mut self.launch {
+            Launch::Accepted { error, .. } => {
+                error.take().map_or(Intent::Running, |error| Intent::Unconfirmed { error })
+            }
+            _ => Intent::Running,
+        };
+        self.launch = Launch::Launched { native, intent };
     }
     pub fn suffix(&self) -> String {
         if self.attempt.get() == 1 { String::new() } else { self.attempt.to_string() }
