@@ -4,6 +4,8 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+## 0.8.0 (2026-11-28)
+
 - Add `agy` as a CLI executor for Antigravity direct and plan-mode review runs in Gemini API-key mode.
 - `herder stop` also stops commands started by Vibe, Codex, and agy workers. After a grace period, surviving commands receive KILL while the worker receives TERM only. Herder reports `stopped` once the worker and recorded survivors are gone. Repeating stop signals survivors again, and a failed process listing reports `unknown`.
 - Updated crates.io keywords and categories and the Homebrew description so searches for Claude Code, Codex, MCP, or code review can find herder.
