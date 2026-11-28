@@ -56,7 +56,7 @@ worker or an existing run.
    and safe to repeat. Run the dispatch in the host's background mode when it can
    wake you on exit, such as a Claude Code background Bash call, never with a shell
    `&` or `nohup`: a non-interactive shell starts `&` children with SIGINT ignored,
-   and the worker and every check inherit that. Use a unique `--name` to inspect the
+   and the worker and every check can inherit that. Use a unique `--name` to inspect the
    worker while it runs.
 
    ```sh
@@ -153,7 +153,9 @@ All flag details and examples live in `herder <command> --help`.
 
 Run checked dispatch itself in the background when verification is known at launch.
 For an ordinary dispatch, run this command in the host's background mode, for example
-a Claude Code background Bash call, not with a shell `&`.
+a Claude Code background Bash call, not with a shell `&`. Give the host command a time
+limit above `herder wait --timeout`: a Claude Code background Bash call is stopped after
+30 minutes unless its own `timeout` is raised.
 
 ```sh
 (
