@@ -4,6 +4,8 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+- The skill says to run dispatch in the host's background mode, never with a shell `&` or `nohup`. A non-interactive shell starts `&` children with SIGINT ignored, so the worker and every `--check` command can inherit it, and tests that need Ctrl-C fail. It also says to give the host command a time limit above `herder wait --timeout`.
+
 ## 0.7.0 (2026-11-28)
 
 - Dispatch stages exactly the brief bytes it linted. Editing or deleting the brief during a dispatch no longer changes or fails later models of a review. Only a regular, nonempty brief file is read; anything else goes to the linter unread, as before. Custom brief linters receive a private snapshot path outside the checkout and the state directory. On keyed dispatches and handoffs, a lint failure is now reported before staging or Git errors.
