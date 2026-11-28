@@ -13,8 +13,10 @@ use std::{
     num::NonZeroU32,
     path::{Path, PathBuf},
     process::Command,
-    time::Instant,
+    time::{Duration, Instant},
 };
+
+const STOP_BOOKKEEPING_TIMEOUT: Duration = Duration::from_secs(1);
 
 pub fn require_status_tools(source: ScriptSource) -> Result<()> {
     ensure!(
@@ -431,15 +433,22 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<bool> {
     Ok(true)
 }
 
+pub enum StopProgress {
+    PendingWorker(Observation),
+    PendingChildren(Observation),
+    Exited,
+}
+
 pub fn stop_progress(
     worker: &ProcessIdentity,
     descendants: &[ProcessIdentity],
     deadline: Option<Instant>,
-) -> Option<Observation> {
-    let rows = match snapshot(deadline) {
+) -> StopProgress {
+    let limit = Instant::now() + STOP_BOOKKEEPING_TIMEOUT;
+    let rows = match snapshot(Some(deadline.map_or(limit, |deadline| deadline.min(limit)))) {
         Ok(rows) => rows,
         Err(error) => {
-            return Some(Observation::unknown(
+            return StopProgress::PendingWorker(Observation::unknown(
                 UnknownCause::QueryFailed,
                 format!("stop sent; could not check processes: {error:#}"),
             ));
@@ -450,22 +459,31 @@ pub fn stop_progress(
         .map(|_| format!("stop sent; worker {} still running", worker.pid));
     let children: Vec<_> = living(&rows, descendants).map(|row| row.identity.pid.to_string()).collect();
     if !children.is_empty() {
+        let worker_alive = worker_evidence.is_some();
         let label = if children.len() == 1 { "child process" } else { "child processes" };
         let prefix = worker_evidence.map_or_else(|| "stop sent; ".into(), |worker| format!("{worker}; "));
-        return Some(Observation::known(
+        let observation = Observation::known(
             State::Running,
             format!("{prefix}{} {label} still running: {}", children.len(), children.join(", ")),
-        ));
+        );
+        return if worker_alive {
+            StopProgress::PendingWorker(observation)
+        } else {
+            StopProgress::PendingChildren(observation)
+        };
     }
-    worker_evidence.map(|evidence| Observation::known(State::Running, evidence))
+    worker_evidence.map_or(StopProgress::Exited, |evidence| {
+        StopProgress::PendingWorker(Observation::known(State::Running, evidence))
+    })
 }
 
-pub fn kill_stop_descendants(run: &Run, deadline: Instant) -> Result<()> {
+pub fn kill_stop_descendants(run: &Run) -> Result<()> {
     if let Launch::Launched { intent: Intent::StopSent { descendants, .. }, .. } = &run.launch
         && !descendants.is_empty()
     {
-        let survivors: Vec<_> = living(&snapshot(Some(deadline))?, descendants).map(|row| row.identity.pid).collect();
-        signal("-KILL", &survivors, Some(deadline))?;
+        let rows = snapshot(Some(Instant::now() + STOP_BOOKKEEPING_TIMEOUT))?;
+        let survivors: Vec<_> = living(&rows, descendants).map(|row| row.identity.pid).collect();
+        signal("-KILL", &survivors, Some(Instant::now() + STOP_BOOKKEEPING_TIMEOUT))?;
     }
     Ok(())
 }

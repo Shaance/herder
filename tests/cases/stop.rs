@@ -217,12 +217,21 @@ fn stop_names_worker_and_children_and_reserves_time_to_kill_after_slow_status() 
         "43210 1 43210 S Sat Nov 28 16:00:01 2026\n4242 43210 43210 S Sat Nov 28 16:00:02 2026\n",
     );
     f.executable(
+        &f.bin.join("ps"),
+        r#"case "$1" in
+-p) printf 'S Sat Nov 28 16:00:01 2026 '; cat "$HERDER_SKILLS_DIR/ps";;
+-Ao)
+    # Outlast the 500 ms left after escalation but finish within the snapshot's own budget.
+    if test -f "$HERDER_SKILLS_DIR/term-sent"; then sleep 0.55; fi
+    cat "$HERDER_SKILLS_DIR/ps-snapshot";;
+*) exit 90;;
+esac"#,
+    );
+    f.executable(
         &f.bin.join("kill"),
         r#"printf '%s\n' "$@" >> "$HERDER_STATE_DIR/kill-args"
 if test "$1" = -TERM; then
     touch "$HERDER_SKILLS_DIR/term-sent"
-else
-    touch "$HERDER_SKILLS_DIR/kill-sent"
 fi"#,
     );
     f.script(
@@ -235,10 +244,10 @@ fi
 cat "$HERDER_SKILLS_DIR/status""#,
     );
     let stopped = f.call(&["stop", &id], 0);
-    assert_eq!(stopped["data"]["observation"]["state"], "running");
+    let observation = &stopped["data"]["observation"];
+    assert_eq!(observation["state"], "running", "{stopped}");
     assert_eq!(signals(&f), "-TERM\n--\n-43210\n-KILL\n--\n4242\n");
-    let status = f.call(&["status", &id], 0);
-    let evidence = status["data"]["observation"]["evidence"].as_str().unwrap();
+    let evidence = observation["evidence"].as_str().unwrap();
     assert!(evidence.contains("worker 43210 still running"), "{evidence}");
     assert!(evidence.contains("1 child process still running: 4242"), "{evidence}");
     assert!(!f.skills.join("queried-after-term").exists());

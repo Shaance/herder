@@ -1,5 +1,8 @@
 use crate::{claude, domain::*, process, scripts, store::LockedRun};
-use crate::{process::ScriptSource, scripts::ScriptExecutor};
+use crate::{
+    process::ScriptSource,
+    scripts::{ScriptExecutor, StopProgress},
+};
 use anyhow::{Result, bail, ensure};
 use std::{
     path::Path,
@@ -57,6 +60,16 @@ pub fn observe_until(
     deadline: Option<Instant>,
     source: ScriptSource,
 ) -> Observation {
+    observe_with_deadlines(run, store, deadline, deadline, source)
+}
+
+fn observe_with_deadlines(
+    run: &mut Run,
+    store: Option<&LockedRun>,
+    deadline: Option<Instant>,
+    snapshot_deadline: Option<Instant>,
+    source: ScriptSource,
+) -> Observation {
     let Some(store) = store else {
         let evidence = "run busy: another herder command holds the lock".into();
         return match run.launch.state() {
@@ -83,16 +96,21 @@ pub fn observe_until(
                 observed
             }
             Some(executor) => {
-                let progress = match &run.launch {
+                let survivors = match &run.launch {
                     Launch::Launched { intent: Intent::StopSent { worker: Some(worker), descendants }, .. } => {
-                        scripts::stop_progress(worker, descendants, deadline)
+                        match scripts::stop_progress(worker, descendants, snapshot_deadline) {
+                            StopProgress::PendingWorker(progress) => return Ok(progress),
+                            StopProgress::PendingChildren(progress) => Some(progress),
+                            StopProgress::Exited => None,
+                        }
                     }
                     _ => None,
                 };
-                if let Some(progress) = progress {
-                    return Ok(progress);
+                let queried = executor.query(run, dir, deadline, source);
+                if let Some(survivors) = survivors {
+                    return Ok(survivors);
                 }
-                let (mut observed, identity) = executor.query(run, dir, deadline, source)?;
+                let (mut observed, identity) = queried?;
                 if let Launch::Launched { intent: intent @ Intent::StopSent { worker: Some(_), .. }, .. } =
                     &mut run.launch
                 {
@@ -202,19 +220,25 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
         let until_escalation = escalate_at.saturating_duration_since(Instant::now());
         if escalate && until_escalation <= poll {
             std::thread::sleep(until_escalation);
-            scripts::kill_stop_descendants(run, deadline)?;
+            scripts::kill_stop_descendants(run)?;
             escalate = false;
         }
         let observe_by = if escalate { escalate_at } else { deadline };
-        let mut observed =
-            observe_until(run, Some(store), script_worker.then_some(observe_by), ScriptSource::Configured);
+        // The wait window controls polling and executor queries, while stop's snapshots need their own budget.
+        let mut observed = observe_with_deadlines(
+            run,
+            Some(store),
+            script_worker.then_some(observe_by),
+            None,
+            ScriptSource::Configured,
+        );
         if observed.state() == State::Stopped
             || (script_worker && matches!(observed.state(), State::Finished | State::Failed | State::Unknown))
         {
             return Ok(observed);
         }
         let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() || (script_worker && !escalate && remaining <= poll) {
+        if !escalate && (remaining.is_zero() || (script_worker && remaining <= poll)) {
             observed.prefix_evidence("stop sent; exit not confirmed: ");
             return Ok(observed);
         }

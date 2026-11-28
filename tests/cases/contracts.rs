@@ -721,6 +721,38 @@ const AGY_MODEL: &str = "gemini-4-neon-high";
 const AGY_SUCCESS: &str = include_str!("../fixtures/agy/review-success.jsonl");
 
 #[test]
+fn agy_report_materializes_after_worker_exit_while_a_child_survives() {
+    let (f, _) = setup();
+    let launch = f.dispatch("agy", &["--model", AGY_MODEL], 0);
+    let id = launch["data"]["run_id"].as_str().unwrap();
+    let dir = f.dir(id);
+    let mut run = f.record(id);
+    run["launch"]["intent"] = json!({
+        "state": "stop_sent",
+        "worker": {"pid": 43210, "lstart": "Sat Nov 28 16:00:01 2026"},
+        "descendants": [{"pid": 4242, "lstart": "Sat Nov 28 16:00:02 2026"}],
+    });
+    fs::write(dir.join("run.json"), serde_json::to_vec(&run).unwrap()).unwrap();
+    fs::write(dir.join("events.jsonl"), AGY_SUCCESS).unwrap();
+    f.executable(
+        &f.bin.join("ps"),
+        r#"case "$1" in
+-Ao) echo '4242 1 4242 S Sat Nov 28 16:00:02 2026';;
+-p) echo 'unrelated process';;
+*) exit 90;;
+esac"#,
+    );
+    assert!(!dir.join("final.md").exists());
+    let report = Fixture::call_with(f.cmd().env_remove("HERDER_SKILLS_DIR"), &["report", id], 0);
+    let data = &report["data"];
+    let result: Value = serde_json::from_str(AGY_SUCCESS.lines().last().unwrap()).unwrap();
+    assert_eq!(data["report"]["content"], result["result"]["response"]);
+    assert_eq!(data["observation"]["state"], "running", "{report}");
+    assert!(data["observation"]["evidence"].as_str().unwrap().contains("1 child process still running: 4242"));
+    assert_eq!(f.record(id)["launch"]["intent"]["state"], "stop_sent");
+}
+
+#[test]
 fn stop_reaps_a_worker_command_in_its_own_process_group() {
     let (f, _) = setup();
     fs::remove_file(f.bin.join("kill")).unwrap();
