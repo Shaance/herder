@@ -382,21 +382,41 @@ fn a6_listing_isolates_broken_runs_and_dispatch_publishes_atomically() {
         assert!(entries.iter().any(|r| r["run_id"] == "broken" && r["error"].is_string()));
         assert_eq!(f.call(&["ls", "--goal", "other"], 0)["data"]["runs"][0]["run_id"], "broken");
     }
-    // Remove the input between successful lint and copy, before executor launch.
-    f.script("implementer-core", "check_brief", "rm \"$1\"");
-    f.dispatch("codex", &[], 1);
-    for entry in fs::read_dir(f.state.join("runs")).unwrap() {
-        let entry = entry.unwrap();
-        if !entry.file_name().to_string_lossy().starts_with('.') && entry.file_name() != "broken" {
-            assert!(entry.path().join("run.json").is_file());
-        }
-    }
     let human = f.cmd().arg("ls").output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
     let row = human.lines().find(|line| line.starts_with("broken\tbroken\t")).unwrap();
     let columns: Vec<_> = row.split('\t').collect();
     assert_eq!(columns.len(), 3);
     assert!(columns[2].contains("run.json"), "{row}");
+}
+
+#[test]
+fn a6_staging_failure_after_lint_leaves_no_published_run() {
+    let f = Fixture::new();
+    f.script("implementer-core", "check_brief", r#"printf 'lint completed\n' > "$HERDER_STATE_DIR/runs""#);
+    let result = f.dispatch("codex", &[], 1);
+    let runs = f.state.join("runs");
+    assert_eq!(fs::read(&runs).unwrap(), b"lint completed\n");
+    let staging_error = fs::create_dir_all(&runs).unwrap_err().to_string();
+    assert_eq!(result["error"], staging_error);
+    assert!(!f.state.join("launch-args").exists());
+}
+
+#[test]
+fn a6_rejection_after_staging_leaves_no_pending_run() {
+    let f = Fixture::new();
+    f.executable(
+        &f.bin.join("git"),
+        r#"for pending in "$HERDER_STATE_DIR"/runs/.*.pending/input.md; do
+  if test -f "$pending"; then touch "$HERDER_STATE_DIR/pending-observed"; fi
+done
+exec /usr/bin/git "$@""#,
+    );
+    let result = f.dispatch("codex", &["--mode", "review", "--expected-head", "stale"], 1);
+    assert_eq!(result["data"], json!({"outcome":"checkout_mismatch","reason":"head"}));
+    assert!(f.state.join("pending-observed").is_file());
+    assert!(fs::read_dir(f.state.join("runs")).unwrap().next().is_none());
+    assert!(!f.state.join("launch-args").exists());
 }
 
 #[test]

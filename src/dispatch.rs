@@ -11,14 +11,38 @@ use crate::{
 use anyhow::{Context, Result};
 use serde::Serialize;
 use std::{
+    fs,
+    io::{Read, Write},
     num::NonZeroU32,
-    path::{Path, PathBuf},
+    os::unix::fs::OpenOptionsExt,
+    path::Path,
     time::{Duration, Instant},
 };
 
 enum Models {
     Single(Option<String>),
     Review(Vec<String>),
+}
+
+fn lint_snapshot(bytes: &[u8], mode: &str, repo: &Path, state: &Path) -> Result<()> {
+    let state = state.canonicalize().unwrap_or_else(|_| state.to_owned());
+    let snapshot = [std::env::temp_dir(), "/tmp".into()]
+        .into_iter()
+        .filter_map(|dir| dir.canonicalize().ok())
+        .filter(|dir| !dir.starts_with(repo) && !dir.starts_with(&state))
+        .find_map(|dir| {
+            let mut file = tempfile::NamedTempFile::new_in(dir).ok()?;
+            file.write_all(bytes).ok()?;
+            Some(file)
+        })
+        .context("write brief lint snapshot outside the checkout and state directory")?;
+    process::lint(snapshot.path(), mode)?;
+    if let Err(error) = snapshot.close()
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(error).context("remove brief lint snapshot");
+    }
+    Ok(())
 }
 
 fn codex_config_assignments(extra: &[String]) -> impl Iterator<Item = (&str, &str)> {
@@ -166,7 +190,30 @@ pub(crate) fn dispatch(
             Executor::Codex => Target::Codex,
         })
     };
-    let stage = |input: &Input, protected: bool| -> Result<_> {
+    let read_unkeyed = || -> Result<Vec<u8>> {
+        let nonempty_file = |m: fs::Metadata| m.is_file() && m.len() > 0;
+        let mut failure = None;
+        if fs::metadata(&brief).is_ok_and(nonempty_file) {
+            // The path can be replaced between the metadata check and open.
+            let read = || -> std::io::Result<Option<Vec<u8>>> {
+                let mut file = fs::OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(&brief)?;
+                let mut bytes = Vec::new();
+                Ok((file.metadata().is_ok_and(nonempty_file) && file.read_to_end(&mut bytes)? > 0).then_some(bytes))
+            };
+            match read() {
+                Ok(Some(bytes)) => return Ok(bytes),
+                Ok(None) => {}
+                Err(error) => failure = Some(error),
+            }
+        }
+        // Let the linter describe a brief that cannot be read, as before the snapshot.
+        process::lint(&brief, &mode)?;
+        match failure {
+            Some(error) => Err(error).with_context(|| format!("read dispatch brief {}", brief.display())),
+            None => anyhow::bail!("brief '{}' must be a regular, nonempty file", brief.display()),
+        }
+    };
+    let stage = |bytes: &[u8], protected: bool| -> Result<_> {
         let baseline_commit = if !protected {
             process::checked(std::process::Command::new("git").arg("-C").arg(&repo).args(["rev-parse", "HEAD"]))
                 .ok()
@@ -185,16 +232,7 @@ pub(crate) fn dispatch(
             None
         };
         let (id, locked) = store.create()?;
-        let input_md = locked.dir.join("input.md");
-        match input {
-            Input::Brief(source) => {
-                store::copy(source, &input_md)?;
-            }
-            Input::Generated(bytes) => {
-                store::atomic(&input_md, bytes)?;
-                process::lint(&input_md, &mode)?;
-            }
-        }
+        store::atomic(&locked.dir.join("input.md"), bytes)?;
         Ok((id, locked, (baseline_commit, dispatch_dirty, dispatch_staged)))
     };
     let new_run =
@@ -241,15 +279,19 @@ pub(crate) fn dispatch(
                 crate::guard::require_external_state(&repo, &store.root)?;
             }
             let target = resolve_target()?;
-            let (input, request) = if handoff {
+            let bytes = if handoff {
                 // Validate the continuation document before any staging or launch side effect.
                 let document = match crate::handoff::document(&brief) {
                     Ok(document) => document,
                     Err(error) => return reject(format!("{error:#}")),
                 };
-                (Input::Generated(crate::handoff::prompt(&mode, &document).into_bytes()), None)
-            } else if let Some(key) = &request_id {
-                let bytes = std::fs::read(&brief).context("read dispatch brief")?;
+                crate::handoff::prompt(&mode, &document).into_bytes()
+            } else if request_id.is_some() {
+                fs::read(&brief).context("read dispatch brief")?
+            } else {
+                read_unkeyed()?
+            };
+            let request = if let Some(key) = &request_id {
                 let payload = DispatchPayload {
                     mode: &mode,
                     target: &target,
@@ -268,14 +310,14 @@ pub(crate) fn dispatch(
                 if let Some(run_id) = request.existing()? {
                     return Ok((Output::Replayed { run_id }, 0));
                 }
-                (Input::Generated(bytes), Some(request))
+                Some(request)
             } else {
-                process::lint(&brief, &mode)?;
-                (Input::Brief(brief), None)
+                None
             };
             let accept_with = accept_with.as_deref().map(|path| crate::guard::host_check(&repo, path)).transpose()?;
+            lint_snapshot(&bytes, &mode, &repo, &store.root)?;
             let (id, mut locked, (mut baseline_commit, dispatch_dirty, dispatch_staged)) =
-                stage(&input, accept_with.is_some())?;
+                stage(&bytes, accept_with.is_some())?;
             let slot = accept_with.is_some().then(|| Slot::lock(store, &repo)).transpose()?;
             if let Some(request) = &request
                 && let Some(run_id) = request.existing()?
@@ -325,13 +367,13 @@ pub(crate) fn dispatch(
         Models::Review(models) => models,
     };
     let target = resolve_target()?;
-    process::lint(&brief, &mode)?;
-    let input = Input::Brief(brief);
+    let bytes = read_unkeyed()?;
+    lint_snapshot(&bytes, &mode, &repo, &store.root)?;
     let (mut runs, mut code, mut error) = (vec![], 0, None);
     for model in models {
         let name = name.as_ref().map(|name| format!("{name}-{model}"));
         let result = (|| -> Result<_> {
-            let (id, mut locked, snapshot) = stage(&input, false)?;
+            let (id, mut locked, snapshot) = stage(&bytes, false)?;
             let run = new_run(&id, name, Some(model.clone()), &target, snapshot, None);
             store.publish(&mut locked, &run, &store.dir(&id))?;
             Ok(launch(run, &locked))
@@ -410,11 +452,4 @@ fn verify_launched_attempt(
         }
         std::thread::sleep(poll_interval.min(deadline.saturating_duration_since(Instant::now())));
     }
-}
-
-enum Input {
-    /// Dispatch byte-copies the already linted brief file into the run staging directory.
-    Brief(PathBuf),
-    /// Handoff stages the generated prompt as input.md and lints it inside the staging directory.
-    Generated(Vec<u8>),
 }
