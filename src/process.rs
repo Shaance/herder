@@ -111,6 +111,8 @@ pub enum Script {
     LaunchClassic,
     StatusClassic,
     ResumeClassic,
+    LaunchAgy,
+    StatusAgy,
 }
 
 #[derive(Clone, Copy)]
@@ -147,6 +149,8 @@ pub fn script_from(script: Script, source: ScriptSource) -> Command {
         Script::LaunchClassic => embedded!("codex-implementer", "launch_classic.sh"),
         Script::StatusClassic => embedded!("codex-implementer", "status_classic.sh"),
         Script::ResumeClassic => embedded!("codex-implementer", "resume_classic.sh"),
+        Script::LaunchAgy => embedded!("agy-review", "launch_agy.sh"),
+        Script::StatusAgy => embedded!("agy-review", "status_agy.sh"),
     };
     if let Some(dir) = source.override_dir() {
         return Command::new(dir.join(owner).join("scripts").join(file));

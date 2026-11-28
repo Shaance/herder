@@ -111,6 +111,11 @@ fn stream(path: &Path, executor: Executor) -> Option<(&'static str, Option<Syste
             {
                 "session_opened"
             }
+            (Executor::Agy, _, _) => match event["event"].as_str() {
+                Some("init") => "session_opened",
+                Some("step_update") => "item_updated",
+                _ => "event_stream_updated",
+            },
             _ => "event_stream_updated",
         })
         .last()

@@ -24,6 +24,8 @@ mod protected_dispatch;
 #[path = "cases/workflow.rs"]
 mod workflow;
 
+const AGY_SETTINGS: &str = ".gemini/antigravity-cli/settings.json";
+
 struct Fixture {
     _temp: TempDir,
     root: PathBuf,
@@ -54,12 +56,23 @@ impl Fixture {
         for dir in [&f.repo, &f.skills, &f.state, &f.bin] {
             fs::create_dir_all(dir).unwrap();
         }
+        let agy_settings = f.root.join("fixture-home").join(AGY_SETTINGS);
+        fs::create_dir_all(agy_settings.parent().unwrap()).unwrap();
+        fs::write(agy_settings, r#"{"modelProvider":"gemini"}"#).unwrap();
         f.git(&["init", "-q"]);
         f.git(&["commit", "--allow-empty", "-qm", "baseline"]);
         f.write("brief.md", "implement this task\n");
-        for exe in ["vibe", "codex", "jq", "watch"] {
+        for exe in ["vibe", "codex", "agy", "jq", "watch"] {
             f.executable(&f.bin.join(exe), "exit 0");
         }
+        f.script(
+            "agy-review",
+            "launch_agy",
+            r#"echo 43210 > "$3/run.pid"
+echo native-1 > "$3/conversation-id"
+echo "RUN_DIR=$3 PID=43210 CONVERSATION_ID=native-1""#,
+        );
+        f.script("agy-review", "status_agy", r#"cat "$HERDER_SKILLS_DIR/status""#);
         f.executable(&f.bin.join("rex"), "printf '%s\\n' \"$@\" > \"$HERDER_STATE_DIR/rex-args\"; echo '{}'");
         f.executable(&f.bin.join("ps"), "cat \"$HERDER_SKILLS_DIR/ps\"");
         f.executable(
@@ -241,6 +254,7 @@ echo "RUN_DIR=$1 PID=$pid {key}=native-1""#
     fn cmd(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_herder"));
         cmd.current_dir(&self.repo)
+            .env("HOME", self.root.join("fixture-home"))
             .env("HERDER_STATE_DIR", &self.state)
             .env("HERDER_SKILLS_DIR", &self.skills)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))

@@ -6,7 +6,7 @@ use crate::{
 use anyhow::{Result, ensure};
 use clap::ValueEnum;
 use serde::Serialize;
-use std::{path::PathBuf, process::Command};
+use std::{fs, path::PathBuf, process::Command};
 
 #[derive(Serialize)]
 pub struct Doctor {
@@ -73,10 +73,26 @@ pub fn run(executor: Option<Executor>, profile: Option<PathBuf>) -> Result<(Doct
             });
             checks.push(DoctorCheck { item: exe.into(), status });
         }
+        if e == Executor::Agy {
+            let relative = ".gemini/antigravity-cli/settings.json";
+            let settings =
+                std::env::var_os("HOME").filter(|home| !home.is_empty()).map(|home| PathBuf::from(home).join(relative));
+            let api_key_mode = settings
+                .as_ref()
+                .and_then(|path| fs::read(path).ok())
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .is_some_and(|config| config["modelProvider"] == "gemini");
+            let item = settings.unwrap_or_else(|| PathBuf::from("~").join(relative));
+            let status = CheckStatus::from_probe(api_key_mode, || {
+                format!("set \"modelProvider\": \"gemini\" in {} to use API-key mode", item.display())
+            });
+            checks.push(DoctorCheck { item, status });
+        }
         if override_set {
             let mut scripts = vec![Script::CheckBrief, Script::CollectEvidence];
             if let Some(adapter) = adapter {
-                scripts.extend(adapter.scripts);
+                scripts.extend([adapter.launch_script, adapter.status_script]);
+                scripts.extend(adapter.resume_script);
             }
             for script in scripts {
                 let path = PathBuf::from(process::script(script).get_program());

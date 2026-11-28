@@ -10,6 +10,7 @@ pub enum Executor {
     Claude,
     Vibe,
     Codex,
+    Agy,
 }
 impl Executor {
     pub fn as_str(self) -> &'static str {
@@ -17,6 +18,7 @@ impl Executor {
             Self::Claude => "claude",
             Self::Vibe => "vibe",
             Self::Codex => "codex",
+            Self::Agy => "agy",
         }
     }
 }
@@ -26,6 +28,7 @@ pub enum Target {
     Claude { profile: Option<PathBuf> },
     Vibe,
     Codex,
+    Agy,
 }
 impl Target {
     pub fn executor(&self) -> Executor {
@@ -33,12 +36,13 @@ impl Target {
             Self::Claude { .. } => Executor::Claude,
             Self::Vibe => Executor::Vibe,
             Self::Codex => Executor::Codex,
+            Self::Agy => Executor::Agy,
         }
     }
     pub fn profile(&self) -> Option<&Path> {
         match self {
             Self::Claude { profile } => profile.as_deref(),
-            Self::Vibe | Self::Codex => None,
+            Self::Vibe | Self::Codex | Self::Agy => None,
         }
     }
 }
@@ -48,6 +52,7 @@ pub enum Native {
     Claude { id: String, session_id: String, profile: Option<PathBuf> },
     Vibe { session_id: String, pid: NonZeroU32 },
     Codex { thread_id: String, pid: NonZeroU32 },
+    Agy { conversation_id: String, pid: NonZeroU32 },
 }
 impl Native {
     pub fn target(&self) -> Target {
@@ -55,12 +60,14 @@ impl Native {
             Self::Claude { profile, .. } => Target::Claude { profile: profile.clone() },
             Self::Vibe { .. } => Target::Vibe,
             Self::Codex { .. } => Target::Codex,
+            Self::Agy { .. } => Target::Agy,
         }
     }
     pub fn process(&self) -> Option<(NonZeroU32, &str, &str)> {
         match self {
             Self::Vibe { session_id, pid } => Some((*pid, "session-id", session_id)),
             Self::Codex { thread_id, pid } => Some((*pid, "thread-id", thread_id)),
+            Self::Agy { conversation_id, pid } => Some((*pid, "conversation-id", conversation_id)),
             _ => None,
         }
     }

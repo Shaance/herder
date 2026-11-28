@@ -116,6 +116,23 @@ flag resume with the launcher's default. Start a fresh review when you need read
 enforcement for an older run. Claude and Vibe review runs rely on the brief's read-only
 instruction alone. Vibe runs with `--auto-approve`.
 
+## Antigravity CLI reviews
+
+`herder doctor --executor agy` checks that `agy` is on PATH and that
+`~/.gemini/antigravity-cli/settings.json` sets `"modelProvider": "gemini"`
+for API-key mode. Choose the reasoning level in `--model`.
+
+```sh
+herder dispatch --executor agy --mode review --model gemini-4-neon-high --brief /tmp/review.md --repo . --check true
+```
+
+Review uses Antigravity's plan mode. Keeping shell commands read-only relies on
+the model honoring plan mode and the brief, as with Vibe's read-only instructions.
+Checked dispatch without `--path` flags any new Git-visible checkout change.
+Use a fresh dispatch to continue an Agy run. Extra arguments after `--` are
+rejected. `herder stop` sends TERM to the recorded process. A shell child it
+already started may survive in its own process group.
+
 ## Handing off to another agent
 
 When the coordinating conversation moves to another agent, write the continuation

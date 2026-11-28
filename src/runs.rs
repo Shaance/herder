@@ -174,6 +174,7 @@ pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     }
 }
 pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &LockedRun) -> Result<Observation> {
+    ensure!(run.launch.target().executor() != Executor::Agy, "agy does not support resume; dispatch a new run");
     if let Some(id) = request_id {
         ensure!(
             !id.is_empty() && id.len() <= 200 && !id.chars().any(char::is_control),
@@ -231,7 +232,7 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
                 Native::Vibe { session_id, .. } => {
                     scripts::check_vibe_resume_session(run, dir, session_id, recorded.process().unwrap().0)?;
                 }
-                Native::Claude { .. } => {}
+                Native::Claude { .. } | Native::Agy { .. } => {}
             }
         }
         (previous, attempt)
@@ -293,7 +294,7 @@ pub fn pane(run: &Run, dir: &Path) -> Result<()> {
             }
             cmd.args(["claude", "attach", id]);
         }
-        Target::Vibe | Target::Codex => {
+        Target::Vibe | Target::Codex | Target::Agy => {
             let exe = std::env::current_exe()?;
             if let Some(skills) = std::env::var_os("HERDER_SKILLS_DIR") {
                 cmd.args(["env", "-u", "HERDER_STATE_DIR"]);

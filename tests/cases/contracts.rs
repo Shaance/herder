@@ -716,3 +716,204 @@ echo '{"type":"turn.completed"}'"#,
     assert_eq!(pids.next(), own, "the resumed worker started before its pid was recorded: {seen:?}");
     assert_eq!(f.record(id)["attempt"], 2, "{resumed}");
 }
+
+const AGY_MODEL: &str = "gemini-4-neon-high";
+const AGY_SUCCESS: &str = include_str!("../fixtures/agy/review-success.jsonl");
+
+#[test]
+fn agy_refuses_effort_extras_and_missing_model_before_recording() {
+    let f = Fixture::new();
+    for (args, message) in [
+        (&["--model", AGY_MODEL, "--effort", "high"][..], "choose an effort in the --model slug"),
+        (&["--mode", "review", "--model", AGY_MODEL, "--", "--mode", "accept-edits"], "extra arguments after --"),
+        (&[], "agy requires --model"),
+        (&["--model", ""], "agy requires --model"),
+    ] {
+        let result = f.dispatch("agy", args, 2);
+        assert!(result["data"]["message"].as_str().unwrap().contains(message), "{result}");
+        assert!(!f.state.join("runs").exists());
+    }
+}
+
+#[test]
+fn agy_resume_refuses_without_recording_an_attempt() {
+    let f = Fixture::new();
+    let launch = f.dispatch("agy", &["--model", AGY_MODEL], 0);
+    let id = launch["data"]["run_id"].as_str().unwrap();
+    f.status("exited", "COMPLETED");
+    let record = f.record(id);
+    let refused =
+        f.call(&["resume", id, "--brief", f.root.join("brief.md").to_str().unwrap(), "--request-id", "agy-retry"], 1);
+    assert!(refused["error"].as_str().unwrap().contains("agy does not support resume"));
+    assert_eq!(f.record(id), record);
+    assert!(!f.dir(id).join("input2.md").exists());
+}
+
+#[test]
+fn agy_stop_requires_the_exact_log_marker() {
+    let f = Fixture::new();
+    let launch = f.dispatch("agy", &["--model", AGY_MODEL], 0);
+    let id = launch["data"]["run_id"].as_str().unwrap();
+    let log = f.dir(id).join("agy.log");
+    fs::write(f.skills.join("ps"), format!("agy --log-file {}.other -p brief\n", log.display())).unwrap();
+    let refused = f.call(&["stop", id], 1);
+    assert!(refused["error"].as_str().unwrap().contains("refusing TERM"));
+    assert!(!f.state.join("kill-args").exists());
+
+    fs::write(f.skills.join("ps"), format!("agy --log-file {} -p brief\n", log.display())).unwrap();
+    let stopped = f.call(&["stop", id], 0);
+    assert_eq!(stopped["data"]["observation"]["state"], "stopped");
+    assert_eq!(fs::read_to_string(f.state.join("kill-args")).unwrap(), "-TERM\n43210\n");
+}
+
+#[test]
+fn agy_doctor_and_launcher_require_api_key_mode() {
+    let (f, _) = setup();
+    let home = f.root.join("agy-home");
+    let settings = home.join(AGY_SETTINGS);
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    for config in [
+        None,
+        Some("{"),
+        Some(r#"{"modelProvider":"google"}"#),
+        Some(r#"{"modelProvider":"gemini"} {"modelProvider":"gemini"}"#),
+        Some(r#"{"modelProvider":"gemini","value":NaN}"#),
+        Some(r#"{"modelProvider":"gemini"}"#),
+    ] {
+        if let Some(config) = config {
+            fs::write(&settings, config).unwrap();
+        }
+        let healthy = config == Some(r#"{"modelProvider":"gemini"}"#);
+        let mut cmd = f.cmd();
+        cmd.env("HOME", &home).env_remove("GEMINI_API_KEY");
+        let result = Fixture::call_with(&mut cmd, &["doctor", "--executor", "agy"], i32::from(!healthy));
+        let checks = result["data"]["executors"][0]["checks"].as_array().unwrap();
+        let check = checks.iter().find(|check| check["item"] == json!(settings)).unwrap();
+        assert_eq!(check["ok"], healthy, "{result}");
+        if !healthy {
+            assert!(check["fix"].as_str().unwrap().contains(r#""modelProvider": "gemini""#));
+            let mut cmd = f.cmd();
+            cmd.env_remove("HERDER_SKILLS_DIR").env("HOME", &home);
+            let launch = Fixture::call_with(
+                &mut cmd,
+                &[
+                    "dispatch",
+                    "--executor",
+                    "agy",
+                    "--model",
+                    AGY_MODEL,
+                    "--repo",
+                    ".",
+                    "--brief",
+                    f.root.join("brief.md").to_str().unwrap(),
+                ],
+                1,
+            );
+            assert!(launch.to_string().contains("modelProvider"), "{launch}");
+            assert!(!f.dir(launch["data"]["run_id"].as_str().unwrap()).join("run.pid").exists());
+        }
+    }
+}
+
+#[test]
+fn agy_status_interprets_captured_streams() {
+    let f = Fixture::new();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/ai-skills/agy-review/scripts/status_agy.sh");
+    for (name, stream, verdict) in [
+        ("review-success", AGY_SUCCESS, "COMPLETED"),
+        ("denied", include_str!("../fixtures/agy/denied.jsonl"), "FAILED (denied actions: Bash)"),
+        ("interrupted", include_str!("../fixtures/agy/interrupted.jsonl"), "STOPPED (interrupted)"),
+        ("died", AGY_SUCCESS.lines().next().unwrap(), "DIED (no result event)"),
+        (
+            "error",
+            r#"{"event":"result","result":{"status":"ERROR","error":"request failed"}}"#,
+            "FAILED (request failed)",
+        ),
+        (
+            "empty",
+            r#"{"event":"result","result":{"status":"SUCCESS","denied_actions":[],"response":""}}"#,
+            "FAILED (result status SUCCESS or empty response)",
+        ),
+    ] {
+        let dir = f.root.join(name);
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("events.jsonl"), stream).unwrap();
+        if name == "denied" {
+            fs::write(dir.join("stderr.log"), include_str!("../fixtures/agy/denied.stderr")).unwrap();
+        }
+        let out = Command::new("bash").arg(&script).arg(&dir).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(String::from_utf8(out.stdout).unwrap().contains(&format!("verdict: {verdict}\n")));
+        let report = dir.join("final.md");
+        if name == "review-success" {
+            let result: Value = serde_json::from_str(stream.lines().last().unwrap()).unwrap();
+            assert_eq!(fs::read_to_string(report).unwrap(), result["result"]["response"].as_str().unwrap());
+            let init: Value = serde_json::from_str(stream.lines().next().unwrap()).unwrap();
+            assert_eq!(fs::read_to_string(dir.join("conversation-id")).unwrap().trim(), init["conversation_id"]);
+        } else {
+            assert!(!report.exists());
+        }
+    }
+}
+
+#[test]
+fn embedded_agy_dispatch_uses_the_review_and_direct_contracts() {
+    for mode in ["review", "direct"] {
+        let (f, _) = setup();
+        f.write("agy-events.jsonl", AGY_SUCCESS);
+        f.executable(
+            &f.bin.join("agy"),
+            r#"if IFS= read -r ignored; then exit 90; fi
+pwd > "$HERDER_STATE_DIR/agy-cwd"
+printf '%s\0' "$@" > "$HERDER_STATE_DIR/agy-args"
+if [ "$7" = --mode ]; then touch unexpected.txt; fi
+cat "$HERDER_STATE_DIR/../agy-events.jsonl""#,
+        );
+        let mut cmd = f.cmd();
+        cmd.env_remove("HERDER_SKILLS_DIR").env_remove("GEMINI_API_KEY");
+        let brief = f.root.join("brief.md");
+        let mut args = vec![
+            "dispatch",
+            "--executor",
+            "agy",
+            "--mode",
+            mode,
+            "--model",
+            AGY_MODEL,
+            "--repo",
+            ".",
+            "--brief",
+            brief.to_str().unwrap(),
+        ];
+        if mode == "review" {
+            args.extend(["--check", "true"]);
+        }
+        let launch = Fixture::call_with(&mut cmd, &args, i32::from(mode == "review"));
+        let id = launch["data"]["run_id"].as_str().unwrap();
+        let dir = f.dir(id);
+        let log = dir.join("agy.log");
+        let input = fs::read_to_string(&brief).unwrap();
+        let mut expected_args =
+            vec!["--log-file", log.to_str().unwrap(), "--model", AGY_MODEL, "--output-format", "stream-json"];
+        if mode == "review" {
+            expected_args.extend(["--mode", "plan"]);
+            assert!(launch["data"]["verification"]["scope"]["output"].as_str().unwrap().contains("unexpected.txt"));
+        }
+        expected_args.extend(["--dangerously-skip-permissions", "-p", &input, ""]);
+        assert_eq!(fs::read(f.state.join("agy-args")).unwrap(), expected_args.join("\0").as_bytes());
+        assert_eq!(fs::read_to_string(f.state.join("agy-cwd")).unwrap().trim(), f.repo.to_str().unwrap());
+        let native = &f.record(id)["launch"]["native"];
+        assert_eq!(native["executor"], "agy");
+        let init: Value = serde_json::from_str(AGY_SUCCESS.lines().next().unwrap()).unwrap();
+        assert_eq!(native["conversation_id"], init["conversation_id"]);
+        let call = |args: &[&str], code| Fixture::call_with(f.cmd().env_remove("HERDER_SKILLS_DIR"), args, code);
+        assert_eq!(call(&["status", id], 0)["data"]["observation"]["state"], "finished");
+        assert_eq!(call(&["ls"], 0)["data"]["summary"]["agy"]["finished"], 1);
+        call(&["wait", "--run-dir", dir.to_str().unwrap()], 0);
+        let result: Value = serde_json::from_str(AGY_SUCCESS.lines().last().unwrap()).unwrap();
+        assert_eq!(call(&["report", id], 0)["data"]["report"]["content"], result["result"]["response"]);
+        if mode == "direct" {
+            call(&["verify", id, "--path", "src/"], 0);
+        }
+    }
+}

@@ -75,11 +75,28 @@ pub(super) fn validate(
                         .into(),
                 );
             }
+            Executor::Agy => {
+                return Err(
+                    "agy has no per-run --effort; choose an effort in the --model slug, such as gemini-4-neon-high"
+                        .into(),
+                );
+            }
             Executor::Codex => codex_config_assignments(&extra).any(|(key, _)| key == "model_reasoning_effort"),
             Executor::Claude => extra.iter().any(|arg| arg == "--effort" || arg.starts_with("--effort=")),
         };
         if conflict {
             return Err("--effort conflicts with native effort arguments after --".into());
+        }
+    }
+    if executor == Executor::Agy {
+        if !extra.is_empty() {
+            return Err("agy does not accept extra arguments after --".into());
+        }
+        if model.is_empty() || model.iter().any(|slug| slug.trim().is_empty()) {
+            return Err("agy requires --model with a model slug, such as gemini-4-neon-high".into());
+        }
+        if mode == "review" {
+            extra.extend(["--mode".into(), "plan".into()]);
         }
     }
     if executor == Executor::Codex && mode == "review" {

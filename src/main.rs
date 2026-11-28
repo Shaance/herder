@@ -60,7 +60,7 @@ enum Action {
     },
     #[command(
         about = "Lint a brief and launch a recorded worker",
-        after_help = "Example: herder dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nCodex extras: --image=<file> and -p <profile> after --; extras are replayed on resume.\nLauncher gate exit 3 leaves the run starting; herder returns 0. Use herder wait to await settlement or status to follow progress. Use --check to keep dispatch running through worker completion and verification."
+        after_help = "Example: herder dispatch --executor codex --brief /tmp/task.md --repo . --path src/\nKeep brief files outside --repo: untracked briefs inside it fail verify scope.\nExtra arguments go directly to the executor; Vibe runs are auto-approve only.\nAgy requires --model and rejects --effort and extra arguments.\nCodex extras: --image=<file> and -p <profile> after --; extras are replayed on resume.\nLauncher gate exit 3 leaves the run starting; herder returns 0. Use herder wait to await settlement or status to follow progress. Use --check to keep dispatch running through worker completion and verification."
     )]
     Dispatch {
         #[command(flatten)]
@@ -137,7 +137,7 @@ enum Action {
     },
     #[command(
         about = "Stop the exact recorded worker",
-        after_help = "Example: herder stop 20261101-120000-abcd\nRequires running or blocked state and a matching recorded identity. Claude uses claude stop;\nVibe/Codex receive TERM only after the PID command matches this run. Waits briefly for exit;\nif exit is not confirmed, reports stop sent with exit 0. Use status to confirm."
+        after_help = "Example: herder stop 20261101-120000-abcd\nRequires running or blocked state and a matching recorded identity. Claude uses claude stop.\nVibe, Codex and Agy receive TERM only after the PID command matches this run. Waits briefly for exit.\nIf exit is not confirmed, reports stop sent with exit 0. Use status to confirm."
     )]
     Stop {
         /// Run id or unique dispatch name
@@ -145,7 +145,7 @@ enum Action {
     },
     #[command(
         about = "Resume an exact session with a delta brief",
-        after_help = "Example: herder resume 20261101-120000-abcd --brief /tmp/delta.md --request-id sync-42\nVibe/Codex resume the recorded session with a non-empty delta after finished, failed or stopped.\nClaude stops a settled live session and resumes the same identity with saved options under the recorded profile.\nA failed pending resume can retry the same attempt after terminal executor evidence confirms no live worker;\nrunning/unknown blocks retry and executor restrictions still apply. Gate exit 3 leaves the launch pending for observation.\nResume exits 1 if that observation finds a Codex identity conflict, and otherwise exits 0 after gate exit 3.\n--request-id KEY (1-200 bytes, no control characters) records the request before launch: replaying KEY with\nbyte-identical --brief returns the recorded run without another launch; a different brief under KEY is rejected."
+        after_help = "Example: herder resume 20261101-120000-abcd --brief /tmp/delta.md --request-id sync-42\nVibe/Codex resume the recorded session with a non-empty delta after finished, failed or stopped.\nClaude stops a settled live session and resumes the same identity with saved options under the recorded profile.\nUse a fresh dispatch to continue an Agy run.\nA failed pending resume can retry the same attempt after terminal executor evidence confirms no live worker;\nrunning/unknown blocks retry and executor restrictions still apply. Gate exit 3 leaves the launch pending for observation.\nResume exits 1 if that observation finds a Codex identity conflict, and otherwise exits 0 after gate exit 3.\n--request-id KEY (1-200 bytes, no control characters) records the request before launch: replaying KEY with\nbyte-identical --brief returns the recorded run without another launch; a different brief under KEY is rejected."
     )]
     Resume {
         /// Run id or unique dispatch name
@@ -183,7 +183,7 @@ enum Action {
 }
 #[derive(Args, Clone)]
 struct DispatchArgs {
-    /// Brief lint mode (review also selects a read-only sandbox for Codex)
+    /// Brief lint mode (review also selects a read-only sandbox for Codex or plan mode for Agy)
     #[arg(long, default_value = "direct", value_parser = ["direct", "review"])]
     mode: String,
     /// Executor to use
@@ -210,7 +210,7 @@ struct DispatchArgs {
     /// Claude configuration directory (--profile > CLAUDE_CONFIG_DIR > none, Claude default)
     #[arg(long)]
     profile: Option<PathBuf>,
-    #[arg(long, help = "Show worker in Rex; Vibe/Codex panes use herder wait")]
+    #[arg(long, help = "Show worker in Rex. Vibe, Codex and Agy panes use herder wait")]
     pane: bool,
     #[arg(long = "path", help = "Allowed prefix for the post-run Git change audit (repeatable)")]
     paths: Vec<String>,
