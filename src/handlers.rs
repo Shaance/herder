@@ -8,7 +8,7 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
     if let Action::Wait { run_dir: Some(dir), all, timeout, .. } = &action {
         let (store, id) = Store::from_run_dir(dir)?;
         let run = store.load(&id)?;
-        if !matches!(run.launch, Launch::Failed { .. }) && matches!(run.launch.target(), Target::Codex | Target::Vibe) {
+        if !matches!(run.launch, Launch::Failed { .. }) && !matches!(run.launch.target(), Target::Claude { .. }) {
             crate::scripts::require_status_tools(ScriptSource::Embedded)?;
         }
         return crate::wait::wait(&store, &[id], None, *all, *timeout, json_output, ScriptSource::Embedded);
@@ -169,7 +169,9 @@ pub fn handle(action: Action, json_output: bool) -> Result<(Output, i32)> {
             };
             let observation = runs::observe(&mut run, locked.as_ref());
             let state = observation.state();
-            if matches!(state, State::Starting | State::Running | State::Blocked) {
+            let stop_query_failed = matches!(observation.cause(), Some(UnknownCause::QueryFailed))
+                && matches!(run.launch, Launch::Launched { intent: Intent::StopSent { worker: Some(_), .. }, .. });
+            if stop_query_failed || matches!(state, State::Starting | State::Running | State::Blocked) {
                 let message = format!("cannot verify worker in state {}", state.as_str());
                 return Ok((Output::Message(message), 2));
             }

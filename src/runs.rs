@@ -1,7 +1,14 @@
 use crate::{claude, domain::*, process, scripts, store::LockedRun};
-use crate::{process::ScriptSource, scripts::ScriptExecutor};
+use crate::{
+    process::ScriptSource,
+    scripts::{ScriptExecutor, StopProgress},
+};
 use anyhow::{Result, bail, ensure};
-use std::{path::Path, process::Command, time::Instant};
+use std::{
+    path::Path,
+    process::Command,
+    time::{Duration, Instant},
+};
 
 pub fn launch(run: &mut Run, phase: LaunchPhase<'_>, store: &LockedRun) -> Result<()> {
     let target = run.launch.target();
@@ -53,6 +60,16 @@ pub fn observe_until(
     deadline: Option<Instant>,
     source: ScriptSource,
 ) -> Observation {
+    observe_with_deadlines(run, store, deadline, deadline, source)
+}
+
+fn observe_with_deadlines(
+    run: &mut Run,
+    store: Option<&LockedRun>,
+    deadline: Option<Instant>,
+    snapshot_deadline: Option<Instant>,
+    source: ScriptSource,
+) -> Observation {
     let Some(store) = store else {
         let evidence = "run busy: another herder command holds the lock".into();
         return match run.launch.state() {
@@ -79,7 +96,38 @@ pub fn observe_until(
                 observed
             }
             Some(executor) => {
-                let (observed, identity) = executor.query(run, dir, deadline, source)?;
+                let survivors = match &run.launch {
+                    Launch::Launched { intent: Intent::StopSent { worker: Some(worker), descendants }, .. } => {
+                        match scripts::stop_progress(worker, descendants, snapshot_deadline) {
+                            StopProgress::PendingWorker(progress) => return Ok(progress),
+                            StopProgress::PendingChildren(progress) => Some(progress),
+                            StopProgress::Exited => None,
+                        }
+                    }
+                    _ => None,
+                };
+                let queried = executor.query(run, dir, deadline, source);
+                if let Some(survivors) = survivors {
+                    return Ok(survivors);
+                }
+                let (mut observed, identity) = queried?;
+                if let Launch::Launched { intent: intent @ Intent::StopSent { worker: Some(_), .. }, .. } =
+                    &mut run.launch
+                {
+                    *intent = match observed.state() {
+                        State::Finished | State::Failed => Intent::Running,
+                        State::Unknown => return Ok(observed),
+                        _ => {
+                            observed = Observation::known(
+                                State::Stopped,
+                                format!("stopped by herder stop; {}", observed.evidence()),
+                            );
+                            Intent::Stopped
+                        }
+                    };
+                    store.save(run)?;
+                    return Ok(observed);
+                }
                 let identity = match &run.launch {
                     Launch::PendingResume { previous: Native::Codex { .. }, .. } => Some(identity?),
                     _ => identity.ok(),
@@ -121,7 +169,7 @@ pub fn observe_until(
                 observed
             }
         };
-        if let Launch::Launched { intent: intent @ Intent::StopSent, .. } = &mut run.launch {
+        if let Launch::Launched { intent: intent @ Intent::StopSent { .. }, .. } = &mut run.launch {
             if matches!(observed.state(), State::Stopped | State::Finished | State::Failed) {
                 *intent = Intent::Stopped;
                 store.save(run)?;
@@ -145,35 +193,61 @@ pub fn observe_until(
 pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     let observed = observe(run, Some(store));
     ensure!(matches!(observed.state(), State::Running | State::Blocked), "cannot stop: {observed}");
-    let dir = &store.dir;
     let native = match &run.launch {
         Launch::PendingResume { previous: native @ Native::Claude { .. }, .. } => native,
         _ => run.launch.native().ok_or_else(|| anyhow::anyhow!("no recorded identity"))?,
     };
-    match native {
-        Native::Claude { id, profile, .. } => {
-            process::checked(claude::command(profile.as_deref()).current_dir(&run.repo).args(["stop", id]))?;
+    let script_worker = !matches!(native, Native::Claude { .. });
+    if let Native::Claude { id, profile, .. } = native {
+        process::checked(claude::command(profile.as_deref()).current_dir(&run.repo).args(["stop", id]))?;
+        if let Launch::Launched { intent, .. } = &mut run.launch {
+            *intent = Intent::StopSent { worker: None, descendants: vec![] };
         }
-        _ => scripts::stop(native, run, dir)?,
-    }
-    if let Launch::Launched { intent, .. } = &mut run.launch {
-        *intent = Intent::StopSent;
-    }
-    store.save(run)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    loop {
+        store.save(run)?;
+    } else if !scripts::stop(run, store)? {
         let mut observed = observe(run, Some(store));
-        if observed.state() == State::Stopped {
+        observed.prefix_evidence("Child processes could not be checked because the worker had already exited.\n");
+        return Ok(observed);
+    }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let escalate_at = deadline - Duration::from_millis(500);
+    let mut escalate = matches!(
+        &run.launch,
+        Launch::Launched { intent: Intent::StopSent { descendants, .. }, .. } if !descendants.is_empty()
+    );
+    let poll = Duration::from_millis(100);
+    loop {
+        let until_escalation = escalate_at.saturating_duration_since(Instant::now());
+        if escalate && until_escalation <= poll {
+            std::thread::sleep(until_escalation);
+            scripts::kill_stop_descendants(run)?;
+            escalate = false;
+        }
+        let observe_by = if escalate { escalate_at } else { deadline };
+        // The wait window controls polling and executor queries, while stop's snapshots need their own budget.
+        let mut observed = observe_with_deadlines(
+            run,
+            Some(store),
+            script_worker.then_some(observe_by),
+            None,
+            ScriptSource::Configured,
+        );
+        if observed.state() == State::Stopped
+            || (script_worker && matches!(observed.state(), State::Finished | State::Failed | State::Unknown))
+        {
             return Ok(observed);
         }
-        if std::time::Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if !escalate && (remaining.is_zero() || (script_worker && remaining <= poll)) {
             observed.prefix_evidence("stop sent; exit not confirmed: ");
             return Ok(observed);
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        let poll_by = if script_worker { observe_by - poll } else { observe_by };
+        std::thread::sleep(poll_by.saturating_duration_since(Instant::now()).min(poll));
     }
 }
 pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &LockedRun) -> Result<Observation> {
+    ensure!(run.launch.target().executor() != Executor::Agy, "agy does not support resume; dispatch a new run");
     if let Some(id) = request_id {
         ensure!(
             !id.is_empty() && id.len() <= 200 && !id.chars().any(char::is_control),
@@ -231,7 +305,7 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
                 Native::Vibe { session_id, .. } => {
                     scripts::check_vibe_resume_session(run, dir, session_id, recorded.process().unwrap().0)?;
                 }
-                Native::Claude { .. } => {}
+                Native::Claude { .. } | Native::Agy { .. } => {}
             }
         }
         (previous, attempt)
@@ -293,7 +367,7 @@ pub fn pane(run: &Run, dir: &Path) -> Result<()> {
             }
             cmd.args(["claude", "attach", id]);
         }
-        Target::Vibe | Target::Codex => {
+        Target::Vibe | Target::Codex | Target::Agy => {
             let exe = std::env::current_exe()?;
             if let Some(skills) = std::env::var_os("HERDER_SKILLS_DIR") {
                 cmd.args(["env", "-u", "HERDER_STATE_DIR"]);

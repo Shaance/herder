@@ -78,6 +78,7 @@ pub(crate) fn dispatch(
             Executor::Claude => Target::Claude { profile: process::profile(profile)? },
             Executor::Vibe => Target::Vibe,
             Executor::Codex => Target::Codex,
+            Executor::Agy => Target::Agy,
         })
     };
     let read_unkeyed = || -> Result<Vec<u8>> {

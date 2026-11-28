@@ -74,13 +74,19 @@ fn a8_stop_waits_or_reports_stop_sent_without_failure() {
         fs::write(f.skills.join("ps"), format!("codex -o {}\n", f.dir(&id).join("final.md").display())).unwrap();
         f.executable(&f.bin.join("kill"), "touch \"$HERDER_STATE_DIR/signalled\"");
         if delayed {
-            f.script(
-                "codex-implementer",
-                "status_classic",
-                r#"cat "$HERDER_SKILLS_DIR/status"
-if test -f "$HERDER_STATE_DIR/signalled"; then
-    printf 'state=exited pid=43210\nverdict: STOPPED\n' > "$HERDER_SKILLS_DIR/status"
-fi"#,
+            f.executable(
+                &f.bin.join("ps"),
+                r#"case "$1" in
+-p) printf 'S Sat Nov 28 16:00:01 2026 '; cat "$HERDER_SKILLS_DIR/ps";;
+-Ao)
+    if grep -q '^state=alive' "$HERDER_SKILLS_DIR/status"; then
+        echo '43210 1 43210 S Sat Nov 28 16:00:01 2026'
+    fi
+    if test -f "$HERDER_STATE_DIR/signalled"; then
+        printf 'state=exited pid=43210\nverdict: STOPPED\n' > "$HERDER_SKILLS_DIR/status"
+    fi;;
+*) exit 90;;
+esac"#,
             );
         }
         let stopped = f.call(&["stop", &id], 0);

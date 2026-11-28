@@ -21,8 +21,12 @@ mod lifecycle;
 mod observations;
 #[path = "cases/protected_dispatch.rs"]
 mod protected_dispatch;
+#[path = "cases/stop.rs"]
+mod stop;
 #[path = "cases/workflow.rs"]
 mod workflow;
+
+const AGY_SETTINGS: &str = ".gemini/antigravity-cli/settings.json";
 
 struct Fixture {
     _temp: TempDir,
@@ -54,17 +58,43 @@ impl Fixture {
         for dir in [&f.repo, &f.skills, &f.state, &f.bin] {
             fs::create_dir_all(dir).unwrap();
         }
+        let agy_settings = f.root.join("fixture-home").join(AGY_SETTINGS);
+        fs::create_dir_all(agy_settings.parent().unwrap()).unwrap();
+        fs::write(agy_settings, r#"{"modelProvider":"gemini"}"#).unwrap();
         f.git(&["init", "-q"]);
         f.git(&["commit", "--allow-empty", "-qm", "baseline"]);
         f.write("brief.md", "implement this task\n");
-        for exe in ["vibe", "codex", "jq", "watch"] {
+        for exe in ["vibe", "codex", "agy", "jq", "watch"] {
             f.executable(&f.bin.join(exe), "exit 0");
         }
+        f.script(
+            "agy-review",
+            "launch_agy",
+            r#"echo 43210 > "$3/run.pid"
+echo native-1 > "$3/conversation-id"
+echo "RUN_DIR=$3 PID=43210 CONVERSATION_ID=native-1""#,
+        );
+        f.script("agy-review", "status_agy", r#"cat "$HERDER_SKILLS_DIR/status""#);
         f.executable(&f.bin.join("rex"), "printf '%s\\n' \"$@\" > \"$HERDER_STATE_DIR/rex-args\"; echo '{}'");
-        f.executable(&f.bin.join("ps"), "cat \"$HERDER_SKILLS_DIR/ps\"");
+        f.executable(
+            &f.bin.join("ps"),
+            r#"case "$1" in
+-Ao)
+  test "$2" = pid=,ppid=,pgid=,stat=,lstart=
+  if test -f "$HERDER_SKILLS_DIR/ps-snapshot"; then
+    cat "$HERDER_SKILLS_DIR/ps-snapshot"
+  elif grep -q '^state=alive pid=43210' "$HERDER_SKILLS_DIR/status"; then
+    echo '43210 1 43210 S Sat Nov 28 16:00:01 2026'
+  fi;;
+-p)
+  if test "$4" = stat=,lstart=,args=; then printf 'S Sat Nov 28 16:00:01 2026 '; fi
+  cat "$HERDER_SKILLS_DIR/ps";;
+*) exit 90;;
+esac"#,
+        );
         f.executable(
             &f.bin.join("kill"),
-            r#"printf '%s\n' "$@" > "$HERDER_STATE_DIR/kill-args"
+            r#"printf '%s\n' "$@" >> "$HERDER_STATE_DIR/kill-args"
 echo 'state=exited pid=43210' > "$HERDER_SKILLS_DIR/status"
 echo 'verdict: DIED' >> "$HERDER_SKILLS_DIR/status""#,
         );
@@ -241,6 +271,7 @@ echo "RUN_DIR=$1 PID=$pid {key}=native-1""#
     fn cmd(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_herder"));
         cmd.current_dir(&self.repo)
+            .env("HOME", self.root.join("fixture-home"))
             .env("HERDER_STATE_DIR", &self.state)
             .env("HERDER_SKILLS_DIR", &self.skills)
             .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
@@ -853,7 +884,7 @@ fn stop_signals_only_confirmed_recorded_identity() {
         let stopped = f.call(&["stop", &id], 0);
         assert_eq!(stopped["data"]["observation"]["state"], "stopped");
         let (file, expected) =
-            if executor == "claude" { ("stop-args", "stop\nabc123\n") } else { ("kill-args", "-TERM\n43210\n") };
+            if executor == "claude" { ("stop-args", "stop\nabc123\n") } else { ("kill-args", "-TERM\n--\n-43210\n") };
         assert_eq!(fs::read_to_string(f.state.join(file)).unwrap(), expected);
     }
 }

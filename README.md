@@ -1,6 +1,6 @@
 # herder
 
-Herder is a local Rust CLI that lets you or your coding agent delegate work to Claude Code, Codex, and Mistral Vibe. Track each run, verify that edits stayed within the allowed paths, and run your own checks.
+Herder is a local Rust CLI that lets you or your coding agent delegate work to Claude Code, Codex, Mistral Vibe, and Google's Antigravity CLI. Track each run, verify that edits stayed within the allowed paths, and run your own checks.
 
 ## Get a read-only Codex review from Claude Code
 
@@ -109,7 +109,7 @@ The skill teaches your agent the brief format and the dispatch, wait, report and
 
 ## Quick start
 
-You also need bash, jq, perl, git and the executor CLIs you use (`codex`, `vibe` and/or `claude`). This example checks Codex; change the executor if needed. To download the binary or build from source instead, see [Use it from your agent](#use-it-from-your-agent).
+You also need bash, jq, perl, git and the executor CLIs you use (`codex`, `vibe`, `claude`, or `agy`). This example checks Codex. To download the binary or build from source instead, see [Use it from your agent](#use-it-from-your-agent).
 
 ```sh
 brew install shaance/tap/herder
@@ -149,11 +149,26 @@ Wait also returns for blocked or failed runs; inspect `herder status module-comm
 
 </details>
 
+### Review with Antigravity CLI
+
+Put `agy` on PATH and set `"modelProvider": "gemini"` in
+`~/.gemini/antigravity-cli/settings.json` to use API-key mode.
+
+```sh
+herder dispatch --executor agy --mode review --model gemini-4-neon-high --brief /tmp/review.md --repo . --check true
+```
+
+As with Vibe reviews, keeping shell commands read-only relies on the model
+honoring the review instructions. Antigravity runs in plan mode. Checked dispatch
+without `--path` flags any new Git-visible checkout change. Choose the reasoning
+level in the model slug. Agy supports fresh dispatches only and takes no extra
+arguments after `--`.
+
 ## Why
 
 A worker can run in the background for hours. You need to know whether it is still working, stopped, or changed files outside its brief. A worker's report that tests passed is its own claim.
 
-herder keeps a durable record for each worker. It queries Claude's CLI or uses the Codex and Vibe status scripts to inspect executor evidence; when that evidence is unresolved, it reports `unknown` with a cause. Verification checks changed files against the authorized `--path` prefixes you supply and runs the check commands you choose.
+herder keeps a durable record for each worker. It queries Claude's CLI or uses the Codex, Vibe, and Antigravity status scripts to inspect executor evidence. When that evidence is unresolved, it reports `unknown` with a cause. Verification checks changed files against the authorized `--path` prefixes you supply and runs the check commands you choose.
 
 Claude workers give their report in their last reply. Herder saves it automatically, so a new dispatch only requires Claude to trust the repository.
 
@@ -204,11 +219,17 @@ The arrows show common observations. `unknown` can occur whenever evidence is un
 | `status` | Query a run's current executor status. |
 | `context` | Show the configured directory, Git worktree root, branch, HEAD, and Herder state directory. |
 | `report` | Read the current attempt's report. |
-| `stop` | Stop the exact recorded worker. |
+| `stop` | Stop the recorded worker and the visible descendants of Vibe, Codex, and Agy workers. |
 | `resume` | Resume a recorded session with a delta brief. |
 | `verify` | Record scope and command verification. |
 
 Use `--effort <LEVEL>` on `dispatch` or `handoff` to request reasoning effort for Codex or Claude. Use `herder <command> --help` for flags and examples. All commands accept `--json` with an `{ok, data, error}` envelope. Exit codes are 0 for success, 1 for operational failure and 2 for usage error. See [JSON and exit codes](https://github.com/Shaance/herder/blob/master/docs/reference.md#json-output-and-exit-codes) for details.
+
+`herder stop` sends TERM to Vibe, Codex, and Agy workers and their visible
+descendants, then sends KILL to surviving recorded descendants after a short
+grace period. The run stays running until the worker and recorded descendants
+exit. Repeat `stop` to signal survivors again. A process that detached at spawn
+and was already reparented to PID 1 before the snapshot can survive.
 
 ## Configuration
 
