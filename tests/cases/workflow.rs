@@ -518,6 +518,162 @@ fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
 }
 
 #[test]
+fn scope_rejects_staged_edit_with_dispatch_working_copy_restored() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user edit\n").unwrap();
+    assert_eq!(f.git(&["diff", "--name-only"]), "local.txt");
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "");
+    let id = f.launch("codex");
+
+    fs::write(&file, "worker edit\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    fs::write(&file, "user edit\n").unwrap();
+    assert_eq!(f.git(&["show", ":local.txt"]), "worker edit");
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id, "--path", "src/"], 1);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("local.txt changed outside allowed paths"), "{scope}");
+    assert!(scope.contains("Pre-existing and unchanged: none."), "{scope}");
+}
+
+#[test]
+fn scope_rejects_removal_of_a_dispatch_staged_change() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user staged edit\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    fs::write(&file, "original\n").unwrap();
+    assert_eq!(f.git(&["diff", "--name-only", "HEAD"]), "");
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "local.txt");
+    let id = f.launch("codex");
+
+    f.git(&["restore", "--staged", "local.txt"]);
+    assert_eq!(f.git(&["status", "--short"]), "");
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id, "--path", "src/"], 1);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("local.txt changed outside allowed paths"), "{scope}");
+    assert!(scope.contains("Pre-existing and unchanged: none."), "{scope}");
+    f.call(&["verify", &id, "--path", "local.txt"], 0);
+}
+
+#[test]
+fn scope_allows_staged_file_to_directory_replacement_under_authorized_path() {
+    let f = Fixture::new();
+    let path = f.repo.join("x");
+    fs::write(&path, "original\n").unwrap();
+    f.git(&["add", "x"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&path, "user edit\n").unwrap();
+    let id = f.launch("codex");
+
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("child"), "worker edit\n").unwrap();
+    f.git(&["add", "-A", "x"]);
+    // A user diff.orderFile can reorder this listing.
+    let mut staged: Vec<_> =
+        f.git(&["diff", "--cached", "--name-status", "--no-renames"]).lines().map(str::to_owned).collect();
+    staged.sort();
+    assert_eq!(staged, ["A\tx/child", "D\tx"]);
+    f.status("exited", "COMPLETED");
+
+    let result = f.call(&["verify", &id, "--path", "x"], 0);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("Changed files: x, x/child."), "{scope}");
+    let result = f.call(&["verify", &id, "--path", "src/"], 1);
+    let scope = result["data"]["run"]["verifications"][1]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("x, x/child changed outside allowed paths"), "{scope}");
+}
+
+#[test]
+fn staged_scope_respects_git_glob_pathspecs_environment() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user edit\n").unwrap();
+    let call = |args: &[&str], expected| Fixture::call_with(f.cmd().env("GIT_GLOB_PATHSPECS", "1"), args, expected);
+    let brief = f.root.join("brief.md");
+    let dispatch = ["dispatch", "--executor", "codex", "--brief", brief.to_str().unwrap(), "--repo", "."];
+    let result = call(&dispatch, 0);
+    let id = result["data"]["run_id"].as_str().unwrap();
+    let stale = [&dispatch[..], &["--mode", "review", "--expected-head", "stale-head"]].concat();
+    assert_eq!(call(&stale, 1)["data"], json!({"outcome":"checkout_mismatch","reason":"head"}));
+
+    fs::write(&file, "worker edit\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    fs::write(&file, "user edit\n").unwrap();
+    f.status("exited", "COMPLETED");
+    let result = call(&["verify", id, "--path", "src/"], 1);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("local.txt changed outside allowed paths"), "{scope}");
+    assert!(scope.contains("Pre-existing and unchanged: none."), "{scope}");
+}
+
+#[test]
+fn baseline_override_after_rebase_preserves_unstaged_dispatch_edit() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    let old = f.git(&["rev-parse", "HEAD"]);
+    let old_entry = f.git(&["ls-files", "--stage", "local.txt"]);
+    f.git(&["checkout", "-qb", "upstream"]);
+    f.git(&["update-index", "--chmod=+x", "local.txt"]);
+    f.git(&["restore", "local.txt"]);
+    f.git(&["commit", "-qm", "upstream"]);
+    f.git(&["checkout", "-qb", "worker", &old]);
+    fs::write(&file, "user edit\n").unwrap();
+    let id = f.launch("codex");
+
+    fs::create_dir(f.repo.join("src")).unwrap();
+    fs::write(f.repo.join("src/worker.rs"), "worker\n").unwrap();
+    f.git(&["add", "src/worker.rs"]);
+    f.git(&["commit", "-qm", "worker"]);
+    f.git(&["rebase", "--autostash", "upstream"]);
+    assert_ne!(f.git(&["ls-files", "--stage", "local.txt"]), old_entry);
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "user edit\n");
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id, "--baseline", "upstream", "--path", "src/"], 0);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("Pre-existing and unchanged: local.txt."), "{scope}");
+}
+
+#[test]
+fn scope_uses_working_copy_only_for_old_dispatch_snapshot() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user edit\n").unwrap();
+    let id = f.launch("codex");
+    let mut record = f.record(&id);
+    record.as_object_mut().unwrap().remove("dispatch_staged");
+    fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
+
+    fs::write(&file, "worker edit\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    fs::write(&file, "user edit\n").unwrap();
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id, "--path", "src/"], 0);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("Pre-existing and unchanged: local.txt."), "{scope}");
+    assert!(f.record(&id).get("dispatch_staged").is_none());
+}
+
+#[test]
 fn baseline_override_after_rebase_narrows_scope_and_persists() {
     let f = Fixture::new();
     let id = f.dispatch("codex", &["--path", "src/"], 0)["data"]["run_id"].as_str().unwrap().to_owned();

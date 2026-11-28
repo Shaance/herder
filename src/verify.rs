@@ -1,10 +1,10 @@
 use crate::{
-    domain::{Check, FreshVerification, Run, Verdict, Verification},
+    domain::{Check, FreshVerification, Run, StagedState, Verdict, Verification},
     process::{self, Script},
     store::{RunId, Store, timestamp},
 };
 use anyhow::{Result, ensure};
-use std::{path::Path, process::Command, time::Instant};
+use std::{collections::BTreeMap, path::Path, process::Command, time::Instant};
 
 const SCOPE_CHECK: &str = "baseline scope";
 const EVIDENCE_CHECK: &str = "collect_evidence.sh";
@@ -125,10 +125,21 @@ pub fn scope_check(run: &Run, paths: &[String], baseline: Option<&str>, deadline
             deadline,
         )?;
         files.extend(text.split('\0').filter(|s| !s.is_empty()).map(str::to_owned));
+        let mut staged_changes = std::collections::BTreeSet::new();
+        if let Some(snapshot) = &run.dispatch_staged {
+            for (path, state) in staged_states(&run.repo, "HEAD", snapshot.keys(), deadline)? {
+                if snapshot.get(&path) != Some(&state) {
+                    staged_changes.insert(path);
+                }
+            }
+            files.extend(staged_changes.iter().cloned());
+        }
         let mut pre_existing = Vec::new();
         for path in &files {
-            if let Some(hash) = run.dispatch_dirty.get(path)
+            if !staged_changes.contains(path)
+                && let Some(hash) = run.dispatch_dirty.get(path)
                 && &content_hash(&run.repo, path, deadline)? == hash
+                && run.dispatch_staged.as_ref().is_none_or(|staged| staged.contains_key(path))
             {
                 pre_existing.push(path.clone());
             }
@@ -190,4 +201,63 @@ pub fn content_hash(repo: &Path, path: &str, deadline: Option<Instant>) -> Resul
         )
         .map(|hash| Some(hash.trim().to_owned())),
     }
+}
+
+pub fn staged_states<'a>(
+    repo: &Path,
+    head: &str,
+    paths: impl Iterator<Item = &'a String>,
+    deadline: Option<Instant>,
+) -> Result<BTreeMap<String, StagedState>> {
+    let mut states: BTreeMap<_, _> = paths.map(|path| (path.clone(), StagedState::MatchesHead)).collect();
+    if states.is_empty() {
+        return Ok(states);
+    }
+    let changed = process::checked_until(
+        Command::new("git").current_dir(repo).args([
+            "diff-index",
+            "--cached",
+            "--raw",
+            "--no-abbrev",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "--ita-invisible-in-index",
+            "-z",
+            head,
+            "--",
+        ]),
+        deadline,
+    )?;
+    let mut fields = changed.split_terminator('\0');
+    let mut unmerged = BTreeMap::new();
+    for (header, path) in std::iter::from_fn(|| fields.next().zip(fields.next())) {
+        let Some(state) = states.get_mut(path) else { continue };
+        // Raw headers list the old and new modes, the old and new object IDs, then the status.
+        let mut columns = header.split_ascii_whitespace();
+        let (Some(mode), Some(object), Some(status)) = (columns.nth(1), columns.nth(1), columns.next()) else {
+            anyhow::bail!("invalid raw diff-index header: {header:?}");
+        };
+        match status {
+            "U" => {
+                unmerged.insert(path, Vec::new());
+            }
+            "D" => *state = StagedState::IndexEntries(Vec::new()),
+            _ => *state = StagedState::IndexEntries(vec![format!("{mode} {object} 0")]),
+        }
+    }
+    if !unmerged.is_empty() {
+        let entries = process::checked_until(
+            Command::new("git").current_dir(repo).args(["ls-files", "--unmerged", "-z"]),
+            deadline,
+        )?;
+        for (entry, path) in entries.split('\0').filter_map(|entry| entry.split_once('\t')) {
+            if let Some(entries) = unmerged.get_mut(path) {
+                entries.push(entry.to_owned());
+            }
+        }
+    }
+    for (path, entries) in unmerged {
+        states.insert(path.to_owned(), StagedState::IndexEntries(entries));
+    }
+    Ok(states)
 }

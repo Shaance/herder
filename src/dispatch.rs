@@ -175,12 +175,15 @@ pub(crate) fn dispatch(
             None
         };
         let mut dispatch_dirty = std::collections::BTreeMap::new();
-        if baseline_commit.is_some() {
+        let dispatch_staged = if let Some(head) = &baseline_commit {
             for path in crate::verify::dirty_paths(&repo, None)? {
                 let hash = crate::verify::content_hash(&repo, &path, None)?;
                 dispatch_dirty.insert(path, hash);
             }
-        }
+            Some(crate::verify::staged_states(&repo, head, dispatch_dirty.keys(), None)?)
+        } else {
+            None
+        };
         let (id, locked) = store.create()?;
         let input_md = locked.dir.join("input.md");
         match input {
@@ -192,10 +195,11 @@ pub(crate) fn dispatch(
                 process::lint(&input_md, &mode)?;
             }
         }
-        Ok((id, locked, (baseline_commit, dispatch_dirty)))
+        Ok((id, locked, (baseline_commit, dispatch_dirty, dispatch_staged)))
     };
     let new_run =
-        |id: &RunId, name: Option<String>, model, target: &Target, (baseline_commit, dispatch_dirty), accept_with| {
+        |id: &RunId, name: Option<String>, model: Option<String>, target: &Target, dispatch_snapshot, accept_with| {
+            let (baseline_commit, dispatch_dirty, dispatch_staged) = dispatch_snapshot;
             Run {
                 name: name.unwrap_or_else(|| id.to_string()),
                 id: id.to_string(),
@@ -205,6 +209,7 @@ pub(crate) fn dispatch(
                 repo: repo.clone(),
                 baseline_commit,
                 dispatch_dirty,
+                dispatch_staged,
                 brief: store.dir(id).join("input.md"),
                 goal: goal.clone(),
                 launch: Launch::Starting { target: target.clone() },
@@ -269,7 +274,8 @@ pub(crate) fn dispatch(
                 (Input::Brief(brief), None)
             };
             let accept_with = accept_with.as_deref().map(|path| crate::guard::host_check(&repo, path)).transpose()?;
-            let (id, mut locked, (mut baseline_commit, dispatch_dirty)) = stage(&input, accept_with.is_some())?;
+            let (id, mut locked, (mut baseline_commit, dispatch_dirty, dispatch_staged)) =
+                stage(&input, accept_with.is_some())?;
             let slot = accept_with.is_some().then(|| Slot::lock(store, &repo)).transpose()?;
             if let Some(request) = &request
                 && let Some(run_id) = request.existing()?
@@ -282,7 +288,8 @@ pub(crate) fn dispatch(
                 baseline_commit = expected_head.clone();
             }
             crate::guard::check_pins(&repo, store, expected_head.as_deref(), expected_branch.as_deref())?;
-            let run = new_run(&id, name, model, &target, (baseline_commit, dispatch_dirty), accept_with);
+            let run =
+                new_run(&id, name, model, &target, (baseline_commit, dispatch_dirty, dispatch_staged), accept_with);
             if let Some(request) = &request
                 && let Some(run_id) = request.claim(&mut locked, &run.id)?
             {
@@ -324,8 +331,8 @@ pub(crate) fn dispatch(
     for model in models {
         let name = name.as_ref().map(|name| format!("{name}-{model}"));
         let result = (|| -> Result<_> {
-            let (id, mut locked, baseline) = stage(&input, false)?;
-            let run = new_run(&id, name, Some(model.clone()), &target, baseline, None);
+            let (id, mut locked, snapshot) = stage(&input, false)?;
+            let run = new_run(&id, name, Some(model.clone()), &target, snapshot, None);
             store.publish(&mut locked, &run, &store.dir(&id))?;
             Ok(launch(run, &locked))
         })();

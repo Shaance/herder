@@ -246,7 +246,10 @@ echo "RUN_DIR=$1 PID=$pid {key}=native-1""#
         cmd
     }
     fn call(&self, args: &[&str], expected: i32) -> Value {
-        let out = self.cmd().arg("--json").args(args).output().unwrap();
+        Self::call_with(&mut self.cmd(), args, expected)
+    }
+    fn call_with(cmd: &mut Command, args: &[&str], expected: i32) -> Value {
+        let out = cmd.arg("--json").args(args).output().unwrap();
         assert_eq!(
             out.status.code(),
             Some(expected),
