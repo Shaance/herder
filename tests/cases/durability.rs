@@ -77,6 +77,46 @@ fn a1_resume_validation_and_pending_identity() {
 }
 
 #[test]
+fn vibe_resume_rejects_a_different_session_on_observation_and_retry() {
+    let f = Fixture::new();
+    let id = f.launch("vibe");
+    let dir = f.dir(&id);
+    f.status("exited", "COMPLETED");
+    f.script(
+        "vibe-implementer",
+        "resume_vibe",
+        r#"echo call >> "$HERDER_STATE_DIR/resume-count"
+echo 43211 > "$1/run.pid"
+echo 'error: resumed stream reports session wrong-session, expected native-1' >&2
+exit 1"#,
+    );
+    let brief = f.root.join("brief.md");
+    let args = ["resume", &id, "--brief", brief.to_str().unwrap()];
+    f.call(&args, 1);
+    let pending = fs::read(dir.join("run.json")).unwrap();
+    fs::write(dir.join("events2.jsonl"), "{\"sessionId\":\"wrong-session\"}\n").unwrap();
+    fs::write(f.skills.join("status"), "state=alive pid=43211\nverdict: RUNNING\n").unwrap();
+
+    let status = f.call(&["status", &id], 0);
+    let observation = &status["data"]["observation"];
+    assert_eq!(observation["state"], "unknown");
+    assert_eq!(observation["cause"], "identity_mismatch");
+    assert_eq!(status["data"]["run"]["attempt"], 1);
+    assert_eq!(fs::read(dir.join("run.json")).unwrap(), pending);
+
+    fs::write(f.skills.join("status"), "state=exited pid=43211\nverdict: DIED\n").unwrap();
+    let retry = f.call(&args, 1);
+    for message in [&observation["evidence"], &retry["error"]] {
+        let message = message.as_str().unwrap();
+        for detail in ["43211", "native-1", "wrong-session"] {
+            assert!(message.contains(detail), "{message}");
+        }
+    }
+    assert_eq!(fs::read(dir.join("run.json")).unwrap(), pending);
+    assert_eq!(fs::read_to_string(f.state.join("resume-count")).unwrap(), "call\n");
+}
+
+#[test]
 fn codex_resume_rejects_a_different_thread_immediately_and_on_late_observation() {
     for (immediate, gate) in [(true, 0), (true, 3), (false, 0)] {
         let f = Fixture::new();

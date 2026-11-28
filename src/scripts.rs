@@ -207,6 +207,30 @@ pub fn codex_resume_started(run: &Run, dir: &Path, thread_id: &str, pid: NonZero
     Ok(true)
 }
 
+pub fn check_vibe_resume_session(run: &Run, dir: &Path, session_id: &str, pid: NonZeroU32) -> Result<()> {
+    let path = dir.join(run.launch_events_name());
+    let stream = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error).with_context(|| format!("open {}", path.display())),
+    };
+    let mut line = Vec::new();
+    BufReader::new(stream).read_until(b'\n', &mut line).with_context(|| format!("read {}", path.display()))?;
+    if line.ends_with(b"\n")
+        && let Ok(event) = serde_json::from_slice::<serde_json::Value>(&line)
+        && let Some(observed) = event["sessionId"].as_str()
+    {
+        ensure!(
+            observed == session_id,
+            UnknownError(
+                UnknownCause::IdentityMismatch,
+                format!("Vibe resume pid {pid}: expected session {session_id:?}, observed {observed:?}")
+            )
+        );
+    }
+    Ok(())
+}
+
 fn codex_thread_started(path: &Path) -> std::io::Result<Option<serde_json::Value>> {
     let mut stream = match fs::File::open(path) {
         Ok(file) => BufReader::new(file),
