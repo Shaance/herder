@@ -78,6 +78,11 @@ agreement with executor files and the status PID. Without the event, a new live
 worker reports `starting`, and a new failed worker advances the attempt as
 `failed`. A conflicting event blocks retry.
 
+For a pending Vibe resume, a newline-terminated first line of `events<N>.jsonl`
+whose `sessionId` differs from the previous session is an identity mismatch: it
+blocks acceptance and retry. Without such a line, a new PID with the recorded
+session is accepted.
+
 ## Executor adapters
 
 [`src/process.rs`](../src/process.rs) embeds the shell scripts in
