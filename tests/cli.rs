@@ -170,9 +170,12 @@ esac"#,
                 &format!(
                     r#"test -f "$3/run.json"
 grep -q '"state": "starting"' "$3/run.json"
-printf '%s\n' "$@" > "$HERDER_STATE_DIR/launch-args"
 cp "$2" "$3/brief.md"
-if test -f "$HERDER_SKILLS_DIR/drop-brief"; then rm "$HERDER_SKILLS_DIR/../brief.md"; fi
+if ! test -f "$HERDER_STATE_DIR/launch-args"; then
+  if test -f "$HERDER_SKILLS_DIR/rewrite-brief"; then cp "$HERDER_SKILLS_DIR/rewrite-brief" "$HERDER_SKILLS_DIR/../brief.md"; fi
+  if test -f "$HERDER_SKILLS_DIR/drop-brief"; then rm "$HERDER_SKILLS_DIR/../brief.md"; fi
+fi
+printf '%s\n' "$@" > "$HERDER_STATE_DIR/launch-args"
 echo 43210 > "$3/run.pid"
 if test -f "$HERDER_SKILLS_DIR/gate"; then echo 'gate elapsed alive' >&2; exit 3; fi
 echo native-1 > "$3/{file}"
@@ -246,7 +249,10 @@ echo "RUN_DIR=$1 PID=$pid {key}=native-1""#
         cmd
     }
     fn call(&self, args: &[&str], expected: i32) -> Value {
-        let out = self.cmd().arg("--json").args(args).output().unwrap();
+        Self::call_with(&mut self.cmd(), args, expected)
+    }
+    fn call_with(cmd: &mut Command, args: &[&str], expected: i32) -> Value {
+        let out = cmd.arg("--json").args(args).output().unwrap();
         assert_eq!(
             out.status.code(),
             Some(expected),
@@ -1132,7 +1138,20 @@ test "$*" = 'agents --json --all'
 test -z "${OSC7577_TOKEN+x}"
 /bin/cat "$CLAUDE_FIXTURE/agents.json""#,
     );
-    let out = Command::new("/usr/bin/python3")
+    let mut python = Command::new("/usr/bin/python3");
+    // Start the fixture the way a background shell would, with SIGINT ignored and blocked;
+    // the fixture must still give each monitor a terminal's default SIGINT.
+    unsafe {
+        std::os::unix::process::CommandExt::pre_exec(&mut python, || {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+            let mut set = std::mem::MaybeUninit::<libc::sigset_t>::uninit();
+            libc::sigemptyset(set.as_mut_ptr());
+            libc::sigaddset(set.as_mut_ptr(), libc::SIGINT);
+            libc::pthread_sigmask(libc::SIG_BLOCK, set.as_ptr(), std::ptr::null_mut());
+            Ok(())
+        });
+    }
+    let out = python
         .env("OSC7577_TOKEN", "fixture-token-only-for-test")
         .env_remove("REX_BLOCK")
         .env_remove("REX_SESSION")
@@ -1581,17 +1600,264 @@ fn claude_review_passes_native_args_without_a_sandbox() {
 }
 
 #[test]
+fn dispatch_stages_the_bytes_seen_by_lint() {
+    let f = Fixture::new();
+    let brief = f.root.join("brief.md");
+    let original = fs::read(&brief).unwrap();
+    f.script(
+        "implementer-core",
+        "check_brief",
+        r#"cat "$1" > "$HERDER_STATE_DIR/linted-brief"
+printf '%s\n' "$1" >> "$HERDER_STATE_DIR/lint-path"
+printf 'rewritten during lint\n' > "$HERDER_SKILLS_DIR/../brief.md""#,
+    );
+    let id = f.launch("codex");
+    assert_eq!(fs::read(&brief).unwrap(), b"rewritten during lint\n");
+    assert_eq!(fs::read(f.state.join("linted-brief")).unwrap(), original);
+    assert_eq!(fs::read(f.dir(&id).join("input.md")).unwrap(), original);
+    let paths = fs::read_to_string(f.state.join("lint-path")).unwrap();
+    let mut paths = paths.lines().map(Path::new);
+    let snapshot = paths.next().unwrap();
+    assert_eq!(paths.next(), None);
+    assert_ne!(snapshot, brief);
+    assert!(!snapshot.starts_with(&f.repo));
+    assert!(!snapshot.exists());
+}
+
+#[test]
+fn keyed_dispatch_replays_before_lint_and_preserves_lint_error() {
+    let f = Fixture::new();
+    let first = f.dispatch("codex", &["--request-id", "first"], 0);
+    let id = first["data"]["run_id"].as_str().unwrap();
+    fs::write(f.skills.join("lint-fail"), "").unwrap();
+    let replay = f.dispatch("codex", &["--request-id", "first"], 0);
+    assert_eq!(replay["data"], json!({"outcome":"replayed","run_id":id}));
+    let rejected = f.dispatch("codex", &["--request-id", "second"], 1);
+    assert_eq!(rejected["error"], "exit Some(1): invalid brief\n");
+    assert_eq!(fs::read_dir(f.state.join("runs")).unwrap().count(), 1);
+}
+
+fn assert_brief_linter_rejects(f: &Fixture, brief: &Path, extra: &[&str]) {
+    use std::os::unix::process::CommandExt;
+
+    let mut cmd = f.cmd();
+    cmd.env("HERDER_SKILLS_DIR", concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/ai-skills"));
+    // Bound both a blocked FIFO open and a busy device read in the child.
+    unsafe {
+        cmd.pre_exec(|| {
+            for (clock, seconds, micros) in [(libc::ITIMER_REAL, 5, 0), (libc::ITIMER_PROF, 0, 100_000)] {
+                let timer = libc::itimerval {
+                    it_interval: libc::timeval { tv_sec: 0, tv_usec: 0 },
+                    it_value: libc::timeval { tv_sec: seconds, tv_usec: micros },
+                };
+                if libc::setitimer(clock, &timer, std::ptr::null_mut()) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    let mut args = vec!["dispatch", "--executor", "codex", "--repo", ".", "--brief", brief.to_str().unwrap()];
+    args.extend_from_slice(extra);
+    let result = Fixture::call_with(&mut cmd, &args, 1);
+    assert_eq!(result["error"], format!("exit Some(1): error: brief '{}' missing or empty\n", brief.display()));
+    assert!(!f.state.join("runs").exists());
+    assert!(!f.state.join("launch-args").exists());
+}
+
+fn assert_unkeyed_brief_linter_rejects(f: &Fixture, brief: &Path) {
+    assert_brief_linter_rejects(f, brief, &[]);
+    assert_brief_linter_rejects(f, brief, &["--mode", "review", "--model", "model-a", "--model", "model-b"]);
+}
+
+#[test]
+fn dispatch_brief_rejects_fifo() {
+    let f = Fixture::new();
+    let brief = f.root.join("fifo.md");
+    assert!(Command::new("mkfifo").arg(&brief).status().unwrap().success());
+    assert_unkeyed_brief_linter_rejects(&f, &brief);
+}
+
+#[test]
+fn dispatch_brief_rejects_device() {
+    let f = Fixture::new();
+    assert_unkeyed_brief_linter_rejects(&f, Path::new("/dev/zero"));
+}
+
+#[test]
+fn dispatch_brief_rejects_missing_file() {
+    let f = Fixture::new();
+    assert_unkeyed_brief_linter_rejects(&f, &f.root.join("missing.md"));
+}
+
+#[test]
+fn dispatch_brief_rejects_empty_file() {
+    let f = Fixture::new();
+    f.write("brief.md", "");
+    assert_unkeyed_brief_linter_rejects(&f, &f.root.join("brief.md"));
+}
+
+#[test]
+fn dispatch_brief_rejects_empty_file_after_custom_lint_accepts() {
+    let f = Fixture::new();
+    f.write("brief.md", "");
+    f.script("implementer-core", "check_brief", r#"printf '%s\n' "$1" > "$HERDER_STATE_DIR/lint-path""#);
+    let result = f.dispatch("codex", &[], 1);
+    let brief = f.root.join("brief.md");
+    assert_eq!(result["error"], format!("brief '{}' must be a regular, nonempty file", brief.display()));
+    assert_eq!(fs::read_to_string(f.state.join("lint-path")).unwrap().trim_end(), brief.to_str().unwrap());
+    assert!(!f.state.join("runs").exists());
+    assert!(!f.state.join("launch-args").exists());
+}
+
+#[test]
+fn keyed_dispatch_brief_rejects_empty_file() {
+    let f = Fixture::new();
+    f.write("brief.md", "");
+    let mut cmd = f.cmd();
+    cmd.env("HERDER_SKILLS_DIR", concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/ai-skills"));
+    let brief = f.root.join("brief.md");
+    let args =
+        ["dispatch", "--executor", "codex", "--repo", ".", "--brief", brief.to_str().unwrap(), "--request-id", "empty"];
+    // The decision comes from the captured bytes, so the linter sees the private snapshot.
+    let result = Fixture::call_with(&mut cmd, &args, 1);
+    assert!(result["error"].as_str().unwrap().contains("missing or empty"), "{result}");
+    assert!(!f.state.join("runs").exists());
+    assert!(!f.state.join("launch-args").exists());
+}
+
+#[test]
+fn unreadable_unkeyed_brief_gets_the_linter_diagnostic() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let f = Fixture::new();
+    let brief = f.root.join("brief.md");
+    fs::set_permissions(&brief, fs::Permissions::from_mode(0o000)).unwrap();
+    if fs::read(&brief).is_ok() {
+        return; // Running as root: permissions do not block the read.
+    }
+    let mut cmd = f.cmd();
+    cmd.env("HERDER_SKILLS_DIR", concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/ai-skills"));
+    let args = ["dispatch", "--executor", "codex", "--repo", ".", "--brief", brief.to_str().unwrap()];
+    let result = Fixture::call_with(&mut cmd, &args, 1);
+    let error = result["error"].as_str().unwrap();
+    assert!(error.contains("missing required blocks") && !error.contains("os error"), "{result}");
+    assert!(!f.state.join("runs").exists());
+    fs::set_permissions(&brief, fs::Permissions::from_mode(0o644)).unwrap();
+}
+
+#[test]
+fn keyed_dispatch_brief_preserves_read_error() {
+    let f = Fixture::new();
+    let brief = f.root.join("brief.md");
+    fs::remove_file(&brief).unwrap();
+    let result = f.dispatch("codex", &["--request-id", "missing"], 1);
+    assert_eq!(result["error"], format!("read dispatch brief: {}", fs::read(brief).unwrap_err()));
+}
+
+fn assert_dispatch_avoids_tmpdir(f: &Fixture, tmpdir: &Path) {
+    f.script("implementer-core", "check_brief", r#"printf '%s\n' "$1" > "$HERDER_STATE_DIR/lint-path""#);
+    let brief = f.root.join("brief.md");
+    let result = Fixture::call_with(
+        f.cmd().env("TMPDIR", tmpdir),
+        &["dispatch", "--executor", "codex", "--repo", ".", "--brief", brief.to_str().unwrap()],
+        0,
+    );
+    let path = fs::read_to_string(f.state.join("lint-path")).unwrap();
+    let snapshot = Path::new(path.trim_end());
+    assert!(!snapshot.starts_with(f.repo.canonicalize().unwrap()), "{path}");
+    assert!(!snapshot.starts_with(f.state.canonicalize().unwrap()), "{path}");
+    assert!(!snapshot.exists(), "{path}");
+    let id = result["data"]["run_id"].as_str().unwrap();
+    assert_eq!(fs::read(f.dir(id).join("input.md")).unwrap(), fs::read(brief).unwrap());
+}
+
+#[test]
+fn dispatch_brief_skips_checkout_tmpdir() {
+    let f = Fixture::new();
+    assert_dispatch_avoids_tmpdir(&f, &f.repo);
+}
+
+#[test]
+fn dispatch_brief_skips_state_tmpdir() {
+    let f = Fixture::new();
+    let alias = f.root.join("state-alias");
+    std::os::unix::fs::symlink(&f.state, &alias).unwrap();
+    assert_dispatch_avoids_tmpdir(&f, &alias);
+}
+
+#[test]
+fn dispatch_brief_skips_deleted_tmpdir() {
+    let f = Fixture::new();
+    let dir = f.root.join("deleted");
+    fs::create_dir(&dir).unwrap();
+    fs::remove_dir(&dir).unwrap();
+    assert_dispatch_avoids_tmpdir(&f, &dir);
+}
+
+#[test]
+fn dispatch_brief_skips_unusable_tmpdir() {
+    let f = Fixture::new();
+    f.write("not-a-directory", "");
+    assert_dispatch_avoids_tmpdir(&f, &f.root.join("not-a-directory"));
+}
+
+fn assert_review_fan_out_keeps_original_brief(f: &Fixture) {
+    let original = fs::read(f.root.join("brief.md")).unwrap();
+    f.script(
+        "implementer-core",
+        "check_brief",
+        r#"test "$2" = review
+cat "$1" >> "$HERDER_STATE_DIR/linted-brief""#,
+    );
+    let data = f.dispatch("codex", &["--mode", "review", "--model", "model-a", "--model", "model-b"], 0);
+    let runs = data["data"]["runs"].as_array().unwrap();
+    assert_eq!(runs.len(), 2, "{data}");
+    for (run, model) in runs.iter().zip(["model-a", "model-b"]) {
+        let id = run["run_id"].as_str().unwrap();
+        assert_eq!(f.record(id)["model"], model);
+        assert_eq!(fs::read(f.dir(id).join("input.md")).unwrap(), original, "{model}");
+        assert_eq!(fs::read(f.dir(id).join("brief.md")).unwrap(), original, "{model}");
+    }
+    assert_eq!(fs::read(f.state.join("linted-brief")).unwrap(), original);
+}
+
+#[test]
+fn review_fan_out_keeps_original_brief_after_rewrite() {
+    let f = Fixture::new();
+    fs::write(f.skills.join("rewrite-brief"), "rewritten during first launch\n").unwrap();
+    assert_review_fan_out_keeps_original_brief(&f);
+    assert_eq!(fs::read(f.root.join("brief.md")).unwrap(), b"rewritten during first launch\n");
+}
+
+#[test]
+fn review_fan_out_keeps_original_brief_after_deletion() {
+    let f = Fixture::new();
+    fs::write(f.skills.join("drop-brief"), "").unwrap();
+    assert_review_fan_out_keeps_original_brief(&f);
+    assert!(!f.root.join("brief.md").exists());
+}
+
+#[test]
 fn a_failed_later_launch_still_reports_the_runs_already_started() {
     let f = Fixture::new();
-    // The first launch deletes the dispatched brief, so copying it for the second run fails.
-    fs::write(f.skills.join("drop-brief"), "").unwrap();
+    f.executable(
+        &f.bin.join("git"),
+        r#"if test -f "$HERDER_STATE_DIR/launch-args" && test "$1" = diff && test "$2" = --name-only; then
+  echo 'cannot snapshot second run' >&2
+  exit 1
+fi
+exec /usr/bin/git "$@""#,
+    );
     let args = ["--mode", "review", "--model", "model-a", "--model", "model-b", "--name", "rev", "--effort", "max"];
     let data = f.dispatch("codex", &args, 1)["data"].clone();
     let runs = data["runs"].as_array().unwrap();
     assert_eq!(runs.len(), 1, "{data}");
     assert_eq!(f.record(runs[0]["run_id"].as_str().unwrap())["name"], "rev-model-a");
     assert_eq!(runs[0]["run"]["requested_effort"], "max");
-    assert!(data["error"].as_str().unwrap().starts_with("model-b: "), "{data}");
+    let error = data["error"].as_str().unwrap();
+    assert!(error.starts_with("model-b: ") && error.contains("cannot snapshot second run"), "{data}");
+    assert_eq!(fs::read_dir(f.state.join("runs")).unwrap().count(), 1);
 }
 
 #[test]

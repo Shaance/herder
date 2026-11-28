@@ -70,7 +70,7 @@ pub enum Tail {
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum ListEntry {
-    Run { run: Box<Run>, observation: Observation },
+    Run { run: Box<Run>, observation: Observation, observed_attempt: NonZeroU32 },
     Broken { run_id: String, error: String },
     Incomplete { outcome: &'static str },
 }

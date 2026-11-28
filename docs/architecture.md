@@ -16,10 +16,10 @@ Each run has a herder-generated ID and a directory under
 [`src/store.rs`](../src/store.rs) owns directory creation and record IO.
 
 `run.json` holds durable run facts: repository, baseline commit, paths dirty at
-dispatch, brief location, executor and native identity, launch state, attempt,
-resume request IDs, and verification results. The optional name and goal help
-coordinators find and group runs. [`src/domain.rs`](../src/domain.rs) defines
-the record and its state types.
+dispatch with their staged state, brief location, executor and native identity,
+launch state, attempt, resume request IDs, and verification results. The
+optional name and goal help coordinators find and group runs.
+[`src/domain.rs`](../src/domain.rs) defines the record and its state types.
 
 `input.md` is the stored dispatch brief or generated handoff input. Resume
 inputs use `input2.md`, `input3.md`, and so on. Reports use `final.md` for the
@@ -36,7 +36,10 @@ reports a broken published run without hiding other runs.
 
 ## Lifecycle and observation
 
-Dispatch lints the input, records the launch intent, then starts the worker.
+Dispatch reads the input once, lints those bytes through a private snapshot
+outside the checkout and state directory, stages the same bytes for every
+model, records the launch intent, then starts the worker. A brief that is not a
+regular, nonempty file is handed to the linter unread.
 The native session or thread identity and, where applicable, PID are recorded
 when confirmed. A launch gate can leave a run starting while later status calls
 recover identity from evidence. Claude acceptance is saved before its gate.
@@ -78,6 +81,11 @@ agreement with executor files and the status PID. Without the event, a new live
 worker reports `starting`, and a new failed worker advances the attempt as
 `failed`. A conflicting event blocks retry.
 
+For a pending Vibe resume, a newline-terminated first line of `events<N>.jsonl`
+whose `sessionId` differs from the previous session is an identity mismatch: it
+blocks acceptance and retry. Without such a line, a new PID with the recorded
+session is accepted.
+
 ## Executor adapters
 
 [`src/process.rs`](../src/process.rs) embeds the shell scripts in
@@ -106,7 +114,11 @@ attach pane or a Vibe/Codex wait pane. Rex is optional.
 [`src/verify.rs`](../src/verify.rs) checks the Git baseline recorded at
 dispatch against `HEAD`, staged and unstaged changes, and untracked files.
 Renames count as both source and destination. Paths already dirty at dispatch
-are excluded only while their contents remain unchanged. Every other changed
+are excluded only while their contents, and whether and what they have staged
+relative to `HEAD`, remain unchanged; records from older versions compare
+contents only. A dirty path whose staged state changed is checked even when no
+diff lists it. An older herder that rewrites the record drops the staged
+snapshot, so later checks compare contents only. Every other changed
 path must fall under an authorized `--path`; verification uses dispatch paths
 unless paths are supplied to `verify`. A missing baseline fails scope checking.
 `--baseline` validates and records a replacement commit for work after a rebase.

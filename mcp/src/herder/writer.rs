@@ -80,7 +80,10 @@ impl Companion {
                 Some("Verification is pending. Check the run's status before trying again".into())
             }
             VerificationOutcome::Superseded => {
-                Some("The attempt changed during verification. Check status before verifying again".into())
+                let reason = data.message.as_deref().unwrap_or("the attempt changed during verification");
+                let mut reason = reason.chars();
+                let first = reason.next().map(|c| c.to_uppercase().collect::<String>()).unwrap_or_default();
+                Some(format!("{first}{}. Check status before verifying again", reason.as_str()))
             }
             VerificationOutcome::Unverified => {
                 Some("This run has no accepted completion evidence to verify. Inspect status and report".into())
@@ -142,6 +145,7 @@ struct Verification {
     run_id: String,
     attempt: NonZeroU32,
     state: WorkerState,
+    message: Option<String>,
     scope: Option<Check>,
     host_check: Option<Check>,
     verdict: Option<Verdict>,

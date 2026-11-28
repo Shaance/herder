@@ -27,7 +27,7 @@ worker or an existing run.
 ## CLI workflow
 
 1. Run `herder doctor` for the intended executor and profile.
-2. Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. Direct-mode briefs require
+2. Prefer briefs outside `--repo`; files already dirty at dispatch are excluded from verify scope only while their contents and, for runs that recorded it, their staged state remain unchanged. Direct-mode briefs require
    `<task>`, `<workstream_contract>`, `<implementation_authority>`, `<action_safety>`,
    `<default_follow_through_policy>`, `<verification_loop>`, `<economy_contract>` and
    `<structured_output_contract>`. Review-mode briefs require `<task>`, `<action_safety>`,

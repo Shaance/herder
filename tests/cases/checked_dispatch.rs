@@ -77,6 +77,167 @@ fn checked_dispatch_refuses_fanout_and_invalid_checks_before_launch() {
 }
 
 #[test]
+fn dispatch_argument_rejections_keep_their_precedence() {
+    let f = Fixture::new();
+    let brief = f.root.join("brief.md");
+    let brief = brief.to_str().unwrap();
+    let reject = |command, executor, repo, brief, extra: &[&str], message| {
+        let mut args = vec![command, "--executor", executor, "--repo", repo, "--brief", brief];
+        args.extend_from_slice(extra);
+        let result = f.call(&args, 2);
+        assert_eq!(result["data"]["message"], message, "{args:?}: {result}");
+        assert!(fs::read_dir(&f.state).unwrap().next().is_none(), "{args:?}: run or launch changed state");
+    };
+    let request_id = "--request-id requires one dispatch without --pane or --check";
+    let profile = "--profile applies only to Claude";
+    let sandbox = "Codex review requires --sandbox read-only";
+    for (command, executor, extra, message) in [
+        (
+            "dispatch",
+            "codex",
+            &["--model", "one", "--model", "two", "--check", " ", "--request-id", "key"][..],
+            "--check requires a single dispatch",
+        ),
+        ("dispatch", "codex", &["--request-id", "key", "--pane", "--expected-head", "HEAD"], request_id),
+        ("handoff", "codex", &["--request-id", "key", "--model", "same", "--model", "same"], request_id),
+        (
+            "dispatch",
+            "codex",
+            &["--expected-branch", "main", "--check", " ", "--profile", "missing"],
+            "checkout pins require a single review dispatch or --accept-with",
+        ),
+        (
+            "dispatch",
+            "codex",
+            &[
+                "--accept-with",
+                "/missing-host-check",
+                "--request-id",
+                "key",
+                "--expected-head",
+                "HEAD",
+                "--profile",
+                "missing",
+                "--",
+                "--sandbox=workspace-write",
+            ],
+            "--accept-with requires a direct Codex dispatch without native extra arguments",
+        ),
+        // The request-id rule must still win when --accept-with also applies.
+        (
+            "dispatch",
+            "codex",
+            &[
+                "--accept-with",
+                "/missing-host-check",
+                "--request-id",
+                "key",
+                "--expected-head",
+                "HEAD",
+                "--pane",
+                "--",
+                "--sandbox=workspace-write",
+            ],
+            request_id,
+        ),
+        (
+            "dispatch",
+            "vibe",
+            &["--check", " ", "--profile", "missing", "--effort", "high"],
+            "--check requires a nonempty shell command",
+        ),
+        ("dispatch", "vibe", &["--profile", "missing", "--effort", "high"], profile),
+        (
+            "dispatch",
+            "vibe",
+            &["--effort", "high", "--model", "same", "--model", "same"],
+            "Vibe has no per-run effort; effort comes from the model alias's `thinking` setting in Vibe's config.toml, choose an alias with --model",
+        ),
+        (
+            "dispatch",
+            "codex",
+            &[
+                "--mode",
+                "review",
+                "--effort",
+                "high",
+                "--",
+                "--sandbox=workspace-write",
+                "-c",
+                "model_reasoning_effort=low",
+            ],
+            "--effort conflicts with native effort arguments after --",
+        ),
+        (
+            "dispatch",
+            "codex",
+            &["--mode", "review", "--", "--yolo", "-c", "sandbox_mode=workspace-write"],
+            "Codex review requires sandbox_mode to be read-only",
+        ),
+        (
+            "dispatch",
+            "codex",
+            &["--mode", "review", "--", "--", "--yolo"],
+            "Codex review extras cannot include a second -- separator",
+        ),
+        (
+            "dispatch",
+            "codex",
+            &["--mode", "review", "--", "--yolo", "--"],
+            "Codex review requires a read-only sandbox and cannot use --yolo",
+        ),
+        ("dispatch", "codex", &["--mode", "review", "--", "--sandbox", "--yolo"], sandbox),
+        (
+            "dispatch",
+            "codex",
+            &["--mode", "review", "--", "--sandbox=read-only", "--sandbox=workspace-write"],
+            "Codex review accepts only one explicit sandbox flag",
+        ),
+        ("dispatch", "codex", &["--mode", "review", "--", "--sandbox=workspace-write", "--sandbox=read-only"], sandbox),
+        (
+            "dispatch",
+            "codex",
+            &["--mode", "review", "--model", "same", "--model", "same", "--", "--sandbox=workspace-write"],
+            sandbox,
+        ),
+        (
+            "handoff",
+            "codex",
+            &["--model", "same", "--model", "same"],
+            "a handoff continues one conversation; pass --model at most once",
+        ),
+        (
+            "dispatch",
+            "codex",
+            &["--model", "same", "--model", "same"],
+            "repeat --model only with --mode review; a writer runs one model",
+        ),
+        (
+            "dispatch",
+            "codex",
+            &["--mode", "review", "--model", "same", "--model", "same"],
+            "each repeated --model must name a different model",
+        ),
+    ] {
+        reject(command, executor, ".", brief, extra, message);
+    }
+    let missing = f.root.join("missing");
+    let missing = missing.to_str().unwrap();
+    for (repo, brief) in [(missing, brief), (".", missing)] {
+        reject("dispatch", "vibe", repo, brief, &["--profile", "missing", "--effort", "high"], profile);
+        // The last validation check also runs before the repository or brief is read.
+        reject(
+            "dispatch",
+            "codex",
+            repo,
+            brief,
+            &["--mode", "review", "--model", "same", "--model", "same"],
+            "each repeated --model must name a different model",
+        );
+    }
+}
+
+#[test]
 fn unsuccessful_worker_or_worker_timeout_runs_no_verifier() {
     let f = Fixture::new();
     // The Vibe adapter can print stderr after the real DIED verdict.

@@ -193,6 +193,19 @@ pub struct ProtectedVerification {
 fn first_attempt() -> NonZeroU32 {
     NonZeroU32::MIN
 }
+
+fn no_staged_paths(staged: &Option<std::collections::BTreeMap<String, StagedState>>) -> bool {
+    staged.as_ref().is_none_or(|staged| staged.is_empty())
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StagedState {
+    MatchesHead,
+    // Mode, object ID, and stage for each index entry. Empty for a staged deletion.
+    IndexEntries(Vec<String>),
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Run {
     pub id: String,
@@ -205,6 +218,10 @@ pub struct Run {
     pub baseline_commit: Option<String>,
     #[serde(default)]
     pub dispatch_dirty: std::collections::BTreeMap<String, Option<String>>,
+    /// Staged state relative to HEAD for each `dispatch_dirty` path; absent in older records.
+    /// Empty is omitted: with no dirty paths there is nothing to exempt either way.
+    #[serde(default, skip_serializing_if = "no_staged_paths")]
+    pub dispatch_staged: Option<std::collections::BTreeMap<String, StagedState>>,
     pub brief: PathBuf,
     pub goal: Option<String>,
     pub name: String,

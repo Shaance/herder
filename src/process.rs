@@ -21,20 +21,30 @@ pub fn output(cmd: &mut Command) -> Result<(Option<i32>, String)> {
     Ok((out.status.code(), text))
 }
 pub fn checked(cmd: &mut Command) -> Result<String> {
-    let out = cmd
-        .env_remove(OSC7577_TOKEN)
-        .stdin(Stdio::null())
-        .output()
-        .with_context(|| format!("execute {:?}", cmd.get_program()))?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    ensure!(out.status.success(), "exit {:?}: {}{}", out.status.code(), stdout, String::from_utf8_lossy(&out.stderr));
-    Ok(stdout.into_owned())
+    checked_until(cmd, None)
 }
 pub fn checked_until(cmd: &mut Command, deadline: Option<Instant>) -> Result<String> {
-    let Some(deadline) = deadline else { return checked(cmd) };
-    let (status, stdout, stderr) = bounded_output(cmd, deadline)?;
-    let status = status.context("command timed out")?;
-    ensure!(status.success(), "exit {:?}: {stdout}{stderr}", status.code());
+    Ok(String::from_utf8_lossy(&checked_bytes_until(cmd, deadline)?).into_owned())
+}
+pub fn checked_bytes_until(cmd: &mut Command, deadline: Option<Instant>) -> Result<Vec<u8>> {
+    let (status, stdout, stderr) = if let Some(deadline) = deadline {
+        let (status, stdout, stderr) = bounded_output_bytes(cmd, deadline)?;
+        (status.context("command timed out")?, stdout, stderr)
+    } else {
+        let out = cmd
+            .env_remove(OSC7577_TOKEN)
+            .stdin(Stdio::null())
+            .output()
+            .with_context(|| format!("execute {:?}", cmd.get_program()))?;
+        (out.status, out.stdout, out.stderr)
+    };
+    ensure!(
+        status.success(),
+        "exit {:?}: {}{}",
+        status.code(),
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
     Ok(stdout)
 }
 
@@ -47,6 +57,11 @@ pub fn query(cmd: &mut Command, deadline: Option<Instant>) -> Result<(String, St
 }
 
 pub fn bounded_output(cmd: &mut Command, deadline: Instant) -> Result<(Option<ExitStatus>, String, String)> {
+    let (status, stdout, stderr) = bounded_output_bytes(cmd, deadline)?;
+    Ok((status, String::from_utf8_lossy(&stdout).into_owned(), String::from_utf8_lossy(&stderr).into_owned()))
+}
+
+fn bounded_output_bytes(cmd: &mut Command, deadline: Instant) -> Result<(Option<ExitStatus>, Vec<u8>, Vec<u8>)> {
     ensure!(Instant::now() < deadline, "command deadline elapsed");
     // Unlinked capture avoids pipe-reader hangs when a command leaves descendants behind.
     let mut stdout = tempfile::tempfile()?;
@@ -74,12 +89,12 @@ pub fn bounded_output(cmd: &mut Command, deadline: Instant) -> Result<(Option<Ex
         }
         std::thread::sleep(Duration::from_millis(20).min(remaining));
     };
-    let read_capture = |file: &mut std::fs::File| -> Result<String> {
+    let read_capture = |file: &mut std::fs::File| -> Result<Vec<u8>> {
         let size = file.metadata()?.len();
         file.rewind()?;
         let mut bytes = Vec::new();
         file.take(size).read_to_end(&mut bytes)?;
-        Ok(String::from_utf8_lossy(&bytes).into_owned())
+        Ok(bytes)
     };
     Ok((status, read_capture(&mut stdout)?, read_capture(&mut stderr)?))
 }

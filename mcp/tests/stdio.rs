@@ -634,6 +634,46 @@ async fn a_second_guarded_order_reports_the_active_checkout_owner() {
 }
 
 #[tokio::test]
+async fn superseded_verification_reports_checkout_reassignment() {
+    let f = Fixture::new();
+    git(&f.repo, &["init", "-q", "-b", "fixture-main"]);
+    let head = initial_commit(&f.repo);
+    let check = f.repo.with_file_name("host-check");
+    fs::write(&check, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&check, fs::Permissions::from_mode(0o755)).unwrap();
+    let (client, _) = f
+        .connect_with(
+            &f.repo,
+            "incomplete",
+            &["--write-check".as_ref(), check.as_os_str(), "--write-path=src".as_ref()],
+        )
+        .await;
+    let mut args = parameters();
+    args["request_id"] = json!("first-writer");
+    args["expected_checkout"] = json!({"repo": f.repo, "head": head});
+    args["paths"] = json!(["src"]);
+    let first = response(&client, "implement", args.clone()).await;
+    assert_eq!(first["outcome"], "launched", "{first}");
+    let run = json!({"run_id": first["run_id"]});
+    assert_eq!(response(&client, "wait", run.clone()).await["state"], "finished");
+    assert_eq!(response(&client, "verify", run.clone()).await["outcome"], "unverified");
+
+    args["request_id"] = json!("successor-writer");
+    let successor = response(&client, "implement", args).await;
+    assert_eq!(successor["outcome"], "launched", "{successor}");
+    assert_ne!(successor["run_id"], first["run_id"]);
+
+    let superseded = response(&client, "verify", run).await;
+    assert_eq!(superseded["outcome"], "superseded");
+    assert_eq!(superseded["attempt"], 1);
+    assert_eq!(
+        superseded["message"],
+        "The checkout no longer belongs to this protected work order. Check status before verifying again"
+    );
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
 async fn wait_times_out_and_reaps_a_stuck_configured_cli() {
     let mut f = Fixture::new();
     f.herder = f.repo.with_file_name("stuck-herder");
@@ -708,6 +748,77 @@ esac
     let result = call(&client, "checkout", json!({})).await;
     assert_eq!(result.is_error, Some(true));
     assert!(result.structured_content.unwrap()["error"].as_str().unwrap().contains("Could not start Herder"));
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn observation_reports_when_the_configured_cli_lacks_observed_attempt() {
+    let mut f = Fixture::new();
+    f.herder = f.repo.with_file_name("older-herder");
+    fs::write(
+        &f.herder,
+        "#!/bin/sh\ncase \"$2\" in\n  status|report|ls) cat \"$HERDER_STATE_DIR/$2.json\" ;;\n  *) exit 2 ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&f.herder, fs::Permissions::from_mode(0o755)).unwrap();
+    let id = "older-run";
+    let entry = json!({
+        "run": {"id": id, "name": NAME, "repo": f.repo, "attempt": 1, "launch": {"state": "launched"}},
+        "observation": {"state": "finished", "evidence": "worker completed"},
+    });
+    for (action, data) in [
+        ("status", entry.clone()),
+        ("report", json!({"report": {"content": REPORT}, "run": entry["run"], "observation": entry["observation"]})),
+        ("ls", json!({"runs": [entry]})),
+    ] {
+        fs::write(f.state.join(format!("{action}.json")), json!({"ok": true, "data": data, "error": null}).to_string())
+            .unwrap();
+    }
+    let (client, _) = f.connect(&f.repo, "success").await;
+    for (tool, selector) in [
+        ("status", json!({"run_id": id})),
+        ("status", json!({"goal": GOAL, "name": NAME})),
+        ("report", json!({"run_id": id})),
+    ] {
+        let result = call(&client, tool, selector).await;
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(
+            result.structured_content.unwrap(),
+            json!({
+                "outcome": "herder_unavailable",
+                "error": "The configured Herder CLI is older than herder-mcp. Install matching versions of Herder and herder-mcp",
+            })
+        );
+    }
+    client.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn malformed_observation_reports_a_protocol_error_not_an_older_cli() {
+    let mut f = Fixture::new();
+    f.herder = f.repo.with_file_name("malformed-herder");
+    fs::write(
+        &f.herder,
+        "#!/bin/sh\ncase \"$2\" in\n  status|ls) cat \"$HERDER_STATE_DIR/$2.json\" ;;\n  *) exit 2 ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&f.herder, fs::Permissions::from_mode(0o755)).unwrap();
+    for (action, data) in [("status", json!({"run": {}})), ("ls", json!({"runs": [{"run": {}}]}))] {
+        fs::write(f.state.join(format!("{action}.json")), json!({"ok": true, "data": data, "error": null}).to_string())
+            .unwrap();
+    }
+    let (client, _) = f.connect(&f.repo, "success").await;
+    for selector in [json!({"run_id": "malformed-run"}), json!({"goal": GOAL, "name": NAME})] {
+        let result = call(&client, "status", selector).await;
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        assert_eq!(
+            result.structured_content.unwrap(),
+            json!({
+                "outcome": "herder_unavailable",
+                "error": "Herder returned an invalid JSON response. Check that Herder and herder-mcp are compatible",
+            })
+        );
+    }
     client.cancel().await.unwrap();
 }
 
@@ -908,6 +1019,8 @@ async fn pending_resume_keeps_report_and_observed_attempt_distinct() {
 
     for selector in [json!({"run_id": id}), json!({"goal": GOAL, "name": NAME})] {
         let status = response(&client, "status", selector).await;
+        assert_eq!(status["outcome"], "found");
+        assert_eq!(status["run_id"], id);
         assert_eq!(status["attempt"], 2);
         assert_eq!(status["observation"]["state"], "unknown");
     }
@@ -933,8 +1046,22 @@ async fn pending_resume_keeps_report_and_observed_attempt_distinct() {
 
     fs::write(f.state.join("release-worker"), "").unwrap();
     assert!(timeout(Duration::from_secs(10), resume.wait()).await.unwrap().unwrap().success());
+    assert_eq!(
+        response(&client, "wait", json!({"run_id": id, "timeout_seconds": 5})).await,
+        json!({
+            "outcome": "settled", "run_id": id, "attempt": 2, "state": "finished", "timed_out": false,
+        })
+    );
+    for selector in [json!({"run_id": id}), json!({"goal": GOAL, "name": NAME})] {
+        let status = response(&client, "status", selector).await;
+        assert_eq!(status["outcome"], "found");
+        assert_eq!(status["run_id"], id);
+        assert_eq!(status["attempt"], 2);
+        assert_eq!(status["observation"]["state"], "finished");
+    }
     let report = response(&client, "report", json!({"run_id": id})).await;
     assert_eq!(report["attempt"], 2);
     assert!(report.get("observed_attempt").is_none());
+    assert_eq!(report["report"], REPORT);
     client.cancel().await.unwrap();
 }

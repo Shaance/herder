@@ -19,6 +19,9 @@ const INCOMPLETE_LOOKUP: &str =
     "Some Herder records could not be read. Run lookup is incomplete for the configured checkout";
 const CLI_PROTOCOL_ERROR: HerderUnavailable =
     HerderUnavailable("Herder returned an invalid JSON response. Check that Herder and herder-mcp are compatible");
+const CLI_OBSERVED_ATTEMPT_MISSING: HerderUnavailable = HerderUnavailable(
+    "The configured Herder CLI is older than herder-mcp. Install matching versions of Herder and herder-mcp",
+);
 const CLI_START_ERROR: HerderUnavailable =
     HerderUnavailable("Could not start Herder. Check the configured executable and checkout directory");
 
@@ -102,39 +105,21 @@ struct Run {
     id: String,
     repo: PathBuf,
     attempt: NonZeroU32,
-    launch: Launch,
-}
-
-impl Run {
-    fn observed_attempt(&self) -> NonZeroU32 {
-        match self.launch {
-            Launch::PendingResume { attempt } => attempt,
-            Launch::Other => self.attempt,
-        }
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "state", rename_all = "snake_case")]
-enum Launch {
-    PendingResume {
-        attempt: NonZeroU32,
-    },
-    #[serde(other)]
-    Other,
 }
 
 #[derive(Deserialize)]
 struct ObservedRun {
     run: Run,
     observation: Observation,
+    // Optional only so an older CLI gets a version diagnostic after the reply otherwise validates.
+    observed_attempt: Option<NonZeroU32>,
     report: Option<Report>,
 }
 
 impl ObservedRun {
     fn status(&self) -> Value {
         json!({
-            "outcome": "found", "run_id": self.run.id, "attempt": self.run.observed_attempt(),
+            "outcome": "found", "run_id": self.run.id, "attempt": self.observed_attempt,
             "observation": self.observation,
         })
     }
@@ -180,7 +165,7 @@ struct Listing {
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum ListEntry {
-    Readable { run: NamedRun, observation: Observation },
+    Readable { run: NamedRun, observation: Observation, observed_attempt: Option<NonZeroU32> },
     Unreadable { outcome: String },
 }
 
@@ -242,9 +227,10 @@ impl Companion {
             "outcome": outcome, "message": message, "run_id": entry.run.id,
             "attempt": entry.run.attempt, "observation": entry.observation, "report": content,
         });
-        let observed_attempt = entry.run.observed_attempt();
-        if observed_attempt != entry.run.attempt {
-            result["observed_attempt"] = json!(observed_attempt);
+        if let Some(observed) = entry.observed_attempt
+            && observed != entry.run.attempt
+        {
+            result["observed_attempt"] = json!(observed);
         }
         Ok(result)
     }
@@ -254,6 +240,7 @@ impl Companion {
         let ok = reply.ok;
         let entry: ObservedRun = reply.decode()?;
         ensure!(entry.run.id == id && entry.run.repo == self.repo, CLI_PROTOCOL_ERROR);
+        ensure!(entry.observed_attempt.is_some(), CLI_OBSERVED_ATTEMPT_MISSING);
         let missing_report = matches!(entry.report, Some(Report::Missing { .. }));
         ensure!(ok || (action == "report" && missing_report), CLI_PROTOCOL_ERROR);
         Ok(entry)
@@ -286,10 +273,11 @@ impl Companion {
         let mut lookup = NameLookup::default();
         for entry in listing.runs {
             match entry {
-                ListEntry::Readable { run, observation } => {
+                ListEntry::Readable { run, observation, observed_attempt } => {
                     ensure!(run.run.repo == self.repo, CLI_PROTOCOL_ERROR);
+                    ensure!(observed_attempt.is_some(), CLI_OBSERVED_ATTEMPT_MISSING);
                     if run.name == name {
-                        lookup.matches.push(ObservedRun { run: run.run, observation, report: None });
+                        lookup.matches.push(ObservedRun { run: run.run, observation, observed_attempt, report: None });
                     }
                 }
                 ListEntry::Unreadable { outcome } if outcome == "incomplete" => lookup.incomplete = true,

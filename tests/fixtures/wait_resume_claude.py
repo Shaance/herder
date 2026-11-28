@@ -39,11 +39,40 @@ def save_launch(value):
     record_path.write_text(json.dumps(dict(record, launch=value)))
 
 
+events = []
+
+
+def note(event):
+    events.append((time.monotonic(), event))
+
+
+def send(pid, sig):
+    note(f'send {signal.Signals(sig).name}')
+    os.kill(pid, sig)
+
+
+def describe(status):
+    if os.WIFSIGNALED(status):
+        return f'killed by {signal.Signals(os.WTERMSIG(status)).name}'
+    return f'exit {os.WEXITSTATUS(status)}'
+
+
+def timeline():
+    start = events[0][0] if events else 0
+    return '; '.join(f'+{(at - start) * 1000:.0f}ms {event}' for at, event in events)
+
+
 @contextmanager
 def monitor(*args, exit_code=None):
+    events.clear()
     pid, master = pty.fork()
     if pid == 0:
+        # A launcher can start the fixture with SIGINT ignored or blocked, and herder
+        # deliberately keeps an inherited ignore; give the monitor a terminal's default.
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
         os.execv(binary, [binary, 'wait', *args])
+    note(f'spawn wait {" ".join(args)}')
     output = bytearray()
 
     def read_until(marker, after=0, timeout=8):
@@ -55,23 +84,29 @@ def monitor(*args, exit_code=None):
             chunk = os.read(master, 4096)
             assert chunk, (args, marker, output)
             output.extend(chunk)
+        note(f'saw {marker!r}')
         return output
 
     try:
         yield pid, read_until
     finally:
         if exit_code is None:
-            os.kill(pid, signal.SIGINT)
+            send(pid, signal.SIGINT)
         deadline = time.monotonic() + 3
         while True:
             exited, status = os.waitpid(pid, os.WNOHANG)
             if exited:
+                note(f'reaped: {describe(status)}')
                 os.close(master)
+                note('closed master')
                 break
             if time.monotonic() >= deadline:
-                os.kill(pid, signal.SIGKILL)
-                os.close(master)
+                send(pid, signal.SIGKILL)
                 _, status = os.waitpid(pid, 0)
+                note(f'reaped: {describe(status)}')
+                # Close the terminal only after reaping so the monitor cannot see a hangup.
+                os.close(master)
+                note('closed master')
                 break
             ready, _, _ = select.select([master], [], [], 0.05)
             if ready:
@@ -81,7 +116,10 @@ def monitor(*args, exit_code=None):
                     if error.errno != errno.EIO:
                         raise
         expected = -signal.SIGINT if exit_code is None else exit_code
-        assert os.waitstatus_to_exitcode(status) == expected, (args, status, output)
+        assert os.waitstatus_to_exitcode(status) == expected, (
+            f'monitor {args} expected exit code {expected}, got {describe(status)} (raw {status}); '
+            f'events: {timeline()}; output tail: {bytes(output[-600:])!r}'
+        )
 
 
 def assert_argv(output):
@@ -134,7 +172,7 @@ with (run_dir / 'run.lock').open('r+') as lock:
         (fixture / 'agents.json').write_text('[]')
         until(b'\tunknown')
         withdrawn = len(until(b':clear=1'))
-        os.kill(pid, signal.SIGCONT)
+        send(pid, signal.SIGCONT)
         try:
             until(b':argv=', withdrawn, timeout=0.5)
         except TimeoutError:
@@ -148,7 +186,7 @@ with (run_dir / 'run.lock').open('r+') as lock:
         assert json.loads(record_path.read_text())['launch'] == launch
 
         resumed = len(recovered)
-        os.kill(pid, signal.SIGCONT)
+        send(pid, signal.SIGCONT)
         assert_argv(until(b':mac=', resumed)[resumed:])
         completion = len(until(b'\x1b\\', resumed))
         listing(status=None, state='done')
@@ -164,5 +202,5 @@ with monitor(run, exit_code=-signal.SIGINT) as (pid, until):
     recovered = until(b'\trunning', withdrawn)
     assert_argv(recovered[withdrawn:])
     interruption = len(recovered)
-    os.kill(pid, signal.SIGINT)
+    send(pid, signal.SIGINT)
     until(b':clear=1', interruption)

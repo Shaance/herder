@@ -1,6 +1,8 @@
 use super::*;
 use std::{
+    ffi::OsStr,
     io::{BufRead, BufReader, Read},
+    os::unix::ffi::OsStrExt,
     process::Stdio,
     time::{Duration, Instant},
 };
@@ -319,6 +321,54 @@ fn verify_reuses_latest_checks_from_the_run_or_same_goal_and_repo() {
 }
 
 #[test]
+fn verify_reuses_user_collector_from_same_run() {
+    let f = Fixture::new();
+    f.executable(&f.bin.join("collect_evidence.sh"), r#"echo ran >> "$HERDER_STATE_DIR/check-marker""#);
+    let id = f.launch("codex");
+    f.status("exited", "COMPLETED");
+    f.call(&["verify", &id, "--path", "src/", "--check", "printf older"], 0);
+    f.call(&["verify", &id, "--path", "src/", "--check", "collect_evidence.sh"], 0);
+    let reused = f.call(&["verify", &id, "--path", "src/"], 0);
+
+    assert_eq!(fs::read_to_string(f.state.join("check-marker")).unwrap(), "ran\nran\n");
+    let checks = reused["data"]["run"]["verifications"][2]["checks"].as_array().unwrap();
+    assert_eq!(checks.len(), 3);
+    assert_eq!(checks[2]["command"], "collect_evidence.sh");
+}
+
+#[test]
+fn verify_reuses_user_collector_from_same_goal() {
+    let f = Fixture::new();
+    f.executable(&f.bin.join("collect_evidence.sh"), r#"echo ran >> "$HERDER_STATE_DIR/check-marker""#);
+    f.executable(&f.bin.join("baseline"), r#"test "$1" = scope"#);
+    let launch = || {
+        f.dispatch("codex", &["--goal", "shared", "--path", "src/"], 0)["data"]["run_id"].as_str().unwrap().to_owned()
+    };
+    let source = launch();
+    let target = launch();
+    f.status("exited", "COMPLETED");
+    f.call(
+        &[
+            "verify",
+            &source,
+            "--check",
+            "baseline scope",
+            "--check",
+            "collect_evidence.sh",
+            "--check",
+            "baseline scope",
+        ],
+        0,
+    );
+    let reused = f.call(&["verify", &target], 0);
+
+    assert_eq!(fs::read_to_string(f.state.join("check-marker")).unwrap(), "ran\nran\n");
+    let checks = reused["data"]["run"]["verifications"][0]["checks"].as_array().unwrap();
+    let commands: Vec<_> = checks[2..].iter().map(|check| check["command"].as_str().unwrap()).collect();
+    assert_eq!(commands, ["baseline scope", "collect_evidence.sh", "baseline scope"]);
+}
+
+#[test]
 fn script_launch_and_resume_do_not_inherit_rex_environment() {
     for (executor, owner, suffix) in [("vibe", "vibe-implementer", "vibe"), ("codex", "codex-implementer", "classic")] {
         let f = Fixture::new();
@@ -467,6 +517,218 @@ fn names_resolve_once_for_run_commands_and_ids_take_precedence() {
         .unwrap();
     assert!(out.status.success());
     assert!(String::from_utf8(out.stdout).unwrap().ends_with("\tprinted-name\n"));
+}
+
+#[test]
+fn scope_allows_unchanged_dirty_path_with_literal_replacement_character() {
+    let f = Fixture::new();
+    let name = "local-�.txt";
+    let file = f.repo.join(name);
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", name]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user edit\n").unwrap();
+    f.git(&["add", name]);
+    let dispatch = f.dispatch("codex", &["--path", "src/"], 0);
+    let id = dispatch["data"]["run_id"].as_str().unwrap();
+
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", id], 0);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains(&format!("Pre-existing and unchanged: {name}.")), "{scope}");
+}
+
+#[test]
+fn dispatch_rejects_non_utf8_index_path_before_staging_or_launch() {
+    let f = Fixture::new();
+    stage_non_utf8_index_path(&f);
+
+    let result = f.dispatch("codex", &["--path", "src/"], 1);
+    assert_eq!(result["error"], "herder cannot represent Git path \"src/bad-�.txt\": invalid UTF-8");
+    assert!(!f.state.join("runs").exists());
+    assert!(!f.state.join("launch-args").exists());
+}
+
+#[test]
+fn verify_rejects_non_utf8_index_path_added_after_dispatch() {
+    let f = Fixture::new();
+    let dispatch = f.dispatch("codex", &["--path", "src/"], 0);
+    let id = dispatch["data"]["run_id"].as_str().unwrap();
+    stage_non_utf8_index_path(&f);
+    f.status("exited", "COMPLETED");
+
+    let result = f.call(&["verify", id], 1);
+    let scope = &result["data"]["run"]["verifications"][0]["checks"][0];
+    assert_eq!(scope["command"], "baseline scope");
+    assert_eq!(scope["exit_code"], 1);
+    assert_eq!(scope["output"], "herder cannot represent Git path \"src/bad-�.txt\": invalid UTF-8");
+}
+
+fn stage_non_utf8_index_path(f: &Fixture) {
+    let blob = f.git(&["hash-object", "-w", "--", f.root.join("brief.md").to_str().unwrap()]);
+    let out = Command::new("git")
+        .current_dir(&f.repo)
+        .args(["update-index", "--add", "--cacheinfo", "100644", &blob])
+        .arg(OsStr::from_bytes(b"src/bad-\xff.txt"))
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git update-index: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+fn scope_rejects_staged_edit_with_dispatch_working_copy_restored() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user edit\n").unwrap();
+    assert_eq!(f.git(&["diff", "--name-only"]), "local.txt");
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "");
+    let id = f.launch("codex");
+
+    fs::write(&file, "worker edit\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    fs::write(&file, "user edit\n").unwrap();
+    assert_eq!(f.git(&["show", ":local.txt"]), "worker edit");
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id, "--path", "src/"], 1);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("local.txt changed outside allowed paths"), "{scope}");
+    assert!(scope.contains("Pre-existing and unchanged: none."), "{scope}");
+}
+
+#[test]
+fn scope_rejects_removal_of_a_dispatch_staged_change() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user staged edit\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    fs::write(&file, "original\n").unwrap();
+    assert_eq!(f.git(&["diff", "--name-only", "HEAD"]), "");
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "local.txt");
+    let id = f.launch("codex");
+
+    f.git(&["restore", "--staged", "local.txt"]);
+    assert_eq!(f.git(&["status", "--short"]), "");
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id, "--path", "src/"], 1);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("local.txt changed outside allowed paths"), "{scope}");
+    assert!(scope.contains("Pre-existing and unchanged: none."), "{scope}");
+    f.call(&["verify", &id, "--path", "local.txt"], 0);
+}
+
+#[test]
+fn scope_allows_staged_file_to_directory_replacement_under_authorized_path() {
+    let f = Fixture::new();
+    let path = f.repo.join("x");
+    fs::write(&path, "original\n").unwrap();
+    f.git(&["add", "x"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&path, "user edit\n").unwrap();
+    let id = f.launch("codex");
+
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    fs::write(path.join("child"), "worker edit\n").unwrap();
+    f.git(&["add", "-A", "x"]);
+    // A user diff.orderFile can reorder this listing.
+    let mut staged: Vec<_> =
+        f.git(&["diff", "--cached", "--name-status", "--no-renames"]).lines().map(str::to_owned).collect();
+    staged.sort();
+    assert_eq!(staged, ["A\tx/child", "D\tx"]);
+    f.status("exited", "COMPLETED");
+
+    let result = f.call(&["verify", &id, "--path", "x"], 0);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("Changed files: x, x/child."), "{scope}");
+    let result = f.call(&["verify", &id, "--path", "src/"], 1);
+    let scope = result["data"]["run"]["verifications"][1]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("x, x/child changed outside allowed paths"), "{scope}");
+}
+
+#[test]
+fn staged_scope_respects_git_glob_pathspecs_environment() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user edit\n").unwrap();
+    let call = |args: &[&str], expected| Fixture::call_with(f.cmd().env("GIT_GLOB_PATHSPECS", "1"), args, expected);
+    let brief = f.root.join("brief.md");
+    let dispatch = ["dispatch", "--executor", "codex", "--brief", brief.to_str().unwrap(), "--repo", "."];
+    let result = call(&dispatch, 0);
+    let id = result["data"]["run_id"].as_str().unwrap();
+    let stale = [&dispatch[..], &["--mode", "review", "--expected-head", "stale-head"]].concat();
+    assert_eq!(call(&stale, 1)["data"], json!({"outcome":"checkout_mismatch","reason":"head"}));
+
+    fs::write(&file, "worker edit\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    fs::write(&file, "user edit\n").unwrap();
+    f.status("exited", "COMPLETED");
+    let result = call(&["verify", id, "--path", "src/"], 1);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("local.txt changed outside allowed paths"), "{scope}");
+    assert!(scope.contains("Pre-existing and unchanged: none."), "{scope}");
+}
+
+#[test]
+fn baseline_override_after_rebase_preserves_unstaged_dispatch_edit() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    let old = f.git(&["rev-parse", "HEAD"]);
+    let old_entry = f.git(&["ls-files", "--stage", "local.txt"]);
+    f.git(&["checkout", "-qb", "upstream"]);
+    f.git(&["update-index", "--chmod=+x", "local.txt"]);
+    f.git(&["restore", "local.txt"]);
+    f.git(&["commit", "-qm", "upstream"]);
+    f.git(&["checkout", "-qb", "worker", &old]);
+    fs::write(&file, "user edit\n").unwrap();
+    let id = f.launch("codex");
+
+    fs::create_dir(f.repo.join("src")).unwrap();
+    fs::write(f.repo.join("src/worker.rs"), "worker\n").unwrap();
+    f.git(&["add", "src/worker.rs"]);
+    f.git(&["commit", "-qm", "worker"]);
+    f.git(&["rebase", "--autostash", "upstream"]);
+    assert_ne!(f.git(&["ls-files", "--stage", "local.txt"]), old_entry);
+    assert_eq!(f.git(&["diff", "--cached", "--name-only"]), "");
+    assert_eq!(fs::read_to_string(&file).unwrap(), "user edit\n");
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id, "--baseline", "upstream", "--path", "src/"], 0);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("Pre-existing and unchanged: local.txt."), "{scope}");
+}
+
+#[test]
+fn scope_uses_working_copy_only_for_old_dispatch_snapshot() {
+    let f = Fixture::new();
+    let file = f.repo.join("local.txt");
+    fs::write(&file, "original\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    f.git(&["commit", "-qm", "tracked"]);
+    fs::write(&file, "user edit\n").unwrap();
+    let id = f.launch("codex");
+    let mut record = f.record(&id);
+    record.as_object_mut().unwrap().remove("dispatch_staged");
+    fs::write(f.dir(&id).join("run.json"), record.to_string()).unwrap();
+
+    fs::write(&file, "worker edit\n").unwrap();
+    f.git(&["add", "local.txt"]);
+    fs::write(&file, "user edit\n").unwrap();
+    f.status("exited", "COMPLETED");
+    let result = f.call(&["verify", &id, "--path", "src/"], 0);
+    let scope = result["data"]["run"]["verifications"][0]["checks"][0]["output"].as_str().unwrap();
+    assert!(scope.contains("Pre-existing and unchanged: local.txt."), "{scope}");
+    assert!(f.record(&id).get("dispatch_staged").is_none());
 }
 
 #[test]

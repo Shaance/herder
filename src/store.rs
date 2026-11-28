@@ -280,11 +280,6 @@ fn utc(clock: SystemTime) -> (i32, u8, u8, u8, u8, u8) {
         .expect("clock outside supported range");
     (date.year(), u8::from(date.month()), date.day(), date.hour(), date.minute(), date.second())
 }
-pub fn copy(source: &Path, dest: &Path) -> Result<PathBuf> {
-    atomic(dest, &fs::read(source)?)?;
-    Ok(dest.to_path_buf())
-}
-
 #[derive(Debug)]
 pub struct RepoNotRoot(PathBuf);
 

@@ -77,6 +77,46 @@ fn a1_resume_validation_and_pending_identity() {
 }
 
 #[test]
+fn vibe_resume_rejects_a_different_session_on_observation_and_retry() {
+    let f = Fixture::new();
+    let id = f.launch("vibe");
+    let dir = f.dir(&id);
+    f.status("exited", "COMPLETED");
+    f.script(
+        "vibe-implementer",
+        "resume_vibe",
+        r#"echo call >> "$HERDER_STATE_DIR/resume-count"
+echo 43211 > "$1/run.pid"
+echo 'error: resumed stream reports session wrong-session, expected native-1' >&2
+exit 1"#,
+    );
+    let brief = f.root.join("brief.md");
+    let args = ["resume", &id, "--brief", brief.to_str().unwrap()];
+    f.call(&args, 1);
+    let pending = fs::read(dir.join("run.json")).unwrap();
+    fs::write(dir.join("events2.jsonl"), "{\"sessionId\":\"wrong-session\"}\n").unwrap();
+    fs::write(f.skills.join("status"), "state=alive pid=43211\nverdict: RUNNING\n").unwrap();
+
+    let status = f.call(&["status", &id], 0);
+    let observation = &status["data"]["observation"];
+    assert_eq!(observation["state"], "unknown");
+    assert_eq!(observation["cause"], "identity_mismatch");
+    assert_eq!(status["data"]["run"]["attempt"], 1);
+    assert_eq!(fs::read(dir.join("run.json")).unwrap(), pending);
+
+    fs::write(f.skills.join("status"), "state=exited pid=43211\nverdict: DIED\n").unwrap();
+    let retry = f.call(&args, 1);
+    for message in [&observation["evidence"], &retry["error"]] {
+        let message = message.as_str().unwrap();
+        for detail in ["43211", "native-1", "wrong-session"] {
+            assert!(message.contains(detail), "{message}");
+        }
+    }
+    assert_eq!(fs::read(dir.join("run.json")).unwrap(), pending);
+    assert_eq!(fs::read_to_string(f.state.join("resume-count")).unwrap(), "call\n");
+}
+
+#[test]
 fn codex_resume_rejects_a_different_thread_immediately_and_on_late_observation() {
     for (immediate, gate) in [(true, 0), (true, 3), (false, 0)] {
         let f = Fixture::new();
@@ -342,21 +382,41 @@ fn a6_listing_isolates_broken_runs_and_dispatch_publishes_atomically() {
         assert!(entries.iter().any(|r| r["run_id"] == "broken" && r["error"].is_string()));
         assert_eq!(f.call(&["ls", "--goal", "other"], 0)["data"]["runs"][0]["run_id"], "broken");
     }
-    // Remove the input between successful lint and copy, before executor launch.
-    f.script("implementer-core", "check_brief", "rm \"$1\"");
-    f.dispatch("codex", &[], 1);
-    for entry in fs::read_dir(f.state.join("runs")).unwrap() {
-        let entry = entry.unwrap();
-        if !entry.file_name().to_string_lossy().starts_with('.') && entry.file_name() != "broken" {
-            assert!(entry.path().join("run.json").is_file());
-        }
-    }
     let human = f.cmd().arg("ls").output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
     let row = human.lines().find(|line| line.starts_with("broken\tbroken\t")).unwrap();
     let columns: Vec<_> = row.split('\t').collect();
     assert_eq!(columns.len(), 3);
     assert!(columns[2].contains("run.json"), "{row}");
+}
+
+#[test]
+fn a6_staging_failure_after_lint_leaves_no_published_run() {
+    let f = Fixture::new();
+    f.script("implementer-core", "check_brief", r#"printf 'lint completed\n' > "$HERDER_STATE_DIR/runs""#);
+    let result = f.dispatch("codex", &[], 1);
+    let runs = f.state.join("runs");
+    assert_eq!(fs::read(&runs).unwrap(), b"lint completed\n");
+    let staging_error = fs::create_dir_all(&runs).unwrap_err().to_string();
+    assert_eq!(result["error"], staging_error);
+    assert!(!f.state.join("launch-args").exists());
+}
+
+#[test]
+fn a6_rejection_after_staging_leaves_no_pending_run() {
+    let f = Fixture::new();
+    f.executable(
+        &f.bin.join("git"),
+        r#"for pending in "$HERDER_STATE_DIR"/runs/.*.pending/input.md; do
+  if test -f "$pending"; then touch "$HERDER_STATE_DIR/pending-observed"; fi
+done
+exec /usr/bin/git "$@""#,
+    );
+    let result = f.dispatch("codex", &["--mode", "review", "--expected-head", "stale"], 1);
+    assert_eq!(result["data"], json!({"outcome":"checkout_mismatch","reason":"head"}));
+    assert!(f.state.join("pending-observed").is_file());
+    assert!(fs::read_dir(f.state.join("runs")).unwrap().next().is_none());
+    assert!(!f.state.join("launch-args").exists());
 }
 
 #[test]

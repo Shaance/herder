@@ -69,7 +69,9 @@ fn data(output: &Output) -> Value {
                 RunDetail::Report { path, content: None } => json!({"path":path,"message":"no report yet"}),
                 _ => Value::Null,
             };
-            let mut data = json!({"run":run,"observation":observation,"report":report});
+            let mut data = json!({
+                "run": run, "observation": observation, "observed_attempt": run.launch_attempt(), "report": report,
+            });
             if let RunDetail::Status { tail: Some(tail), .. } = detail {
                 data["tail"] = match tail {
                     Tail::Lines(path, lines) => json!({"path":path,"lines":lines,"message":null}),
@@ -137,7 +139,7 @@ fn human(output: &Output) {
                         ListEntry::Incomplete { .. } => {
                             ["-", "-", "-", "-", "incomplete", "-", "unreadable run records", "-"].map(str::to_owned)
                         }
-                        ListEntry::Run { run, observation } => terminal_run_row(run, observation.state()),
+                        ListEntry::Run { run, observation, .. } => terminal_run_row(run, observation.state()),
                     })
                     .collect::<Vec<_>>();
                 println!("{}", table(&rows, color));
@@ -150,7 +152,7 @@ fn human(output: &Output) {
                         ListEntry::Incomplete { .. } => {
                             eprintln!("listing incomplete: some run records could not be read")
                         }
-                        ListEntry::Run { run, observation } => println!(
+                        ListEntry::Run { run, observation, .. } => println!(
                             "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                             run.id,
                             if run.name == run.id { "-" } else { &run.name }.escape_debug(),

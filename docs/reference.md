@@ -6,6 +6,8 @@ This page describes the CLI's behavior and operational limits. For the run recor
 
 Every command accepts `--json` and returns an envelope: `{ "ok": boolean, "data": object|null, "error": string|null }`. Operational findings, including failed launches, verification failures, missing reports and doctor gaps, remain in `data`; invocation errors use `error`. Exit codes are 0 for success, 1 for operational failure and 2 for usage error. No herder command prompts. Use `herder <command> --help` for flags and examples.
 
+Single-run replies (`status`, `report`, `stop`, `resume` and ordinary `verify`) and readable `ls` rows include `observed_attempt`, the attempt the observation belongs to: the pending resume's attempt while one is reserved, otherwise `run.attempt`. It is not stored in `run.json`.
+
 ## Run state and unknown causes
 
 A successful status query can report `unknown`; inspect its evidence before acting. Unknown observations include a `cause` in JSON and a `cause: <value>` line in human `herder status` output. The causes are `query_failed`, `identity_mismatch`, `record_disagrees`, `unrecognized_status` and `unconfirmed`; other states omit the cause.
@@ -60,7 +62,7 @@ Reporting applies to human output with the default timeout. Scoped waits, `--all
 
 ## Dispatch and executor arguments
 
-Prefer briefs outside `--repo`. Files already dirty at dispatch are excluded from verify scope only while their contents remain unchanged. A direct-mode brief requires `<task>`, `<workstream_contract>`, `<implementation_authority>`, `<action_safety>`, `<default_follow_through_policy>`, `<verification_loop>`, `<economy_contract>` and `<structured_output_contract>` blocks. Name authorized paths and rejected alternatives in the brief.
+Prefer briefs outside `--repo`. Dispatch reads the brief once and stages exactly the bytes it linted for every model, so editing or deleting it during a dispatch changes nothing; a custom linter receives a private snapshot path. A brief that is not a regular, nonempty file is passed to the linter unread. A dirty or changed Git path that is not valid UTF-8 stops dispatch, or fails the scope check, naming the path. Files already dirty at dispatch are excluded from verify scope only while their contents and their staged state relative to `HEAD` remain unchanged; runs dispatched by older versions compare contents only. A direct-mode brief requires `<task>`, `<workstream_contract>`, `<implementation_authority>`, `<action_safety>`, `<default_follow_through_policy>`, `<verification_loop>`, `<economy_contract>` and `<structured_output_contract>` blocks. Name authorized paths and rejected alternatives in the brief.
 
 Extra dispatch arguments after `--` go to the executor, including Vibe arguments past its launcher's separator. They are recorded and replayed with `--model` on Vibe and Codex resume. Herder Vibe runs are auto-approve only. Launcher gate exit 3 leaves the launch pending for observation. Herder returns 0 unless immediate Codex resume observation detects an identity conflict, which exits 1.
 
@@ -123,7 +125,7 @@ Pass one or more `--path` options to verify to use those paths for that check in
 
 Explicit `--check` commands take precedence. If omitted, verify reuses commands from the latest verification of this run that recorded any. If this run has no commands and has a goal, verify looks for the most recent verification with commands from another run in the same repository and goal. If no commands are found, verify runs only its built-in checks. Human output names the source run when commands are reused.
 
-After rebasing a worker branch, use `herder verify <run> --baseline <new-upstream-rev>` to verify against and persist the new commit baseline. Invalid revisions fail without changing the run record. A protected run's baseline cannot be replaced. Review the evidence before publishing as coordinator.
+After rebasing a worker branch, use `herder verify <run> --baseline <new-upstream-rev>` to verify against and persist the new commit baseline. A file that was dirty outside the authorized paths keeps its exemption only if the rebase restores both its contents and its staged state; use `git stash pop --index` to keep a staged edit staged. Invalid revisions fail without changing the run record. A protected run's baseline cannot be replaced. Review the evidence before publishing as coordinator.
 
 ## Paired reviews
 

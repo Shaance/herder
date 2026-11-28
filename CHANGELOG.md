@@ -4,6 +4,14 @@ All notable changes to herder are listed here. herder follows [Semantic Versioni
 
 ## Unreleased
 
+- Dispatch stages exactly the brief bytes it linted. Editing or deleting the brief during a dispatch no longer changes or fails later models of a review. Only a regular, nonempty brief file is read; anything else goes to the linter unread, as before. Custom brief linters receive a private snapshot path outside the checkout and the state directory. On keyed dispatches and handoffs, a lint failure is now reported before staging or Git errors.
+- Dispatch and `herder verify` refuse a Git path that is not valid UTF-8 instead of handling it under a lossy spelling: dispatch stops before staging and verify fails the scope check, naming the path. This is reported before checkout pins and protected dispatch's clean-checkout check.
+- CLI JSON adds `observed_attempt` beside `observation` on single-run replies and readable `ls` rows. herder-mcp now reads it instead of re-deriving the attempt; install matching versions of Herder and herder-mcp.
+- `herder status` no longer accepts, and `herder resume` no longer retries, a Vibe resume whose event stream reports a different session; it reports `unknown` with cause `identity_mismatch`. Before, after the launcher rejected the mismatch, a later status could advance the attempt.
+- herder-mcp now relays the CLI's reason when protected verification returns `superseded`, such as another work order taking the checkout, instead of always saying the attempt changed.
+- `herder verify` no longer passes scope when a worker changes what is staged for a file that was already dirty and outside its paths, for example by staging its own version and restoring the working copy, or by unstaging the user's edit. Dispatch records each dirty path's staged state relative to `HEAD` as `dispatch_staged` in `run.json` and the run JSON, for dirty checkouts only. A rebase that restores the file's contents and staged state still passes `verify --baseline`. Runs dispatched by older versions keep the content-only check.
+- `herder verify` without `--check` now reuses a user check even when its command text matches a built-in label such as `collect_evidence.sh`; before, the check was dropped and reuse could fall back to an older verification. Records written before the collector row existed keep the old ambiguity for a command in that position.
+
 ## 0.6.1 (2026-11-27)
 
 - Interactive `herder wait` now supports terminal restoration for a confirmed Claude worker. The restored wait observes the same recorded worker.

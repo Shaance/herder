@@ -102,6 +102,9 @@ pub fn observe_until(
                             previous_pid != pid,
                             UnknownError(UnknownCause::Unconfirmed, "resume pending; no new pid recorded".into())
                         );
+                        if let Native::Vibe { session_id, .. } = previous {
+                            scripts::check_vibe_resume_session(run, dir, session_id, pid)?;
+                        }
                         if !started && observed.state() != State::Failed {
                             let evidence =
                                 format!("resume pending; waiting for thread.started: {}", observed.evidence());
@@ -221,8 +224,14 @@ pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &Loc
                 recorded.process().map(|p| p.2) == previous.process().map(|p| p.2),
                 UnknownError(UnknownCause::IdentityMismatch, "resume identity changed".into())
             );
-            if let Native::Codex { thread_id, .. } = &previous {
-                scripts::codex_resume_started(run, dir, thread_id, recorded.process().unwrap().0)?;
+            match &previous {
+                Native::Codex { thread_id, .. } => {
+                    scripts::codex_resume_started(run, dir, thread_id, recorded.process().unwrap().0)?;
+                }
+                Native::Vibe { session_id, .. } => {
+                    scripts::check_vibe_resume_session(run, dir, session_id, recorded.process().unwrap().0)?;
+                }
+                Native::Claude { .. } => {}
             }
         }
         (previous, attempt)

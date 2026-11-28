@@ -10,7 +10,7 @@ Starting with v0.4.0, Homebrew installs both binaries on macOS. The GitHub relea
 brew install shaance/tap/herder
 ```
 
-To get both binaries from crates.io, install the two packages separately. Install matching versions of the CLI and companion. Checkout inspection, bounded waits and opt-in implementation require v0.5.0 or later.
+To get both binaries from crates.io, install the two packages separately. Install matching versions of the CLI and companion; herder-mcp reads the CLI's `observed_attempt` field and reports an older CLI as unavailable. Checkout inspection, bounded waits and opt-in implementation require v0.5.0 or later.
 
 ```sh
 cargo install --locked herder
