@@ -21,6 +21,8 @@ mod lifecycle;
 mod observations;
 #[path = "cases/protected_dispatch.rs"]
 mod protected_dispatch;
+#[path = "cases/stop.rs"]
+mod stop;
 #[path = "cases/workflow.rs"]
 mod workflow;
 
@@ -74,10 +76,23 @@ echo "RUN_DIR=$3 PID=43210 CONVERSATION_ID=native-1""#,
         );
         f.script("agy-review", "status_agy", r#"cat "$HERDER_SKILLS_DIR/status""#);
         f.executable(&f.bin.join("rex"), "printf '%s\\n' \"$@\" > \"$HERDER_STATE_DIR/rex-args\"; echo '{}'");
-        f.executable(&f.bin.join("ps"), "cat \"$HERDER_SKILLS_DIR/ps\"");
+        f.executable(
+            &f.bin.join("ps"),
+            r#"case "$1" in
+-Ao)
+  test "$2" = pid=,ppid=,pgid=,stat=,lstart=
+  if test -f "$HERDER_SKILLS_DIR/ps-snapshot"; then
+    cat "$HERDER_SKILLS_DIR/ps-snapshot"
+  elif grep -q '^state=alive pid=43210' "$HERDER_SKILLS_DIR/status"; then
+    echo '43210 1 43210 S Sat Nov 28 16:00:00 2026'
+  fi;;
+-p) cat "$HERDER_SKILLS_DIR/ps";;
+*) exit 90;;
+esac"#,
+        );
         f.executable(
             &f.bin.join("kill"),
-            r#"printf '%s\n' "$@" > "$HERDER_STATE_DIR/kill-args"
+            r#"printf '%s\n' "$@" >> "$HERDER_STATE_DIR/kill-args"
 echo 'state=exited pid=43210' > "$HERDER_SKILLS_DIR/status"
 echo 'verdict: DIED' >> "$HERDER_SKILLS_DIR/status""#,
         );

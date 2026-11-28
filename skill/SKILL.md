@@ -130,8 +130,13 @@ Review uses Antigravity's plan mode. Keeping shell commands read-only relies on
 the model honoring plan mode and the brief, as with Vibe's read-only instructions.
 Checked dispatch without `--path` flags any new Git-visible checkout change.
 Use a fresh dispatch to continue an Agy run. Extra arguments after `--` are
-rejected. `herder stop` sends TERM to the recorded process. A shell child it
-already started may survive in its own process group.
+rejected.
+
+For Vibe, Codex, and Agy, `herder stop` sends TERM to the worker and its visible
+descendants. It sends KILL to surviving recorded descendants after a short grace
+period. The run stays running until the worker and its recorded descendants exit.
+Repeat `herder stop` to signal survivors again. A process that detached at spawn and
+was already reparented to PID 1 before the snapshot can survive.
 
 ## Handing off to another agent
 

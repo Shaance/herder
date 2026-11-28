@@ -162,7 +162,7 @@ As with Vibe reviews, keeping shell commands read-only relies on the model
 honoring the review instructions. Antigravity runs in plan mode. Checked dispatch
 without `--path` flags any new Git-visible checkout change. Choose the reasoning
 level in the model slug. Agy supports fresh dispatches only and takes no extra
-arguments after `--`. A shell child already running may survive `herder stop`.
+arguments after `--`.
 
 ## Why
 
@@ -219,11 +219,17 @@ The arrows show common observations. `unknown` can occur whenever evidence is un
 | `status` | Query a run's current executor status. |
 | `context` | Show the configured directory, Git worktree root, branch, HEAD, and Herder state directory. |
 | `report` | Read the current attempt's report. |
-| `stop` | Stop the exact recorded worker. |
+| `stop` | Stop the recorded worker and the visible descendants of Vibe, Codex, and Agy workers. |
 | `resume` | Resume a recorded session with a delta brief. |
 | `verify` | Record scope and command verification. |
 
 Use `--effort <LEVEL>` on `dispatch` or `handoff` to request reasoning effort for Codex or Claude. Use `herder <command> --help` for flags and examples. All commands accept `--json` with an `{ok, data, error}` envelope. Exit codes are 0 for success, 1 for operational failure and 2 for usage error. See [JSON and exit codes](https://github.com/Shaance/herder/blob/master/docs/reference.md#json-output-and-exit-codes) for details.
+
+`herder stop` sends TERM to Vibe, Codex, and Agy workers and their visible
+descendants, then sends KILL to surviving recorded descendants after a short
+grace period. The run stays running until the worker and recorded descendants
+exit. Repeat `stop` to signal survivors again. A process that detached at spawn
+and was already reparented to PID 1 before the snapshot can survive.
 
 ## Configuration
 

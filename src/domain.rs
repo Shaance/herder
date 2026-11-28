@@ -81,6 +81,11 @@ pub struct LaunchError {
     pub message: String,
     pub remediation: String,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessIdentity {
+    pub pid: i32,
+    pub lstart: String,
+}
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Intent {
@@ -93,7 +98,12 @@ pub enum Intent {
         error: LaunchError,
     },
     Stopped,
-    StopSent,
+    StopSent {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker: Option<ProcessIdentity>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        descendants: Vec<ProcessIdentity>,
+    },
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]

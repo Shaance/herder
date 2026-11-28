@@ -137,7 +137,7 @@ enum Action {
     },
     #[command(
         about = "Stop the exact recorded worker",
-        after_help = "Example: herder stop 20261101-120000-abcd\nRequires running or blocked state and a matching recorded identity. Claude uses claude stop.\nVibe, Codex and Agy receive TERM only after the PID command matches this run. Waits briefly for exit.\nIf exit is not confirmed, reports stop sent with exit 0. Use status to confirm."
+        after_help = "Example: herder stop 20261101-120000-abcd\nClaude uses claude stop. For Vibe, Codex and Agy, Herder confirms the worker identity and sends TERM to the worker and its visible descendants.\nSurviving descendants receive KILL after a short grace period. The run stays running until the worker and recorded descendants exit.\nIf exit is still unconfirmed after two seconds, use status to check or repeat stop to signal survivors. A process already reparented to PID 1 before the snapshot can survive."
     )]
     Stop {
         /// Run id or unique dispatch name

@@ -721,6 +721,56 @@ const AGY_MODEL: &str = "gemini-4-neon-high";
 const AGY_SUCCESS: &str = include_str!("../fixtures/agy/review-success.jsonl");
 
 #[test]
+fn stop_reaps_a_worker_command_in_its_own_process_group() {
+    let (f, _) = setup();
+    fs::remove_file(f.bin.join("kill")).unwrap();
+    fs::write(
+        stub_body(&f.bin.join("codex")),
+        r#"#!/usr/bin/python3
+import os
+import signal
+import subprocess
+import sys
+from pathlib import Path
+
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+child = subprocess.Popen(["/bin/sleep", "60"], start_new_session=True)
+Path(os.environ["HERDER_STATE_DIR"], "child-pid").write_text(str(child.pid))
+print('{"type":"thread.started","thread_id":"stub-thread"}', flush=True)
+signal.pause()
+"#,
+    )
+    .unwrap();
+    let brief = f.root.join("brief.md");
+    let mut cmd = f.cmd();
+    cmd.env_remove("HERDER_SKILLS_DIR");
+    let launch = Fixture::call_with(
+        &mut cmd,
+        &["dispatch", "--executor", "codex", "--brief", brief.to_str().unwrap(), "--repo", "."],
+        0,
+    );
+    let id = launch["data"]["run_id"].as_str().unwrap();
+    let child: libc::pid_t = fs::read_to_string(f.state.join("child-pid")).unwrap().parse().unwrap();
+    let stopped = f.cmd().env_remove("HERDER_SKILLS_DIR").args(["stop", id, "--json"]).output();
+    // SAFETY: this positive PID belongs to the sleep the fixture just started.
+    let exists = || unsafe { libc::kill(child, 0) == 0 };
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while exists() && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
+    let leaked = exists();
+    if leaked {
+        // SAFETY: clean up the fixture's sleep before asserting the regression.
+        unsafe { libc::kill(child, libc::SIGKILL) };
+    }
+    let stopped = stopped.unwrap();
+    assert!(stopped.status.success(), "{stopped:?}");
+    let reply: Value = serde_json::from_slice(&stopped.stdout).unwrap();
+    assert_eq!(reply["data"]["observation"]["state"], "stopped", "{reply}");
+    assert!(!leaked, "worker's sleep {child} survived stop");
+}
+
+#[test]
 fn agy_refuses_effort_extras_and_missing_model_before_recording() {
     let f = Fixture::new();
     for (args, message) in [

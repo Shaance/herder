@@ -1,6 +1,10 @@
 use crate::{
-    domain::{Executor, LaunchPhase, Native, Observation, Run, State, Target, UnknownCause, UnknownError},
+    domain::{
+        Executor, Intent, Launch, LaunchPhase, Native, Observation, ProcessIdentity, Run, State, Target, UnknownCause,
+        UnknownError,
+    },
     process::{Script, ScriptSource, checked, on_path, output, query, script, script_from},
+    store::LockedRun,
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -281,9 +285,8 @@ pub fn confirm(native: &Native, dir: &Path) -> Result<()> {
     );
     Ok(())
 }
-pub fn stop(native: &Native, run: &Run, dir: &Path) -> Result<()> {
+fn confirm_stop(native: &Native, run: &Run, dir: &Path, pid: i32) -> Result<()> {
     confirm(native, dir)?;
-    let (pid, _, _) = native.process().ok_or_else(|| anyhow::anyhow!("script identity required"))?;
     let args = checked(Command::new("ps").args(["-p", &pid.to_string(), "-o", "args="]))?;
     let marker = match native {
         Native::Vibe { .. } => dir.join(format!("out{}", run.suffix())),
@@ -294,6 +297,131 @@ pub fn stop(native: &Native, run: &Run, dir: &Path) -> Result<()> {
         format!("{} ", args.trim()).contains(&format!(" {} ", marker.display())),
         "pid {pid} command does not belong to this run; refusing TERM"
     );
-    checked(Command::new("kill").args(["-TERM", &pid.to_string()]))?;
+    Ok(())
+}
+
+struct ProcessRow {
+    identity: ProcessIdentity,
+    ppid: i32,
+    pgid: i32,
+}
+
+fn snapshot(deadline: Option<Instant>) -> Result<Vec<ProcessRow>> {
+    let ps = crate::process::checked_until(
+        Command::new("ps").env("LC_ALL", "C").env("TZ", "UTC0").args(["-Ao", "pid=,ppid=,pgid=,stat=,lstart="]),
+        deadline,
+    )?;
+    Ok(ps
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let (pid, ppid, pgid) =
+                (fields.next()?.parse().ok()?, fields.next()?.parse().ok()?, fields.next()?.parse().ok()?);
+            let stat = fields.next()?;
+            let lstart = fields.collect::<Vec<_>>().join(" ");
+            (pid > 1 && !stat.starts_with('Z') && !lstart.is_empty()).then_some(ProcessRow {
+                identity: ProcessIdentity { pid, lstart },
+                ppid,
+                pgid,
+            })
+        })
+        .collect())
+}
+
+fn living<'a>(rows: &'a [ProcessRow], recorded: &'a [ProcessIdentity]) -> impl Iterator<Item = &'a ProcessRow> {
+    rows.iter().filter(|row| recorded.contains(&row.identity))
+}
+
+fn signal(name: &str, pids: &[i32], deadline: Option<Instant>) -> Result<()> {
+    if pids.is_empty() {
+        return Ok(());
+    }
+    match crate::process::checked_until(
+        Command::new("kill").env("LC_ALL", "C").arg(name).args(pids.iter().map(i32::to_string)),
+        deadline,
+    ) {
+        Err(error) if error.to_string().lines().all(|line| line.trim_end().ends_with(": No such process")) => Ok(()),
+        result => result.map(drop),
+    }
+}
+
+pub fn stop(run: &mut Run, store: &LockedRun) -> Result<()> {
+    let Launch::Launched { native, intent } = &run.launch else { anyhow::bail!("no recorded identity") };
+    let (pid, _, _) = native.process().context("script identity required")?;
+    let pid = i32::try_from(pid.get())?;
+    let prior = match intent {
+        Intent::StopSent { worker: Some(worker), descendants } => Some((worker, descendants)),
+        _ => None,
+    };
+    if prior.is_none() {
+        confirm_stop(native, run, &store.dir, pid)?;
+    }
+    let rows = snapshot(None)?;
+    let worker = rows.iter().find(|row| row.identity.pid == pid).map(|row| row.identity.clone());
+    let signal_worker = worker.as_ref().is_some_and(|worker| prior.is_none_or(|(prior, _)| worker == prior));
+    let descendants = if let Some((_, descendants)) = prior {
+        if signal_worker {
+            confirm_stop(native, run, &store.dir, pid)?;
+        }
+        descendants.clone()
+    } else {
+        let mut descendants = Vec::new();
+        let mut parents: Vec<_> = worker.iter().map(|worker| worker.pid).collect();
+        while let Some(parent) = parents.pop() {
+            for row in rows.iter().filter(|row| row.ppid == parent) {
+                parents.push(row.identity.pid);
+                descendants.push(row.identity.clone());
+            }
+        }
+        let Launch::Launched { intent, .. } = &mut run.launch else { unreachable!() };
+        *intent = Intent::StopSent { worker, descendants: descendants.clone() };
+        store.save(run)?;
+        descendants
+    };
+    if signal_worker {
+        signal("-TERM", &[pid], None)?;
+    }
+    if !descendants.is_empty() {
+        let rows = snapshot(None)?;
+        let groups: std::collections::BTreeSet<_> = living(&rows, &descendants)
+            .map(|row| row.pgid)
+            .filter(|group| *group == pid || descendants.iter().any(|child| child.pid == *group))
+            .collect();
+        for group in groups {
+            signal("-TERM", &[-group], None)?;
+        }
+        for child in living(&snapshot(None)?, &descendants) {
+            signal("-TERM", &[child.identity.pid], None)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn stop_progress(
+    worker: &ProcessIdentity,
+    descendants: &[ProcessIdentity],
+    deadline: Option<Instant>,
+) -> Option<String> {
+    let rows = match snapshot(deadline) {
+        Ok(rows) => rows,
+        Err(error) => return Some(format!("stop sent; could not check processes: {error:#}")),
+    };
+    let children: Vec<_> = living(&rows, descendants).map(|row| row.identity.pid.to_string()).collect();
+    if !children.is_empty() {
+        let label = if children.len() == 1 { "child process" } else { "child processes" };
+        return Some(format!("stop sent; {} {label} still running: {}", children.len(), children.join(", ")));
+    }
+    living(&rows, std::slice::from_ref(worker))
+        .next()
+        .map(|_| format!("stop sent; worker {} still running", worker.pid))
+}
+
+pub fn kill_stop_descendants(run: &Run, deadline: Instant) -> Result<()> {
+    if let Launch::Launched { intent: Intent::StopSent { descendants, .. }, .. } = &run.launch
+        && !descendants.is_empty()
+    {
+        let survivors: Vec<_> = living(&snapshot(Some(deadline))?, descendants).map(|row| row.identity.pid).collect();
+        signal("-KILL", &survivors, Some(deadline))?;
+    }
     Ok(())
 }

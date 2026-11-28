@@ -1,7 +1,11 @@
 use crate::{claude, domain::*, process, scripts, store::LockedRun};
 use crate::{process::ScriptSource, scripts::ScriptExecutor};
 use anyhow::{Result, bail, ensure};
-use std::{path::Path, process::Command, time::Instant};
+use std::{
+    path::Path,
+    process::Command,
+    time::{Duration, Instant},
+};
 
 pub fn launch(run: &mut Run, phase: LaunchPhase<'_>, store: &LockedRun) -> Result<()> {
     let target = run.launch.target();
@@ -79,7 +83,22 @@ pub fn observe_until(
                 observed
             }
             Some(executor) => {
-                let (observed, identity) = executor.query(run, dir, deadline, source)?;
+                let queried = executor.query(run, dir, deadline, source);
+                if let Launch::Launched { intent, .. } = &mut run.launch
+                    && let Intent::StopSent { worker: Some(worker), descendants } = intent
+                {
+                    if let Some(evidence) = scripts::stop_progress(worker, descendants, deadline) {
+                        return Ok(Observation::known(State::Running, evidence));
+                    }
+                    let evidence = match queried {
+                        Ok((observed, _)) => observed.evidence().to_owned(),
+                        Err(error) => format!("executor query failed: {error:#}"),
+                    };
+                    *intent = Intent::Stopped;
+                    store.save(run)?;
+                    return Ok(Observation::known(State::Stopped, format!("stopped by herder stop; {evidence}")));
+                }
+                let (observed, identity) = queried?;
                 let identity = match &run.launch {
                     Launch::PendingResume { previous: Native::Codex { .. }, .. } => Some(identity?),
                     _ => identity.ok(),
@@ -121,7 +140,7 @@ pub fn observe_until(
                 observed
             }
         };
-        if let Launch::Launched { intent: intent @ Intent::StopSent, .. } = &mut run.launch {
+        if let Launch::Launched { intent: intent @ Intent::StopSent { .. }, .. } = &mut run.launch {
             if matches!(observed.state(), State::Stopped | State::Finished | State::Failed) {
                 *intent = Intent::Stopped;
                 store.save(run)?;
@@ -145,32 +164,38 @@ pub fn observe_until(
 pub fn stop(run: &mut Run, store: &LockedRun) -> Result<Observation> {
     let observed = observe(run, Some(store));
     ensure!(matches!(observed.state(), State::Running | State::Blocked), "cannot stop: {observed}");
-    let dir = &store.dir;
     let native = match &run.launch {
         Launch::PendingResume { previous: native @ Native::Claude { .. }, .. } => native,
         _ => run.launch.native().ok_or_else(|| anyhow::anyhow!("no recorded identity"))?,
     };
-    match native {
-        Native::Claude { id, profile, .. } => {
-            process::checked(claude::command(profile.as_deref()).current_dir(&run.repo).args(["stop", id]))?;
+    let script_worker = !matches!(native, Native::Claude { .. });
+    if let Native::Claude { id, profile, .. } = native {
+        process::checked(claude::command(profile.as_deref()).current_dir(&run.repo).args(["stop", id]))?;
+        if let Launch::Launched { intent, .. } = &mut run.launch {
+            *intent = Intent::StopSent { worker: None, descendants: vec![] };
         }
-        _ => scripts::stop(native, run, dir)?,
+        store.save(run)?;
+    } else {
+        scripts::stop(run, store)?;
     }
-    if let Launch::Launched { intent, .. } = &mut run.launch {
-        *intent = Intent::StopSent;
-    }
-    store.save(run)?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut escalate = script_worker;
     loop {
-        let mut observed = observe(run, Some(store));
+        let mut observed = observe_until(run, Some(store), script_worker.then_some(deadline), ScriptSource::Configured);
         if observed.state() == State::Stopped {
             return Ok(observed);
         }
-        if std::time::Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let poll = Duration::from_millis(100);
+        if remaining.is_zero() || (script_worker && remaining <= poll) {
             observed.prefix_evidence("stop sent; exit not confirmed: ");
             return Ok(observed);
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        if escalate && remaining <= Duration::from_millis(500) {
+            scripts::kill_stop_descendants(run, deadline)?;
+            escalate = false;
+        }
+        std::thread::sleep(remaining.min(poll));
     }
 }
 pub fn resume(run: &mut Run, delta: &Path, request_id: Option<&str>, store: &LockedRun) -> Result<Observation> {
